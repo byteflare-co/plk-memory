@@ -11,7 +11,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import and_, insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.engine import CursorResult, RowMapping
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from plk_memory.domain import (
@@ -374,18 +374,42 @@ class PostgresFactRepository:
         session: AsyncSession,
         organization_id: UUID,
         fact_ids: Sequence[str],
-    ) -> dict[str, RowMapping]:
+    ) -> dict[str, Mapping[Any, Any]]:
         if not fact_ids:
             return {}
-        rows = (
+        # Lock only the mutable heads first. Joining the revision in this same
+        # statement can produce a stale-snapshot no-row result after waiting
+        # for a concurrent head update under READ COMMITTED.
+        heads = (
             await session.execute(
-                self._current_query(organization_id)
-                .where(knowledge_facts.c.fact_id.in_(sorted(fact_ids)))
+                select(knowledge_facts)
+                .where(
+                    knowledge_facts.c.organization_id == organization_id,
+                    knowledge_facts.c.fact_id.in_(sorted(fact_ids)),
+                )
                 .order_by(knowledge_facts.c.fact_id)
                 .with_for_update(of=knowledge_facts)
             )
+        ).mappings().all()
+        if not heads:
+            return {}
+        revisions = (
+            await session.execute(
+                select(knowledge_fact_revisions).where(
+                    knowledge_fact_revisions.c.organization_id == organization_id,
+                    knowledge_fact_revisions.c.revision_id.in_(
+                        [head["current_revision_id"] for head in heads]
+                    ),
+                )
+            )
         ).mappings()
-        return {cast(str, row["fact_id"]): row for row in rows}
+        revision_by_id = {row["revision_id"]: row for row in revisions}
+        result: dict[str, Mapping[Any, Any]] = {}
+        for head in heads:
+            merged = dict(head)
+            merged.update(revision_by_id[head["current_revision_id"]])
+            result[cast(str, head["fact_id"])] = merged
+        return result
 
     async def _invalidate_locked(
         self,
