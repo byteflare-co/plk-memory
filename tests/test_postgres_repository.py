@@ -8,8 +8,10 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select, text, update
+from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
+from ulid import ULID
 
 from plk_memory.domain import (
     ActorContext,
@@ -19,7 +21,7 @@ from plk_memory.domain import (
     InvalidateFact,
     QueryScope,
 )
-from plk_memory.ports import FactMissing, RevisionConflict
+from plk_memory.ports import FactMissing, PolicyViolation, RevisionConflict
 from plk_memory.postgres.database import PostgresDatabase
 from plk_memory.postgres.outbox import PostgresChangeFeed, PostgresIndexStateRepository
 from plk_memory.postgres.repository import PostgresFactRepository
@@ -34,6 +36,23 @@ async def database():
     if not url:
         pytest.skip("PLK_TEST_DATABASE_URL is not configured")
     database = PostgresDatabase(url, pool_size=8, application_name="plk-tests")
+    try:
+        yield database
+    finally:
+        await database.close()
+
+
+@pytest.fixture
+async def worker_database():
+    url = os.environ.get("PLK_TEST_DATABASE_URL")
+    if not url:
+        pytest.skip("PLK_TEST_DATABASE_URL is not configured")
+    database = PostgresDatabase(
+        url,
+        pool_size=4,
+        application_name="plk-worker-tests",
+        allow_cross_organization=True,
+    )
     try:
         yield database
     finally:
@@ -58,7 +77,7 @@ def command(fact_id: str, *, supersedes: tuple[str, ...] = ()) -> CreateFact:
             statement=f"statement for {fact_id}",
             why="multi-writer contract test",
             how_to_apply="apply atomically",
-            source="tests/test_postgres_repository.py",
+            source="session 00000000-0000-0000-0000-000000000001",
             source_type="agent",
             namespace="plk.domain.dev",
             tags=("postgres",),
@@ -70,7 +89,7 @@ def command(fact_id: str, *, supersedes: tuple[str, ...] = ()) -> CreateFact:
 
 async def test_create_replays_and_writes_one_outbox_event(database, actor):
     repository = PostgresFactRepository(database)
-    create = command(f"01TEST{uuid4().hex[:12].upper()}")
+    create = command(str(ULID()))
 
     first, replay = await asyncio.gather(
         repository.create(
@@ -94,16 +113,35 @@ async def test_create_replays_and_writes_one_outbox_event(database, actor):
     assert (await repository.get(scope, create.fact_id)).revision == 1
     async with database.transaction(actor.organization_id) as session:
         count = await session.scalar(
-            select(func.count()).select_from(outbox_events).where(
-                outbox_events.c.aggregate_id == create.fact_id
-            )
+            select(func.count())
+            .select_from(outbox_events)
+            .where(outbox_events.c.aggregate_id == create.fact_id)
         )
     assert count == 1
 
 
+async def test_database_path_enforces_write_policy(database, actor):
+    repository = PostgresFactRepository(database)
+    create = command(str(ULID())).model_copy(
+        update={
+            "payload": command(str(ULID())).payload.model_copy(
+                update={"kind": "philosophy"}
+            )
+        }
+    )
+
+    with pytest.raises(PolicyViolation, match="philosophy:write"):
+        await repository.create(
+            actor,
+            create,
+            expected_superseded_revisions={},
+            idempotency_key="policy-rejected",
+        )
+
+
 async def test_concurrent_invalidate_uses_expected_revision(database, actor):
     repository = PostgresFactRepository(database)
-    fact_id = f"01TEST{uuid4().hex[:12].upper()}"
+    fact_id = str(ULID())
     await repository.create(
         actor,
         command(fact_id),
@@ -138,8 +176,8 @@ async def test_concurrent_invalidate_uses_expected_revision(database, actor):
 
 async def test_supersede_is_atomic_and_organization_scoped(database, actor):
     repository = PostgresFactRepository(database)
-    old_id = f"01TEST{uuid4().hex[:12].upper()}"
-    new_id = f"01TEST{uuid4().hex[:12].upper()}"
+    old_id = str(ULID())
+    new_id = str(ULID())
     await repository.create(
         actor,
         command(old_id),
@@ -165,26 +203,30 @@ async def test_supersede_is_atomic_and_organization_scoped(database, actor):
         await repository.get(other_scope, new_id)
 
 
-async def test_outbox_lease_ack_and_projection_version_guard(database, actor):
+async def test_outbox_lease_ack_and_projection_version_guard(
+    database, worker_database, actor
+):
     repository = PostgresFactRepository(database)
-    fact_id = f"01TEST{uuid4().hex[:12].upper()}"
+    fact_id = str(ULID())
     created = await repository.create(
         actor,
         command(fact_id),
         expected_superseded_revisions={},
         idempotency_key="outbox-create",
     )
-    feed = PostgresChangeFeed(database)
+    feed = PostgresChangeFeed(worker_database)
     events = await feed.claim(
         consumer="worker-1",
         limit=1000,
         lease_until=datetime.now(UTC) + timedelta(minutes=1),
     )
-    own_event = next(event for event in events if event.event_id == created.event_id)
-    assert own_event.revision == 1
-    await feed.ack([str(own_event.event_id)], consumer="worker-1")
+    own_claim = next(
+        claim for claim in events if claim.change.event_id == created.event_id
+    )
+    assert own_claim.change.revision == 1
+    await feed.ack([own_claim])
 
-    projection = PostgresIndexStateRepository(database, backend="test-index")
+    projection = PostgresIndexStateRepository(worker_database, backend="test-index")
     now = datetime.now(UTC)
     first = IndexEntry(
         organization_id=actor.organization_id,
@@ -197,22 +239,64 @@ async def test_outbox_lease_ack_and_projection_version_guard(database, actor):
     stale = first.model_copy(
         update={"content_hash": "b" * 64, "indexed_at": now - timedelta(seconds=1)}
     )
+    newer = first.model_copy(
+        update={
+            "indexed_revision": 2,
+            "content_hash": "c" * 64,
+            "last_event_id": uuid4(),
+            "indexed_at": now + timedelta(seconds=1),
+        }
+    )
     assert await projection.put_if_newer(first) is True
+    assert await projection.put_if_newer(newer) is True
     assert await projection.put_if_newer(stale) is False
-    assert (await projection.get(str(actor.organization_id), fact_id)) == first
+    assert (await projection.get(str(actor.organization_id), fact_id)) == newer
+
+
+async def test_expired_worker_cannot_ack_reclaimed_event(
+    database, worker_database, actor
+):
+    repository = PostgresFactRepository(database)
+    created = await repository.create(
+        actor,
+        command(str(ULID())),
+        expected_superseded_revisions={},
+        idempotency_key="lease-fencing",
+    )
+    feed = PostgresChangeFeed(worker_database)
+    first_batch = await feed.claim(
+        consumer="same-worker-name",
+        limit=1000,
+        lease_until=datetime.now(UTC) + timedelta(minutes=1),
+    )
+    stale_claim = next(
+        claim for claim in first_batch if claim.change.event_id == created.event_id
+    )
+    async with worker_database.worker_transaction() as session:
+        await session.execute(
+            update(outbox_events)
+            .where(outbox_events.c.event_id == created.event_id)
+            .values(lease_until=datetime.now(UTC) - timedelta(seconds=1))
+        )
+    second_batch = await feed.claim(
+        consumer="same-worker-name",
+        limit=1000,
+        lease_until=datetime.now(UTC) + timedelta(minutes=1),
+    )
+    current_claim = next(
+        claim for claim in second_batch if claim.change.event_id == created.event_id
+    )
+    assert stale_claim.lease_token != current_claim.lease_token
+    with pytest.raises(RuntimeError, match="no longer owned"):
+        await feed.ack([stale_claim])
+    await feed.ack([current_claim])
 
 
 async def test_rls_hides_and_rejects_cross_organization_rows(database, actor):
-    repository = PostgresFactRepository(database)
+    admin_repository = PostgresFactRepository(database)
     other = actor.model_copy(update={"organization_id": uuid4()})
-    shared_id = f"01TEST{uuid4().hex[:12].upper()}"
-    await repository.create(
-        actor,
-        command(shared_id),
-        expected_superseded_revisions={},
-        idempotency_key="rls-own",
-    )
-    await repository.create(
+    shared_id = str(ULID())
+    await admin_repository.create(
         other,
         command(shared_id),
         expected_superseded_revisions={},
@@ -220,41 +304,40 @@ async def test_rls_hides_and_rejects_cross_organization_rows(database, actor):
     )
 
     role = f"plk_test_{uuid4().hex}"
+    password = uuid4().hex
     async with database.engine.begin() as connection:
-        await connection.execute(text(f'CREATE ROLE "{role}" NOLOGIN NOBYPASSRLS'))
+        await connection.execute(
+            text(f'CREATE ROLE "{role}" LOGIN NOBYPASSRLS PASSWORD \'{password}\'')
+        )
         await connection.execute(text(f'GRANT USAGE ON SCHEMA plk_memory TO "{role}"'))
         await connection.execute(
-            text(f'GRANT SELECT ON plk_memory.knowledge_facts TO "{role}"')
-        )
-        await connection.execute(
-            text(f'GRANT INSERT ON plk_memory.idempotency_records TO "{role}"')
-        )
-    try:
-        async with database.engine.begin() as connection:
-            await connection.execute(text(f'SET LOCAL ROLE "{role}"'))
-            await connection.execute(
-                text("SELECT set_config('app.current_organization_id', :org, true)"),
-                {"org": str(actor.organization_id)},
+            text(
+                f'GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES '
+                f'IN SCHEMA plk_memory TO "{role}"'
             )
-            visible = (
-                await connection.execute(
-                    text(
-                        "SELECT organization_id FROM plk_memory.knowledge_facts "
-                        "WHERE fact_id = :fact_id"
-                    ),
-                    {"fact_id": shared_id},
-                )
-            ).scalars().all()
-            assert visible == [actor.organization_id]
+        )
+    admin_url = make_url(os.environ["PLK_TEST_DATABASE_URL"])
+    app_url = admin_url.set(username=role, password=password).render_as_string(
+        hide_password=False
+    )
+    app_database = PostgresDatabase(app_url, pool_size=2, application_name="plk-rls-test")
+    try:
+        app_repository = PostgresFactRepository(app_database)
+        await app_repository.create(
+            actor,
+            command(shared_id),
+            expected_superseded_revisions={},
+            idempotency_key="rls-own",
+        )
+        own_scope = QueryScope(
+            organization_id=actor.organization_id, actor_id=actor.actor_id
+        )
+        visible = await app_repository.get(own_scope, shared_id)
+        assert visible.organization_id == actor.organization_id
 
         with pytest.raises(DBAPIError):
-            async with database.engine.begin() as connection:
-                await connection.execute(text(f'SET LOCAL ROLE "{role}"'))
-                await connection.execute(
-                    text("SELECT set_config('app.current_organization_id', :org, true)"),
-                    {"org": str(actor.organization_id)},
-                )
-                await connection.execute(
+            async with app_database.transaction(actor.organization_id) as session:
+                await session.execute(
                     text(
                         "INSERT INTO plk_memory.idempotency_records "
                         "(organization_id, idempotency_key, request_hash, operation, resource_type) "
@@ -263,6 +346,7 @@ async def test_rls_hides_and_rejects_cross_organization_rows(database, actor):
                     {"other_org": str(other.organization_id), "hash": "0" * 64},
                 )
     finally:
+        await app_database.close()
         async with database.engine.begin() as connection:
             await connection.execute(text(f'DROP OWNED BY "{role}"'))
             await connection.execute(text(f'DROP ROLE "{role}"'))

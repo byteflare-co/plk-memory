@@ -13,6 +13,7 @@ from sqlalchemy import and_, insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
+from plk_validator.schema import Fact
 
 from plk_memory.domain import (
     ActorContext,
@@ -30,6 +31,7 @@ from plk_memory.ports import (
     FactAlreadyExists,
     FactMissing,
     IdempotencyConflict,
+    PolicyViolation,
     RevisionConflict,
 )
 from plk_memory.postgres.database import PostgresDatabase
@@ -44,7 +46,9 @@ from plk_memory.postgres.schema import (
 
 
 def _canonical_hash(value: Any) -> str:
-    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    encoded = json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
     return hashlib.sha256(encoded.encode()).hexdigest()
 
 
@@ -106,7 +110,9 @@ class PostgresFactRepository:
                 query = query.where(knowledge_facts.c.kind == filters.kind)
             if filters.status:
                 query = query.where(knowledge_facts.c.status == filters.status)
-            query = query.order_by(knowledge_facts.c.updated_at.desc()).limit(filters.limit)
+            query = query.order_by(knowledge_facts.c.updated_at.desc()).limit(
+                filters.limit
+            )
             rows = (await session.execute(query)).mappings()
             return tuple(self._record(row) for row in rows)
 
@@ -137,6 +143,7 @@ class PostgresFactRepository:
         expected_superseded_revisions: dict[str, int],
         idempotency_key: str,
     ) -> WriteResult:
+        self._validate_create(actor, command)
         request_hash = _canonical_hash(
             {
                 "actor_id": actor.actor_id,
@@ -216,7 +223,13 @@ class PostgresFactRepository:
                 )
             )
             await self._emit(
-                session, actor.organization_id, event_id, command.fact_id, 1, "created", now
+                session,
+                actor.organization_id,
+                event_id,
+                command.fact_id,
+                1,
+                "created",
+                now,
             )
 
             for fact_id in command.supersedes:
@@ -281,7 +294,10 @@ class PostgresFactRepository:
             head = heads.get(command.fact_id)
             if head is None:
                 raise FactMissing(command.fact_id)
-            if head["current_version"] != expected_revision or head["status"] != "active":
+            if (
+                head["current_version"] != expected_revision
+                or head["status"] != "active"
+            ):
                 raise RevisionConflict(
                     command.fact_id, expected_revision, head["current_version"]
                 )
@@ -359,12 +375,16 @@ class PostgresFactRepository:
         self, session: AsyncSession, organization_id: UUID, fact_id: str
     ) -> FactRecord:
         row = (
-            await session.execute(
-                self._current_query(organization_id).where(
-                    knowledge_facts.c.fact_id == fact_id
+            (
+                await session.execute(
+                    self._current_query(organization_id).where(
+                        knowledge_facts.c.fact_id == fact_id
+                    )
                 )
             )
-        ).mappings().one_or_none()
+            .mappings()
+            .one_or_none()
+        )
         if row is None:
             raise FactMissing(fact_id)
         return self._record(row)
@@ -381,16 +401,20 @@ class PostgresFactRepository:
         # statement can produce a stale-snapshot no-row result after waiting
         # for a concurrent head update under READ COMMITTED.
         heads = (
-            await session.execute(
-                select(knowledge_facts)
-                .where(
-                    knowledge_facts.c.organization_id == organization_id,
-                    knowledge_facts.c.fact_id.in_(sorted(fact_ids)),
+            (
+                await session.execute(
+                    select(knowledge_facts)
+                    .where(
+                        knowledge_facts.c.organization_id == organization_id,
+                        knowledge_facts.c.fact_id.in_(sorted(fact_ids)),
+                    )
+                    .order_by(knowledge_facts.c.fact_id)
+                    .with_for_update(of=knowledge_facts)
                 )
-                .order_by(knowledge_facts.c.fact_id)
-                .with_for_update(of=knowledge_facts)
             )
-        ).mappings().all()
+            .mappings()
+            .all()
+        )
         if not heads:
             return {}
         revisions = (
@@ -497,13 +521,17 @@ class PostgresFactRepository:
         if inserted.scalar_one_or_none() is not None:
             return None
         row = (
-            await session.execute(
-                select(idempotency_records).where(
-                    idempotency_records.c.organization_id == organization_id,
-                    idempotency_records.c.idempotency_key == key,
+            (
+                await session.execute(
+                    select(idempotency_records).where(
+                        idempotency_records.c.organization_id == organization_id,
+                        idempotency_records.c.idempotency_key == key,
+                    )
                 )
             )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
         if row["request_hash"] != request_hash:
             raise IdempotencyConflict(f"idempotency key reused: {key}")
         if row["response_body"] is None:
@@ -627,3 +655,40 @@ class PostgresFactRepository:
             actor_type=row["actor_type"],
             created_at=row["created_at"],
         )
+
+    @staticmethod
+    def _validate_create(actor: ActorContext, command: CreateFact) -> None:
+        """Apply the same structural/content policy used by Git CI."""
+
+        payload = command.payload
+        if payload.kind == "philosophy" and "philosophy:write" not in actor.roles:
+            raise PolicyViolation("philosophy requires philosophy:write")
+        if payload.source_type == "user" and "human-authored:write" not in actor.roles:
+            raise PolicyViolation("source_type=user requires human-authored:write")
+        if payload.namespace == "plk.shared" and "shared:write" not in actor.roles:
+            raise PolicyViolation("plk.shared requires shared:write")
+        if (
+            payload.source_type == "external-untrusted"
+            and payload.namespace != "plk.quarantine"
+        ):
+            raise PolicyViolation("external-untrusted facts must use plk.quarantine")
+
+        Fact(
+            id=command.fact_id,
+            kind=payload.kind,
+            statement=payload.statement,
+            why=payload.why,
+            how_to_apply=payload.how_to_apply,
+            source=payload.source,
+            source_type=payload.source_type,
+            namespace=payload.namespace,
+            status="active",
+            invalidation_reason=None,
+            written_by=actor.actor_id,
+            created_at=datetime.now(UTC),
+            invalidated_at=None,
+            superseded_by=None,
+            tags=list(payload.tags),
+        )
+        if len(payload.body) > 2000:
+            raise ValueError("body must not exceed 2,000 characters")

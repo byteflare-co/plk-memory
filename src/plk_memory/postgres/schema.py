@@ -254,6 +254,7 @@ outbox_events = Table(
     ),
     Column("attempts", Integer, nullable=False, server_default="0"),
     Column("lease_owner", String(255)),
+    Column("lease_token", UUID(as_uuid=True)),
     Column("lease_until", DateTime(timezone=True)),
     Column("processed_at", DateTime(timezone=True)),
     Column("last_error", Text),

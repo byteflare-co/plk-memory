@@ -160,6 +160,7 @@ def upgrade() -> None:
         ),
         sa.Column("attempts", sa.Integer(), server_default="0", nullable=False),
         sa.Column("lease_owner", sa.String(length=255), nullable=True),
+        sa.Column("lease_token", sa.UUID(), nullable=True),
         sa.Column("lease_until", sa.DateTime(timezone=True), nullable=True),
         sa.Column("processed_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("last_error", sa.Text(), nullable=True),

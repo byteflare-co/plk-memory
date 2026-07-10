@@ -5,13 +5,13 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any, cast
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import and_, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import CursorResult
 
-from plk_memory.domain import IndexEntry, KnowledgeChanged
+from plk_memory.domain import ClaimedChange, IndexEntry, KnowledgeChanged
 from plk_memory.postgres.database import PostgresDatabase
 from plk_memory.postgres.schema import outbox_events, search_projection_state
 
@@ -28,7 +28,7 @@ class PostgresChangeFeed:
         consumer: str,
         limit: int,
         lease_until: datetime,
-    ) -> Sequence[KnowledgeChanged]:
+    ) -> Sequence[ClaimedChange]:
         now = datetime.now(UTC)
         if limit < 1:
             raise ValueError("limit must be positive")
@@ -36,23 +36,28 @@ class PostgresChangeFeed:
             raise ValueError("lease_until must be in the future")
         async with self.database.worker_transaction() as session:
             rows = (
-                await session.execute(
-                    select(outbox_events)
-                    .where(
-                        outbox_events.c.processed_at.is_(None),
-                        outbox_events.c.available_at <= now,
-                        or_(
-                            outbox_events.c.lease_until.is_(None),
-                            outbox_events.c.lease_until < now,
-                        ),
+                (
+                    await session.execute(
+                        select(outbox_events)
+                        .where(
+                            outbox_events.c.processed_at.is_(None),
+                            outbox_events.c.available_at <= now,
+                            or_(
+                                outbox_events.c.lease_until.is_(None),
+                                outbox_events.c.lease_until < now,
+                            ),
+                        )
+                        .order_by(outbox_events.c.occurred_at, outbox_events.c.event_id)
+                        .limit(limit)
+                        .with_for_update(skip_locked=True)
                     )
-                    .order_by(outbox_events.c.occurred_at, outbox_events.c.event_id)
-                    .limit(limit)
-                    .with_for_update(skip_locked=True)
                 )
-            ).mappings().all()
+                .mappings()
+                .all()
+            )
             if not rows:
                 return ()
+            lease_token = uuid4()
             identities = [
                 and_(
                     outbox_events.c.organization_id == row["organization_id"],
@@ -65,47 +70,75 @@ class PostgresChangeFeed:
                 .where(or_(*identities))
                 .values(
                     lease_owner=consumer,
+                    lease_token=lease_token,
                     lease_until=lease_until,
                     attempts=outbox_events.c.attempts + 1,
                 )
             )
-            return tuple(KnowledgeChanged.model_validate(row["payload"]) for row in rows)
-
-    async def ack(self, event_ids: Sequence[str], *, consumer: str) -> None:
-        if not event_ids:
-            return
-        async with self.database.worker_transaction() as session:
-            await session.execute(
-                update(outbox_events)
-                .where(
-                    outbox_events.c.event_id.in_([UUID(value) for value in event_ids]),
-                    outbox_events.c.lease_owner == consumer,
+            return tuple(
+                ClaimedChange(
+                    change=KnowledgeChanged.model_validate(row["payload"]),
+                    consumer=consumer,
+                    lease_token=lease_token,
                 )
-                .values(
-                    processed_at=datetime.now(UTC),
-                    lease_owner=None,
-                    lease_until=None,
-                    last_error=None,
-                )
+                for row in rows
             )
+
+    async def ack(self, claims: Sequence[ClaimedChange]) -> None:
+        if not claims:
+            return
+        predicates = [
+            and_(
+                outbox_events.c.organization_id == claim.change.organization_id,
+                outbox_events.c.event_id == claim.change.event_id,
+                outbox_events.c.lease_owner == claim.consumer,
+                outbox_events.c.lease_token == claim.lease_token,
+            )
+            for claim in claims
+        ]
+        async with self.database.worker_transaction() as session:
+            result = cast(
+                CursorResult[Any],
+                await session.execute(
+                    update(outbox_events)
+                    .where(or_(*predicates))
+                    .values(
+                        processed_at=datetime.now(UTC),
+                        lease_owner=None,
+                        lease_token=None,
+                        lease_until=None,
+                        last_error=None,
+                    )
+                ),
+            )
+            if result.rowcount != len(claims):
+                raise RuntimeError("one or more outbox leases are no longer owned")
 
     async def fail(
-        self, event_id: str, *, consumer: str, error: str, retry_at: datetime
+        self, claim: ClaimedChange, *, error: str, retry_at: datetime
     ) -> None:
         async with self.database.worker_transaction() as session:
-            await session.execute(
-                update(outbox_events)
-                .where(
-                    outbox_events.c.event_id == UUID(event_id),
-                    outbox_events.c.lease_owner == consumer,
-                )
-                .values(
-                    available_at=retry_at,
-                    lease_owner=None,
-                    lease_until=None,
-                    last_error=error[:4000],
-                )
+            result = cast(
+                CursorResult[Any],
+                await session.execute(
+                    update(outbox_events)
+                    .where(
+                        outbox_events.c.organization_id == claim.change.organization_id,
+                        outbox_events.c.event_id == claim.change.event_id,
+                        outbox_events.c.lease_owner == claim.consumer,
+                        outbox_events.c.lease_token == claim.lease_token,
+                    )
+                    .values(
+                        available_at=retry_at,
+                        lease_owner=None,
+                        lease_token=None,
+                        lease_until=None,
+                        last_error=error[:4000],
+                    )
+                ),
             )
+            if result.rowcount != 1:
+                raise RuntimeError("outbox lease is no longer owned")
 
 
 class PostgresIndexStateRepository:
@@ -119,14 +152,19 @@ class PostgresIndexStateRepository:
         organization_uuid = UUID(organization_id)
         async with self.database.worker_transaction() as session:
             row = (
-                await session.execute(
-                    select(search_projection_state).where(
-                        search_projection_state.c.organization_id == organization_uuid,
-                        search_projection_state.c.backend == self.backend,
-                        search_projection_state.c.fact_id == fact_id,
+                (
+                    await session.execute(
+                        select(search_projection_state).where(
+                            search_projection_state.c.organization_id
+                            == organization_uuid,
+                            search_projection_state.c.backend == self.backend,
+                            search_projection_state.c.fact_id == fact_id,
+                        )
                     )
                 )
-            ).mappings().one_or_none()
+                .mappings()
+                .one_or_none()
+            )
         if row is None:
             return None
         return IndexEntry(
@@ -141,7 +179,9 @@ class PostgresIndexStateRepository:
 
     async def put_if_newer(self, entry: IndexEntry) -> bool:
         if entry.last_event_id is None:
-            raise ValueError("last_event_id is required for PostgreSQL projection state")
+            raise ValueError(
+                "last_event_id is required for PostgreSQL projection state"
+            )
         statement = pg_insert(search_projection_state).values(
             organization_id=entry.organization_id,
             backend=self.backend,
@@ -158,6 +198,7 @@ class PostgresIndexStateRepository:
                 "indexed_version": statement.excluded.indexed_version,
                 "content_hash": statement.excluded.content_hash,
                 "backend_refs": statement.excluded.backend_refs,
+                "last_event_id": statement.excluded.last_event_id,
                 "indexed_at": statement.excluded.indexed_at,
                 "updated_at": datetime.now(UTC),
             },

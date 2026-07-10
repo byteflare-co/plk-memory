@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     # PostgreSQL reference path is rolled out and shadow-verified.
     storage_backend: Literal["git", "postgres"] = "git"
     database_url: str = ""
-    database_schema: str = "plk_memory"
+    worker_database_url: str = ""
     default_organization_id: str = ""
     database_pool_size: int = 10
     outbox_poll_interval_seconds: float = 1.0

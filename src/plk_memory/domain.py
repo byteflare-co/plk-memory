@@ -84,15 +84,15 @@ class FactFilters(FrozenModel):
 
 
 class CreateFact(FrozenModel):
-    fact_id: str
+    fact_id: str = Field(min_length=1, max_length=64)
     payload: FactPayload
-    change_reason: str
+    change_reason: str = Field(min_length=5)
     supersedes: tuple[str, ...] = ()
 
 
 class InvalidateFact(FrozenModel):
-    fact_id: str
-    reason: str
+    fact_id: str = Field(min_length=1, max_length=64)
+    reason: str = Field(min_length=5)
 
 
 class WriteResult(FrozenModel):
@@ -117,6 +117,12 @@ class KnowledgeChanged(FrozenModel):
     revision: int = Field(ge=1)
     operation: ChangeOperation
     occurred_at: datetime
+
+
+class ClaimedChange(FrozenModel):
+    change: KnowledgeChanged
+    consumer: str = Field(min_length=1, max_length=255)
+    lease_token: UUID
 
 
 class IndexEntry(FrozenModel):

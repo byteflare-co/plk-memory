@@ -8,6 +8,7 @@ from typing import Protocol
 
 from plk_memory.domain import (
     ActorContext,
+    ClaimedChange,
     CreateFact,
     FactFilters,
     FactHistory,
@@ -15,7 +16,6 @@ from plk_memory.domain import (
     IndexCandidate,
     IndexEntry,
     InvalidateFact,
-    KnowledgeChanged,
     QueryScope,
     SearchQuery,
     WriteResult,
@@ -50,6 +50,10 @@ class RevisionConflict(PersistenceError):
 
 class IdempotencyConflict(PersistenceError):
     """The same key was reused for a semantically different request."""
+
+
+class PolicyViolation(PersistenceError):
+    """The authenticated actor cannot persist the requested fact shape."""
 
 
 class FactRepository(Protocol):
@@ -91,12 +95,12 @@ class ChangeFeed(Protocol):
         consumer: str,
         limit: int,
         lease_until: datetime,
-    ) -> Sequence[KnowledgeChanged]: ...
+    ) -> Sequence[ClaimedChange]: ...
 
-    async def ack(self, event_ids: Sequence[str], *, consumer: str) -> None: ...
+    async def ack(self, claims: Sequence[ClaimedChange]) -> None: ...
 
     async def fail(
-        self, event_id: str, *, consumer: str, error: str, retry_at: datetime
+        self, claim: ClaimedChange, *, error: str, retry_at: datetime
     ) -> None: ...
 
 
