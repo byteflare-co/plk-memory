@@ -3,15 +3,22 @@
 > 本書は plk-memory の **全体オーバービュー**。本書 1 枚で基盤の全体像・
 > アーキテクチャ・規約・運用・現在地が分かるように書いてある。人間・AI エージェント・他ディレクトリから
 > 参照するエージェントの共通入口。
-> 最終更新: 2026-07-10（保存適格性ゲート追加）
+> 最終更新: 2026-07-10（PostgreSQL-primary 基盤追加）
+
+> [!IMPORTANT]
+> 現在は移行期間中。既存 Mac ランタイムは Git-primary のまま動作する一方、
+> 複数人・複数サービス向けの次期正本として PostgreSQL adapter、Alembic migration、
+> transactional outbox、RLS を実装済み。新アーキテクチャと切替条件は
+> [`docs/design/2026-07-10-postgres-primary-architecture.md`](docs/design/2026-07-10-postgres-primary-architecture.md) を参照。
 
 ## 1. これは何か
 
 Byteflare のエージェント群（Claude Code / Codex / Hermes / 自作 Agent SDK）が読み書きする**組織メモリ基盤**。
-**Git を SoT（真実の源）とし、graphiti + FalkorDB を再構築可能な派生索引**とする MCP メモリサーバーで、
+現行は **Git を SoT（真実の源）**とする MCP メモリサーバー。次期構成では
+**PostgreSQL を更新可能な正本、Git と検索インデックスを再構築可能な派生物**とし、
 税務・社会保険・法務・過去の意思決定・社内ノウハウを蓄積し検索する。
 1 人法人 Byteflare での実運用を通じて型（規約・namespace・昇格フロー・運用）とコードを検証し、
-**コードごと 組織展開（全社 AI エージェント・メモリ基盤）へ逆輸入する実験**として構築・実運用中。
+**コードごと SQUEEZE へ逆輸入できる複数 writer 基盤**として段階移行中。
 
 ## 2. アーキテクチャ全体図
 

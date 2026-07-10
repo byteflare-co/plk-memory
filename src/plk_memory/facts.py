@@ -13,6 +13,7 @@ from plk_validator.schema import Fact
 from plk_validator.secrets import scan_file
 
 from plk_memory.gitstore import GitStore
+from plk_memory.policy import scan_text
 from plk_memory.settings import Settings
 
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
@@ -92,13 +93,16 @@ class FactService:
         path = self.settings.data_repo_path / rel
         if path.exists():
             raise FactError(f"既に存在: {rel}")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(frontmatter.dumps(frontmatter.Post(body, **meta)), encoding="utf-8")
-
-        findings = scan_file(path)
+        rendered = frontmatter.dumps(frontmatter.Post(body, **meta))
+        findings = scan_text(rendered)
         if findings:
-            path.unlink()
             raise FactError(f"シークレット検知のため拒否: {findings}")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(rendered, encoding="utf-8")
+        file_findings = scan_file(path)
+        if file_findings:
+            path.unlink()
+            raise FactError(f"シークレット検知のため拒否: {file_findings}")
 
         # 書き換えループに入る前に全 supersedes 対象を解決する（部分書き換えを防ぐ）
         targets: list[tuple[frontmatter.Post, str]] = []

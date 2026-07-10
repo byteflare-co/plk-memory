@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlparse
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -13,10 +14,23 @@ DOMAINS = ("tax", "legal", "shaho", "dev", "backoffice", "biz", "agent")
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="PLK_", env_file=".env", extra="ignore")
 
-    # データリポジトリ（SoT = リモート main）
+    # Git-primary compatibility backend のデータリポジトリ。
+    # PostgreSQL-primary では DB→Git snapshot export の出力先になる。
     data_repo_url: str = ""
     data_repo_path: Path = Path.home() / ".plk" / "data-repo"
     knowledge_subdir: str = "knowledge"
+
+    # Persistence backend. Git remains the compatibility default while the
+    # PostgreSQL reference path is rolled out and shadow-verified.
+    storage_backend: Literal["git", "postgres"] = "git"
+    database_url: str = ""
+    worker_database_url: str = ""
+    default_organization_id: str = ""
+    database_pool_size: int = 10
+    outbox_poll_interval_seconds: float = 1.0
+    outbox_batch_size: int = 100
+    require_idempotency_key: bool = False
+    require_expected_revision: bool = False
 
     # ローカル状態
     state_path: Path = Path.home() / ".plk" / "state.json"

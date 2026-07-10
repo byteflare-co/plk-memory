@@ -1,7 +1,7 @@
 [project]
 name = "plk-memory"
 version = "0.1.0"
-description = "PLK メモリ基盤 — Git=SoT + Graphiti 派生索引の MCP メモリサーバー"
+description = "PLK メモリ基盤 — PostgreSQL/Git storage + 再構築可能な検索索引"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115",
@@ -18,6 +18,9 @@ dependencies = [
     "plk-validator",
     "nh3>=0.2",
     "markdown>=3.6",
+    "sqlalchemy[asyncio]==2.0.49",
+    "asyncpg==0.31.0",
+    "alembic==1.18.4",
 ]
 
 [dependency-groups]
@@ -27,6 +30,7 @@ dev = [
     "ruff>=0.6",
     "pyright>=1.1",
     "asgi-lifespan>=2.1.0",
+    "testcontainers[postgres]==4.13.0",
 ]
 examples = [
     "claude-agent-sdk>=0.2.110",
@@ -37,8 +41,11 @@ plk-validator = { path = "../agent-organization/tools/validator", editable = tru
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-markers = ["live: 外部サービス（FalkorDB/Ollama/Anthropic）が必要な統合テスト"]
-addopts = "-m 'not live'"
+markers = [
+    "live: 外部サービス（FalkorDB/Ollama/Anthropic）が必要な統合テスト",
+    "postgres: PostgreSQL が必要な永続化統合テスト",
+]
+addopts = "-m 'not live and not postgres'"
 
 [build-system]
 requires = ["hatchling"]

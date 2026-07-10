@@ -316,6 +316,11 @@ class AppServices:
 
 def _build_services(settings: Settings, graph, promotion_backend=None,
                     enable_github_promotion: bool = False) -> AppServices:
+    if settings.storage_backend != "git":
+        raise RuntimeError(
+            "PostgreSQL persistence foundation is installed, but the MCP/API "
+            "runtime cutover is not enabled yet; use storage_backend=git"
+        )
     store = GitStore(settings)
     facts = FactService(store, settings)
     if graph is None:
