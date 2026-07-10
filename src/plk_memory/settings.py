@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlparse
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -21,7 +22,7 @@ class Settings(BaseSettings):
 
     # Persistence backend. Git remains the compatibility default while the
     # PostgreSQL reference path is rolled out and shadow-verified.
-    storage_backend: str = "git"  # git | postgres
+    storage_backend: Literal["git", "postgres"] = "git"
     database_url: str = ""
     database_schema: str = "plk_memory"
     default_organization_id: str = ""
