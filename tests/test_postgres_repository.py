@@ -43,20 +43,37 @@ async def database():
 
 
 @pytest.fixture
-async def worker_database():
-    url = os.environ.get("PLK_TEST_DATABASE_URL")
-    if not url:
-        pytest.skip("PLK_TEST_DATABASE_URL is not configured")
-    database = PostgresDatabase(
-        url,
+async def worker_database(database):
+    role = f"plk_worker_{uuid4().hex}"
+    password = uuid4().hex
+    async with database.engine.begin() as connection:
+        await connection.execute(
+            text(f'CREATE ROLE "{role}" LOGIN BYPASSRLS PASSWORD \'{password}\'')
+        )
+        await connection.execute(text(f'GRANT USAGE ON SCHEMA plk_memory TO "{role}"'))
+        await connection.execute(
+            text(
+                f'GRANT SELECT, INSERT, UPDATE ON plk_memory.outbox_events, '
+                f'plk_memory.search_projection_state TO "{role}"'
+            )
+        )
+    admin_url = make_url(os.environ["PLK_TEST_DATABASE_URL"])
+    worker_url = admin_url.set(username=role, password=password).render_as_string(
+        hide_password=False
+    )
+    worker = PostgresDatabase(
+        worker_url,
         pool_size=4,
         application_name="plk-worker-tests",
         allow_cross_organization=True,
     )
     try:
-        yield database
+        yield worker
     finally:
-        await database.close()
+        await worker.close()
+        async with database.engine.begin() as connection:
+            await connection.execute(text(f'DROP OWNED BY "{role}"'))
+            await connection.execute(text(f'DROP ROLE "{role}"'))
 
 
 @pytest.fixture
@@ -67,6 +84,12 @@ def actor() -> ActorContext:
         actor_type="service",
         roles=frozenset({"writer"}),
     )
+
+
+async def test_api_database_rejects_worker_transaction(database):
+    with pytest.raises(RuntimeError, match="requires a worker database"):
+        async with database.worker_transaction():
+            pass
 
 
 def command(fact_id: str, *, supersedes: tuple[str, ...] = ()) -> CreateFact:
@@ -136,6 +159,22 @@ async def test_database_path_enforces_write_policy(database, actor):
             create,
             expected_superseded_revisions={},
             idempotency_key="policy-rejected",
+        )
+
+    secret = command(str(ULID()))
+    secret = secret.model_copy(
+        update={
+            "payload": secret.payload.model_copy(
+                update={"body": "AKIA" + "IOSFODNN7EXAMPLE"}
+            )
+        }
+    )
+    with pytest.raises(PolicyViolation, match="secret detected"):
+        await repository.create(
+            actor,
+            secret,
+            expected_superseded_revisions={},
+            idempotency_key="secret-rejected",
         )
 
 

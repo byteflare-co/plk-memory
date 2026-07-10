@@ -34,6 +34,7 @@ from plk_memory.ports import (
     PolicyViolation,
     RevisionConflict,
 )
+from plk_memory.policy import scan_text
 from plk_memory.postgres.database import PostgresDatabase
 from plk_memory.postgres.schema import (
     audit_events,
@@ -692,3 +693,6 @@ class PostgresFactRepository:
         )
         if len(payload.body) > 2000:
             raise ValueError("body must not exceed 2,000 characters")
+        findings = scan_text(payload.model_dump_json())
+        if findings:
+            raise PolicyViolation(f"secret detected: {findings}")
