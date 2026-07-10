@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 from collections import defaultdict
 from collections.abc import Mapping
@@ -24,7 +25,7 @@ from plk_memory.domain import (
     InvalidateFact,
     QueryScope,
 )
-from plk_memory.facts import FactService
+from plk_memory.facts import SKIP_NAMES
 from plk_memory.gitstore import GitStore
 from plk_memory.postgres.database import PostgresDatabase
 from plk_memory.postgres.repository import PostgresFactRepository
@@ -55,6 +56,16 @@ def post_payload(post: frontmatter.Post) -> FactPayload:
             "body": post.content,
         }
     )
+
+
+def payload_hash(payload: FactPayload) -> str:
+    encoded = json.dumps(
+        payload.model_dump(mode="json"),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(encoded.encode()).hexdigest()
 
 
 def plan_import(posts: Mapping[str, frontmatter.Post]) -> tuple[str, ...]:
@@ -109,10 +120,18 @@ async def shadow_import(settings: Settings, organization_id: UUID) -> dict[str, 
         raise ValueError("PLK_DATA_REPO_PATH must point to an existing Git snapshot")
 
     store = GitStore(settings)
-    facts = FactService(store, settings)
     snapshot_commit = store.head()
+    dirty = store.git("status", "--porcelain", "--untracked-files=all").strip()
+    if dirty:
+        raise ValueError("Git snapshot working tree must be clean")
     posts: dict[str, frontmatter.Post] = {}
-    for post, _ in facts.list_posts():
+    paths = store.git(
+        "ls-tree", "-r", "--name-only", snapshot_commit, "--", settings.knowledge_subdir
+    ).splitlines()
+    for rel_path in paths:
+        if not rel_path.endswith(".md") or rel_path.rsplit("/", 1)[-1] in SKIP_NAMES:
+            continue
+        post = frontmatter.loads(store.git("show", f"{snapshot_commit}:{rel_path}"))
         fact_id = str(post["id"])
         if fact_id in posts:
             raise ValueError(f"duplicate fact id: {fact_id}")
@@ -168,28 +187,38 @@ async def shadow_import(settings: Settings, organization_id: UUID) -> dict[str, 
         mismatches: list[dict[str, str]] = []
         for fact_id, post in posts.items():
             record = await repository.get(scope, fact_id)
-            expected = {
-                "statement": str(post["statement"]),
-                "namespace": str(post["namespace"]),
-                "kind": str(post["kind"]),
-                "status": str(post["status"]),
+            expected_payload = post_payload(post)
+            expected = expected_payload.model_dump(mode="json") | {
+                "status": required_str(post, "status"),
+                "invalidation_reason": post.get("invalidation_reason"),
             }
-            actual = {
-                "statement": record.payload.statement,
-                "namespace": record.payload.namespace,
-                "kind": record.payload.kind,
+            actual = record.payload.model_dump(mode="json") | {
                 "status": record.status,
+                "invalidation_reason": record.invalidation_reason,
             }
+            expected["content_hash"] = payload_hash(expected_payload)
+            actual["content_hash"] = payload_hash(record.payload)
             for field, expected_value in expected.items():
                 if actual[field] != expected_value:
                     mismatches.append(
                         {
                             "fact_id": fact_id,
                             "field": field,
-                            "git": expected_value,
-                            "postgres": actual[field],
+                            "git": json.dumps(expected_value, ensure_ascii=False),
+                            "postgres": json.dumps(actual[field], ensure_ascii=False),
                         }
                     )
+            expected_relations = replacements.get(fact_id, ())
+            actual_relations = (await repository.history(scope, fact_id)).supersedes
+            if actual_relations != expected_relations:
+                mismatches.append(
+                    {
+                        "fact_id": fact_id,
+                        "field": "supersedes",
+                        "git": json.dumps(expected_relations),
+                        "postgres": json.dumps(actual_relations),
+                    }
+                )
         return {
             "snapshot_commit": snapshot_commit,
             "organization_id": str(organization_id),

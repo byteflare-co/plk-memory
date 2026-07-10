@@ -238,7 +238,7 @@ class PostgresFactRepository:
                     session,
                     actor,
                     superseded[fact_id],
-                    reason=f"superseded by {command.fact_id}",
+                    reason=f"後継ファクト {command.fact_id} により置換",
                     now=now,
                 )
                 await session.execute(

@@ -130,7 +130,9 @@ uv run python -m scripts.migration.shadow_import_git \
 
 同じ Git commit からの再実行は deterministic idempotency key で replay される。supersedes chain は
 old-to-new の topological order で投入する。これは current content/status/relation の比較専用で、Git の
-historical timestamp を再構成しないため final production cutover には使用しない。
+historical timestamp を再構成しないため final production cutover には使用しない。import は dirty working
+tree を拒否し、記録した commit の blob を `git show` で直接読む。parity は全 payload、content hash、status、
+invalidation reason、supersedes relation を照合する。
 
 ## 7. SQUEEZE へ逆輸入する際の対応
 

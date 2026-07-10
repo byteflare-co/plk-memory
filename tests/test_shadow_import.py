@@ -117,3 +117,7 @@ async def test_shadow_import_is_replayable_and_preserves_current_parity(tmp_path
     assert first["facts"] == 2
     assert first["relations"] == 1
     assert replay == first
+
+    (tmp_path / "uncommitted.md").write_text("dirty", encoding="utf-8")
+    with pytest.raises(ValueError, match="must be clean"):
+        await shadow_import(settings, organization_id)
