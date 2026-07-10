@@ -1,0 +1,48 @@
+[project]
+name = "plk-memory"
+version = "0.1.0"
+description = "PLK メモリ基盤 — Git=SoT + Graphiti 派生索引の MCP メモリサーバー"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "fastmcp>=3,<4",
+    "mcp>=1.27,<2",
+    "graphiti-core[anthropic,falkordb]>=0.29.2,<0.30",
+    "python-frontmatter>=1.1",
+    "python-ulid>=2.7",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "httpx>=0.27",
+    "pyyaml>=6",
+    "plk-validator",
+    "nh3>=0.2",
+    "markdown>=3.6",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.6",
+    "pyright>=1.1",
+    "asgi-lifespan>=2.1.0",
+]
+examples = [
+    "claude-agent-sdk>=0.2.110",
+]
+
+[tool.uv.sources]
+plk-validator = { path = "../agent-organization/tools/validator", editable = true }
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = ["live: 外部サービス（FalkorDB/Ollama/Anthropic）が必要な統合テスト"]
+addopts = "-m 'not live'"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/plk_memory"]

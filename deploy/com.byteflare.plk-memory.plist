@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.byteflare.plk-memory</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/masahiro/.local/bin/uv</string>
+    <string>run</string>
+    <string>uvicorn</string>
+    <string>plk_memory.app:create_prod_app</string>
+    <string>--factory</string>
+    <string>--host</string>
+    <string>127.0.0.1</string>
+    <string>--port</string>
+    <string>8735</string>
+    <string>--workers</string>
+    <string>1</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/masahiro/dev/byteflare-co/plk-memory</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/Users/masahiro/.local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/Users/masahiro/.plk/logs/plk-memory.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/masahiro/.plk/logs/plk-memory.err.log</string>
+</dict>
+</plist>
