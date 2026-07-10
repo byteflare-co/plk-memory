@@ -9,6 +9,7 @@ from graphiti_core.nodes import EpisodicNode
 
 from plk_memory.graphindex import GraphIndex
 from plk_memory.settings import Settings
+from plk_memory.state import FactIndexEntry
 
 
 async def test_episode_projection_precreates_deterministic_uuid(monkeypatch):
@@ -49,3 +50,37 @@ async def test_episode_projection_precreates_deterministic_uuid(monkeypatch):
     save.assert_awaited_once()
     assert graphiti.add_episode.await_args.kwargs["uuid"] == expected_uuid
     assert result.episode_uuids == [expected_uuid]
+
+
+async def test_upsert_creates_replacement_before_idempotent_old_delete(monkeypatch):
+    index = GraphIndex(Settings.model_construct(ingest_mode="episode"))
+    calls: list[str] = []
+    replacement = FactIndexEntry(
+        episode_uuids=["new"], content_hash="new-hash", group_id="group"
+    )
+
+    async def create_replacement(*_args, **_kwargs):
+        calls.append("create")
+        return replacement
+
+    async def delete_old(*_args, **_kwargs):
+        calls.append("delete")
+
+    create = AsyncMock(side_effect=create_replacement)
+    delete = AsyncMock(side_effect=delete_old)
+    monkeypatch.setattr(index, "_upsert_episode", create)
+    monkeypatch.setattr(index, "_delete_entry", delete)
+    monkeypatch.setattr(index, "_route_group", lambda _group: None)
+    post = frontmatter.Post(
+        "body", namespace="plk.domain.dev", status="active"
+    )
+    old = FactIndexEntry(
+        episode_uuids=["old"], content_hash="old-hash", group_id="group"
+    )
+
+    result = await index.upsert_fact(post, old, group_id_override="group")
+
+    assert result == replacement
+    assert calls == ["create", "delete"]
+    assert create.await_count == 1
+    delete.assert_awaited_once_with(old)

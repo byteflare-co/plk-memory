@@ -216,22 +216,28 @@ class GraphIndex:
     ) -> FactIndexEntry:
         # route→操作を原子化する（_op_lock の理由は __init__ のコメント参照）
         async with self._op_lock:
-            if old is not None and old.episode_uuids:
-                await self._delete_entry(old)
-
             if post["status"] == "invalidated":
+                if old is not None and old.episode_uuids:
+                    await self._delete_entry(old)
                 return FactIndexEntry()
 
             group_id = group_id_override or self.settings.group_for(post["namespace"])
             self._route_group(group_id)
 
             if self.settings.ingest_mode == "triplet":
-                return await self._upsert_curated_triplet(
+                result = await self._upsert_curated_triplet(
                     post, group_id, identity_seed=identity_seed
                 )
-            return await self._upsert_episode(
-                post, group_id, identity_seed=identity_seed
-            )
+            else:
+                result = await self._upsert_episode(
+                    post, group_id, identity_seed=identity_seed
+                )
+            # Keep the previous projection searchable until the replacement has
+            # been created. Missing old episodes are tolerated so a crash after
+            # delete cannot poison every retry of the outbox event.
+            if old is not None and old.episode_uuids:
+                await self._delete_entry(old)
+            return result
 
     async def _upsert_episode(
         self,
@@ -362,7 +368,10 @@ class GraphIndex:
             await Edge.delete_by_uuids(graphiti.driver, entry.episode_uuids)
         else:
             for ep_uuid in entry.episode_uuids:
-                await graphiti.remove_episode(ep_uuid)
+                try:
+                    await graphiti.remove_episode(ep_uuid)
+                except NodeNotFoundError:
+                    logger.info("episode already absent during idempotent delete: %s", ep_uuid)
 
     # --- 読み取り ---
 

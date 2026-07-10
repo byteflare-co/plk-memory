@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from random import random
@@ -39,6 +40,8 @@ class WorkerChangeFeed(Protocol):
     ) -> Sequence[ClaimedChange]: ...
 
     async def ack(self, claims: Sequence[ClaimedChange]) -> None: ...
+
+    async def renew(self, claim: ClaimedChange, *, lease_until: datetime) -> None: ...
 
     async def fail(
         self, claim: ClaimedChange, *, error: str, retry_at: datetime
@@ -86,7 +89,7 @@ class PostgresIndexWorker:
         failed = 0
         for claim in claims:
             try:
-                await self._project(claim)
+                await self._project_with_lease_heartbeat(claim)
                 await self.change_feed.ack([claim])
                 succeeded += 1
             except Exception as error:  # noqa: BLE001 - retry/dead-letter boundary
@@ -106,6 +109,36 @@ class PostgresIndexWorker:
                     pass
                 failed += 1
         return {"claimed": len(claims), "succeeded": succeeded, "failed": failed}
+
+    async def _project_with_lease_heartbeat(self, claim: ClaimedChange) -> None:
+        projection = asyncio.create_task(self._project(claim))
+        heartbeat = asyncio.create_task(self._heartbeat(claim))
+        done, _ = await asyncio.wait(
+            {projection, heartbeat}, return_when=asyncio.FIRST_COMPLETED
+        )
+        if heartbeat in done:
+            error = heartbeat.exception()
+            if error is not None:
+                projection.cancel()
+                with suppress(asyncio.CancelledError):
+                    await projection
+                raise error
+        try:
+            await projection
+        finally:
+            heartbeat.cancel()
+            with suppress(asyncio.CancelledError):
+                await heartbeat
+
+    async def _heartbeat(self, claim: ClaimedChange) -> None:
+        lease_seconds = self.settings.outbox_lease_seconds
+        interval = max(lease_seconds / 3, 0.1)
+        while True:
+            await asyncio.sleep(interval)
+            await self.change_feed.renew(
+                claim,
+                lease_until=datetime.now(UTC) + timedelta(seconds=lease_seconds),
+            )
 
     async def _project(self, claim: ClaimedChange) -> None:
         change = claim.change

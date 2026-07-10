@@ -1,5 +1,8 @@
+import asyncio
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
+
+import pytest
 
 from plk_memory.domain import (
     ClaimedChange,
@@ -70,12 +73,16 @@ class Feed:
         self.fail_raises = fail_raises
         self.acked = []
         self.failed = []
+        self.renewed = []
 
     async def claim(self, **kwargs):
         return self.claims
 
     async def ack(self, claims):
         self.acked.extend(claims)
+
+    async def renew(self, claim, **kwargs):
+        self.renewed.append((claim, kwargs))
 
     async def fail(self, claim, **kwargs):
         if self.fail_raises:
@@ -123,7 +130,7 @@ def worker(current, claims, *, old=None, fail=False, fail_raises=False):
     index = Index(fail=fail)
     settings = Settings.model_construct(
         worker_consumer_name="test-worker",
-        outbox_batch_size=10,
+        outbox_batch_size=1,
         outbox_lease_seconds=60,
         outbox_retry_base_seconds=0.01,
         outbox_retry_max_seconds=1.0,
@@ -190,3 +197,16 @@ async def test_stale_lease_during_failure_does_not_kill_worker():
     result = await service.run_once()
 
     assert result == {"claimed": 1, "succeeded": 0, "failed": 1}
+
+
+async def test_long_projection_renews_lease():
+    service, feed, _state, _index = worker(fact(), [claim()])
+    service.settings = service.settings.model_copy(
+        update={"outbox_lease_seconds": 0.1}
+    )
+    heartbeat = asyncio.create_task(service._heartbeat(feed.claims[0]))
+    await asyncio.sleep(0.12)
+    heartbeat.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await heartbeat
+    assert len(feed.renewed) == 1

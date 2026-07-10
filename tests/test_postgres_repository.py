@@ -553,3 +553,42 @@ async def test_changed_fact_marks_pending_promotion_stale(database, actor):
     )
     assert result.request.status == "stale"
     assert result.fact_revision is None
+
+
+async def test_wrong_decision_revision_does_not_stale_request(database, actor):
+    facts = PostgresFactRepository(database)
+    approvals = PostgresApprovalRepository(database)
+    fact_id = str(ULID())
+    await facts.create(
+        actor,
+        command(fact_id),
+        expected_superseded_revisions={},
+        idempotency_key="revision-conflict-promotion-fact",
+    )
+    proposed = await approvals.propose(
+        actor,
+        fact_id,
+        reason="candidate remains reviewable after a caller conflict",
+        idempotency_key="revision-conflict-promotion-propose",
+    )
+    reviewer = actor.model_copy(update={"roles": frozenset({"reviewer"})})
+
+    with pytest.raises(RevisionConflict):
+        await approvals.decide(
+            reviewer,
+            str(proposed.request_id),
+            decision="approved",
+            rationale="caller sent the wrong expected revision",
+            expected_revision=2,
+            idempotency_key="revision-conflict-promotion-decision",
+        )
+
+    result = await approvals.decide(
+        reviewer,
+        str(proposed.request_id),
+        decision="approved",
+        rationale="retry with the pinned source revision",
+        expected_revision=1,
+        idempotency_key="revision-conflict-promotion-decision-retry",
+    )
+    assert result.request.status == "approved"

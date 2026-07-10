@@ -147,6 +147,29 @@ class PostgresChangeFeed:
             if result.rowcount != len(claims):
                 raise RuntimeError("one or more outbox leases are no longer owned")
 
+    async def renew(self, claim: ClaimedChange, *, lease_until: datetime) -> None:
+        if lease_until <= datetime.now(UTC):
+            raise ValueError("lease_until must be in the future")
+        async with self.database.worker_transaction() as session:
+            result = cast(
+                CursorResult[Any],
+                await session.execute(
+                    update(outbox_events)
+                    .where(
+                        outbox_events.c.organization_id
+                        == claim.change.organization_id,
+                        outbox_events.c.event_id == claim.change.event_id,
+                        outbox_events.c.lease_owner == claim.consumer,
+                        outbox_events.c.lease_token == claim.lease_token,
+                        outbox_events.c.processed_at.is_(None),
+                        outbox_events.c.dead_lettered_at.is_(None),
+                    )
+                    .values(lease_until=lease_until)
+                ),
+            )
+            if result.rowcount != 1:
+                raise RuntimeError("outbox lease is no longer owned")
+
     async def fail(
         self, claim: ClaimedChange, *, error: str, retry_at: datetime
     ) -> None:

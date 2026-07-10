@@ -31,7 +31,7 @@ async def test_postgres_runtime_write_worker_search_invalidate_roundtrip():
         worker_database_url=database_url,
         default_organization_id=str(organization_id),
         tokens={"test-token": "runtime-test"},
-        outbox_batch_size=1000,
+        outbox_batch_size=1,
         worker_consumer_name=f"runtime-worker-{uuid4()}",
     )
     graph = FakeGraphIndex()
@@ -49,12 +49,13 @@ async def test_postgres_runtime_write_worker_search_invalidate_roundtrip():
         worker_database=worker_database,
         settings=settings,
     )
+    index_state = PostgresIndexStateRepository(
+        worker_database, backend="graphiti"
+    )
     worker = PostgresIndexWorker(
         repository=PostgresFactRepository(worker_database),
         change_feed=PostgresChangeFeed(worker_database),
-        index_state=PostgresIndexStateRepository(
-            worker_database, backend="graphiti"
-        ),
+        index_state=index_state,
         search_index=worker_index,
         settings=settings,
     )
@@ -65,6 +66,15 @@ async def test_postgres_runtime_write_worker_search_invalidate_roundtrip():
         roles=frozenset({"writer"}),
     )
     token = current_actor.set(actor)
+
+    async def project_until(org_id, fact_id, revision):
+        for _ in range(1000):
+            state = await index_state.get(str(org_id), fact_id)
+            if state is not None and state.indexed_revision >= revision:
+                return
+            await worker.run_once()
+        raise AssertionError(f"projection did not reach revision {revision}")
+
     try:
         await services.check_database()
         await services.start()
@@ -88,7 +98,7 @@ async def test_postgres_runtime_write_worker_search_invalidate_roundtrip():
             idempotency_key="runtime-roundtrip-add",
         )
         assert replayed_add["replayed"] is True
-        assert (await worker.run_once())["succeeded"] >= 1
+        await project_until(actor.organization_id, added["fact_id"], 1)
 
         search = await services.tool_search("PostgreSQL runtime roundtrip")
         assert [hit["fact_id"] for hit in search["hits"]] == [added["fact_id"]]
@@ -108,7 +118,7 @@ async def test_postgres_runtime_write_worker_search_invalidate_roundtrip():
             assert "error" not in other
         finally:
             current_actor.reset(other_token)
-        assert (await worker.run_once())["succeeded"] >= 1
+        await project_until(other_actor.organization_id, other["fact_id"], 1)
         own_search = await services.tool_search("PostgreSQL runtime roundtrip")
         assert [hit["fact_id"] for hit in own_search["hits"]] == [added["fact_id"]]
 
@@ -125,7 +135,7 @@ async def test_postgres_runtime_write_worker_search_invalidate_roundtrip():
             idempotency_key="runtime-roundtrip-invalidate",
         )
         assert replayed_invalidation["replayed"] is True
-        assert (await worker.run_once())["succeeded"] >= 1
+        await project_until(actor.organization_id, added["fact_id"], 2)
         search = await services.tool_search("PostgreSQL runtime roundtrip")
         assert search["hits"] == []
     finally:

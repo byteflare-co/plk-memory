@@ -163,7 +163,6 @@ def upgrade() -> None:
         sa.Column("lease_token", sa.UUID(), nullable=True),
         sa.Column("lease_until", sa.DateTime(timezone=True), nullable=True),
         sa.Column("processed_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("dead_lettered_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("last_error", sa.Text(), nullable=True),
         sa.CheckConstraint(
             "aggregate_version >= 1",
@@ -310,7 +309,6 @@ def upgrade() -> None:
             server_default=sa.text("'[]'::jsonb"),
             nullable=False,
         ),
-        sa.Column("partition", sa.String(length=255), nullable=True),
         sa.Column("last_event_id", sa.UUID(), nullable=False),
         sa.Column("indexed_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column(
@@ -391,14 +389,6 @@ def upgrade() -> None:
         ["organization_id", "status", "created_at"],
         unique=False,
         schema="plk_memory",
-    )
-    op.create_index(
-        "uq_approval_requests_one_pending_per_fact",
-        "approval_requests",
-        ["organization_id", "fact_id"],
-        unique=True,
-        schema="plk_memory",
-        postgresql_where=sa.text("status = 'pending'"),
     )
     op.create_table(
         "knowledge_relations",
@@ -565,12 +555,6 @@ def downgrade() -> None:
         postgresql_where=sa.text("relation_type = 'supersedes' AND is_active"),
     )
     op.drop_table("knowledge_relations", schema="plk_memory")
-    op.drop_index(
-        "uq_approval_requests_one_pending_per_fact",
-        table_name="approval_requests",
-        schema="plk_memory",
-        postgresql_where=sa.text("status = 'pending'"),
-    )
     op.drop_index(
         "ix_approval_requests_org_status_created",
         table_name="approval_requests",

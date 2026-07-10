@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import urlparse
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DOMAINS = ("tax", "legal", "shaho", "dev", "backoffice", "biz", "agent")
@@ -28,7 +29,10 @@ class Settings(BaseSettings):
     default_organization_id: str = ""
     database_pool_size: int = 10
     outbox_poll_interval_seconds: float = 1.0
-    outbox_batch_size: int = 100
+    # Graph projection is an external side effect and cannot be fenced by the
+    # database lease. Claim one item at a time so no queued claim expires before
+    # its processing starts.
+    outbox_batch_size: int = Field(default=1, ge=1, le=1)
     outbox_lease_seconds: int = 60
     outbox_max_attempts: int = 10
     outbox_retry_base_seconds: float = 1.0

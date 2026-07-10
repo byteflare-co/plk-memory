@@ -20,6 +20,7 @@ from plk_memory.ports import (
     FactMissing,
     IdempotencyConflict,
     PolicyViolation,
+    RevisionConflict,
 )
 from plk_memory.postgres.database import PostgresDatabase
 from plk_memory.postgres.repository import (
@@ -201,10 +202,9 @@ class PostgresApprovalRepository:
             ).mappings().one()
             now = datetime.now(UTC)
             source_revision = request_row["source_version"]
-            if (
-                source_revision != expected_revision
-                or head["current_version"] != expected_revision
-            ):
+            if source_revision != expected_revision:
+                raise RevisionConflict(fact_id, expected_revision, source_revision)
+            if head["current_version"] != source_revision:
                 await session.execute(
                     update(approval_requests)
                     .where(

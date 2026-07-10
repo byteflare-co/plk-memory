@@ -41,11 +41,11 @@ biz/agent (or plk.quarantine for external-untrusted data); never invent one. Whe
 observed result motivates a future behavior, store the conditional behavior as
 logic and put the observation in why/source; create a separate knowhow fact only if
 the observation itself has durable retrieval value. For an update preview the old
-fact id and statement that supersedes will invalidate. Philosophy candidates must
-use human PR direct editing; this API rejects kind="philosophy". Normal API callers should omit
-source_type or set source_type="agent".
-Do not set source_type="user" through the API; user is only for human PR direct
-edits. Do not use source_type="conversation"; valid values are "agent" and
+fact id and statement that supersedes will invalidate. Philosophy and human-authored
+facts are protected writes: ordinary agent credentials are rejected; use the backend's
+human review path or a dedicated authorized role. Normal agent callers should omit
+source_type or set source_type="agent". Do not use source_type="conversation";
+ordinary agent credentials may use "agent" and
 "external-untrusted" for API callers. Use external-untrusted only with
 namespace="plk.quarantine". source must be a URL, Notion ID, or Codex/session ID.
 When replacing an old fact, pass supersedes=[old_fact_id] so the old fact is
@@ -57,7 +57,7 @@ fact from active search/graph results; it does not physically delete history.
 Provide a specific reason. If you are replacing a fact, prefer plk_add with
 supersedes=[old_fact_id]."""
 
-PLK_HISTORY_DESCRIPTION = """Read git/frontmatter history for a PLK fact id.
+PLK_HISTORY_DESCRIPTION = """Read immutable revision history for a PLK fact id.
 Use this to understand changes, supersession, and invalidation before relying on
 or updating an old fact."""
 
@@ -67,10 +67,10 @@ pending promotion requests. Use after writes if search does not reflect the
 change yet."""
 
 PLK_PROPOSE_PROMOTION_DESCRIPTION = """Propose a stable plk.domain.* fact for
-promotion into shared knowledge. This creates a PromotionRequest / GitHub PR; it
-is not a direct write to plk.shared. Use only when the fact is broadly useful and
-the user has approved the external write. Requires the data repo to have no
-unpushed commits."""
+promotion into shared knowledge. This creates a reviewable PromotionRequest, not
+a direct write to plk.shared. Depending on the configured backend, review occurs
+through a GitHub PR or a revision-pinned database approval. Use only when the fact
+is broadly useful and the user has approved any external write."""
 
 PLK_DECIDE_PROMOTION_DESCRIPTION = """Approve or reject a revision-pinned
 PostgreSQL promotion request. Requires reviewer/admin role. Approval creates a
