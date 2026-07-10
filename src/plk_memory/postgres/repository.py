@@ -149,7 +149,6 @@ class PostgresFactRepository:
             {
                 "actor_id": actor.actor_id,
                 "command": command.model_dump(mode="json"),
-                "expected": expected_superseded_revisions,
                 "operation": "create",
             }
         )
@@ -271,11 +270,12 @@ class PostgresFactRepository:
         expected_revision: int,
         idempotency_key: str,
     ) -> WriteResult:
+        if "writer" not in actor.roles:
+            raise PolicyViolation("fact invalidation requires writer role")
         request_hash = _canonical_hash(
             {
                 "actor_id": actor.actor_id,
                 "command": command.model_dump(mode="json"),
-                "expected": expected_revision,
                 "operation": "invalidate",
             }
         )
@@ -666,6 +666,8 @@ class PostgresFactRepository:
         """Apply the same structural/content policy used by Git CI."""
 
         payload = command.payload
+        if "writer" not in actor.roles:
+            raise PolicyViolation("fact creation requires writer role")
         if payload.kind == "philosophy" and "philosophy:write" not in actor.roles:
             raise PolicyViolation("philosophy requires philosophy:write")
         if payload.source_type == "user" and "human-authored:write" not in actor.roles:

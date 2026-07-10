@@ -27,6 +27,7 @@ from plk_memory.domain import (
     SearchQuery,
 )
 from plk_memory.ports import (
+    ApprovalRepository,
     FactAlreadyExists,
     FactMissing,
     FactRepository,
@@ -55,6 +56,8 @@ class PostgresAppServices:
         settings: Settings,
         status_provider: StatusProvider | None = None,
         close_callback: Callable[[], Awaitable[None]] | None = None,
+        health_callback: Callable[[], Awaitable[None]] | None = None,
+        approval_repository: ApprovalRepository | None = None,
     ) -> None:
         self.repository = repository
         self.search_index = search_index
@@ -63,9 +66,16 @@ class PostgresAppServices:
         self.settings = settings
         self._status_provider = status_provider
         self._close_callback = close_callback
+        self._health_callback = health_callback
+        self.approval_repository = approval_repository
 
     async def start(self) -> None:
         await self.search_index.start()
+
+    async def check_database(self) -> None:
+        if self._health_callback is None:
+            raise RuntimeError("database health callback is unavailable")
+        await self._health_callback()
 
     async def close(self) -> None:
         graph = getattr(self.search_index, "graph", None)
@@ -184,10 +194,6 @@ class PostgresAppServices:
         ):
             return {"error": "expected revision is required for supersedes"}
         actor = self._actor()
-        if self.settings.require_idempotency_key and not idempotency_key:
-            return {"error": "idempotency_key is required"}
-        if self.settings.require_expected_revision and expected_revision is None:
-            return {"error": "expected_revision is required"}
         key = idempotency_key or f"generated:{uuid4()}"
         old_ids = tuple(dict.fromkeys(supersedes or ()))
         try:
@@ -244,6 +250,10 @@ class PostgresAppServices:
         idempotency_key: str | None = None,
         expected_revision: int | None = None,
     ) -> dict[str, Any]:
+        if self.settings.require_idempotency_key and not idempotency_key:
+            return {"error": "idempotency_key is required"}
+        if self.settings.require_expected_revision and expected_revision is None:
+            return {"error": "expected_revision is required"}
         actor = self._actor()
         key = idempotency_key or f"generated:{uuid4()}"
         scope = QueryScope(
@@ -318,11 +328,69 @@ class PostgresAppServices:
         return status
 
     async def tool_propose_promotion(
-        self, fact_id: str, reason: str | None = None
+        self,
+        fact_id: str,
+        reason: str | None = None,
+        *,
+        idempotency_key: str | None = None,
     ) -> dict[str, Any]:
-        del fact_id, reason
+        if self.approval_repository is None:
+            return {"error": "promotion/approval repository is unavailable"}
+        if self.settings.require_idempotency_key and not idempotency_key:
+            return {"error": "idempotency_key is required"}
+        actor = self._actor()
+        key = idempotency_key or f"generated:{uuid4()}"
+        try:
+            request = await self.approval_repository.propose(
+                actor,
+                fact_id,
+                reason=reason or "shared knowledge promotion requested",
+                idempotency_key=key,
+            )
+        except (PersistenceError, ValueError) as error:
+            return {"error": str(error)}
         return {
-            "error": "PostgreSQL-primaryのpromotion/approval workflowは未対応"
+            "promotion_id": str(request.request_id),
+            "fact_id": request.fact_id,
+            "source_revision": request.source_revision,
+            "state": request.status,
+            "idempotency_key": key,
+        }
+
+    async def tool_decide_promotion(
+        self,
+        request_id: str,
+        decision: str,
+        rationale: str,
+        expected_revision: int,
+        *,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        if self.approval_repository is None:
+            return {"error": "promotion/approval repository is unavailable"}
+        if self.settings.require_idempotency_key and not idempotency_key:
+            return {"error": "idempotency_key is required"}
+        actor = self._actor()
+        key = idempotency_key or f"generated:{uuid4()}"
+        try:
+            result = await self.approval_repository.decide(
+                actor,
+                request_id,
+                decision=decision,
+                rationale=rationale,
+                expected_revision=expected_revision,
+                idempotency_key=key,
+            )
+        except (PersistenceError, ValueError) as error:
+            return {"error": str(error)}
+        return {
+            "promotion_id": str(result.request.request_id),
+            "fact_id": result.request.fact_id,
+            "state": result.request.status,
+            "fact_revision": result.fact_revision,
+            "event_id": str(result.event_id) if result.event_id else None,
+            "replayed": result.replayed,
+            "idempotency_key": key,
         }
 
     async def ui_list_facts(

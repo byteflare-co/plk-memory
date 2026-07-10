@@ -288,7 +288,14 @@ class AppServices:
             "history": self.facts.history(fact_id),
         }
 
-    async def tool_propose_promotion(self, fact_id: str, reason: str | None = None) -> dict:
+    async def tool_propose_promotion(
+        self,
+        fact_id: str,
+        reason: str | None = None,
+        *,
+        idempotency_key: str | None = None,
+    ) -> dict:
+        del idempotency_key
         self._require_client()
         if self.promotion_backend is None:
             return {"error": "promotion backend が未設定（enable_github_promotion=True の常駐プロセスのみ有効）"}
@@ -335,6 +342,18 @@ class AppServices:
         pr = pr.model_copy(update={"pr_number": number, "pr_url": url})
         self.promotion_store.upsert(pr)
         return {"promotion_id": pr.id, "pr_url": url, "state": pr.state.value}
+
+    async def tool_decide_promotion(
+        self,
+        request_id: str,
+        decision: str,
+        rationale: str,
+        expected_revision: int,
+        *,
+        idempotency_key: str | None = None,
+    ) -> dict:
+        del request_id, decision, rationale, expected_revision, idempotency_key
+        return {"error": "Git-primaryではGitHub PR上で承認・mergeする"}
 
     async def poll_promotions(self) -> dict:
         if self.promotion_backend is None:
@@ -397,6 +416,7 @@ def _build_postgres_services(settings: Settings, graph=None):
     if not settings.database_url:
         raise RuntimeError("PLK_DATABASE_URL is required for postgres storage")
     from plk_memory.postgres.application import PostgresAppServices
+    from plk_memory.postgres.approvals import PostgresApprovalRepository
     from plk_memory.postgres.database import PostgresDatabase
     from plk_memory.postgres.graph_adapter import PostgresGraphSearchIndex
     from plk_memory.postgres.repository import PostgresFactRepository
@@ -450,6 +470,8 @@ def _build_postgres_services(settings: Settings, graph=None):
         settings=settings,
         status_provider=status_provider,
         close_callback=database.close,
+        health_callback=database.ping,
+        approval_repository=PostgresApprovalRepository(database),
     )
 
 
@@ -467,6 +489,7 @@ def create_app(settings: Settings | None = None, graph=None, promotion_backend=N
     @asynccontextmanager
     async def app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
         if settings.storage_backend == "postgres":
+            await services.check_database()
             try:
                 await services.start()
             except Exception:  # noqa: BLE001 - DB remains canonical in degraded search mode
@@ -565,6 +588,13 @@ def create_app(settings: Settings | None = None, graph=None, promotion_backend=N
 
     @app.get("/healthz")
     async def healthz() -> dict:
+        if settings.storage_backend == "postgres":
+            try:
+                await services.check_database()
+            except Exception as error:  # noqa: BLE001 - readiness must fail closed
+                raise HTTPException(
+                    status_code=503, detail=f"database unavailable: {error}"
+                ) from error
         return {"ok": True}
 
     @app.post("/admin/sync")

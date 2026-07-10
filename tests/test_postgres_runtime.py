@@ -66,6 +66,7 @@ async def test_postgres_runtime_write_worker_search_invalidate_roundtrip():
     )
     token = current_actor.set(actor)
     try:
+        await services.check_database()
         await services.start()
         added = await services.tool_add(
             namespace="plk.domain.dev",
@@ -77,6 +78,16 @@ async def test_postgres_runtime_write_worker_search_invalidate_roundtrip():
             idempotency_key="runtime-roundtrip-add",
         )
         assert "error" not in added
+        replayed_add = await services.tool_add(
+            namespace="plk.domain.dev",
+            kind="knowhow",
+            statement="PostgreSQL runtime roundtrip keeps current knowledge canonical",
+            why="multiple writers require one transactionally consistent source of truth",
+            how_to_apply="write to PostgreSQL and project through the outbox worker",
+            source="session 00000000-0000-0000-0000-000000000001",
+            idempotency_key="runtime-roundtrip-add",
+        )
+        assert replayed_add["replayed"] is True
         assert (await worker.run_once())["succeeded"] >= 1
 
         search = await services.tool_search("PostgreSQL runtime roundtrip")
@@ -108,6 +119,12 @@ async def test_postgres_runtime_write_worker_search_invalidate_roundtrip():
             idempotency_key="runtime-roundtrip-invalidate",
         )
         assert invalidated["revision"] == 2
+        replayed_invalidation = await services.tool_invalidate(
+            added["fact_id"],
+            "superseded during runtime roundtrip",
+            idempotency_key="runtime-roundtrip-invalidate",
+        )
+        assert replayed_invalidation["replayed"] is True
         assert (await worker.run_once())["succeeded"] >= 1
         search = await services.tool_search("PostgreSQL runtime roundtrip")
         assert search["hits"] == []

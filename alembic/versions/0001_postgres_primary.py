@@ -392,6 +392,14 @@ def upgrade() -> None:
         unique=False,
         schema="plk_memory",
     )
+    op.create_index(
+        "uq_approval_requests_one_pending_per_fact",
+        "approval_requests",
+        ["organization_id", "fact_id"],
+        unique=True,
+        schema="plk_memory",
+        postgresql_where=sa.text("status = 'pending'"),
+    )
     op.create_table(
         "knowledge_relations",
         sa.Column("organization_id", sa.UUID(), nullable=False),
@@ -557,6 +565,12 @@ def downgrade() -> None:
         postgresql_where=sa.text("relation_type = 'supersedes' AND is_active"),
     )
     op.drop_table("knowledge_relations", schema="plk_memory")
+    op.drop_index(
+        "uq_approval_requests_one_pending_per_fact",
+        table_name="approval_requests",
+        schema="plk_memory",
+        postgresql_where=sa.text("status = 'pending'"),
+    )
     op.drop_index(
         "ix_approval_requests_org_status_created",
         table_name="approval_requests",

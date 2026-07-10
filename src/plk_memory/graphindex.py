@@ -17,12 +17,18 @@ from graphiti_core import Graphiti
 from graphiti_core.cross_encoder.client import CrossEncoderClient
 from graphiti_core.driver.falkordb_driver import FalkorDriver
 from graphiti_core.edges import Edge, EntityEdge, create_entity_edge_embeddings
+from graphiti_core.errors import NodeNotFoundError
 from graphiti_core.embedder.openai import OpenAIEmbedder, OpenAIEmbedderConfig
 from graphiti_core.llm_client.anthropic_client import AnthropicClient
 from graphiti_core.llm_client.client import LLMClient
 from graphiti_core.llm_client.config import LLMConfig
 from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
-from graphiti_core.nodes import EntityNode, create_entity_node_embeddings
+from graphiti_core.nodes import (
+    EntityNode,
+    EpisodeType,
+    EpisodicNode,
+    create_entity_node_embeddings,
+)
 from graphiti_core.utils.bulk_utils import add_nodes_and_edges_bulk
 from graphiti_core.utils.maintenance.graph_data_operations import clear_data
 from pydantic import BaseModel
@@ -239,17 +245,33 @@ class GraphIndex:
         if isinstance(created_at, str):
             created_at = datetime.fromisoformat(created_at)
 
+        episode_uuid = (
+            str(uuid5(NAMESPACE_URL, f"{identity_seed}:episode"))
+            if identity_seed
+            else None
+        )
+        if episode_uuid is not None:
+            try:
+                await EpisodicNode.get_by_uuid(graphiti.driver, episode_uuid)
+            except NodeNotFoundError:
+                await EpisodicNode(
+                    uuid=episode_uuid,
+                    name=episode_name(post),
+                    group_id=group_id,
+                    labels=[],
+                    source=EpisodeType.message,
+                    content=render_episode(post),
+                    source_description=f"plk:{post['id']}",
+                    created_at=datetime.now(timezone.utc),
+                    valid_at=created_at,
+                ).save(graphiti.driver)
         result = await graphiti.add_episode(
             name=episode_name(post),
             episode_body=render_episode(post),
             source_description=f"plk:{post['id']}",
             reference_time=created_at,
             group_id=group_id,
-            uuid=(
-                str(uuid5(NAMESPACE_URL, f"{identity_seed}:episode"))
-                if identity_seed
-                else None
-            ),
+            uuid=episode_uuid,
         )
         return FactIndexEntry(
             episode_uuids=[result.episode.uuid],

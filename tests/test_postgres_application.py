@@ -278,6 +278,42 @@ async def test_history_status_and_git_operations_are_explicit():
     assert history["supersedes"] == ["OLD"]
     assert status["storage_backend"] == "postgres"
     assert status["degraded"] is True
-    assert "未対応" in (await app.tool_propose_promotion("F1"))["error"]
+    assert "unavailable" in (await app.tool_propose_promotion("F1"))["error"]
     assert "未対応" in (await app.admin_sync())["error"]
     assert "未対応" in (await app.admin_reindex())["error"]
+
+
+async def test_expected_revision_flag_only_applies_to_mutating_existing_fact():
+    repository = FakeRepository()
+    actor = ActorContext(
+        organization_id=ORG,
+        actor_id="service:test",
+        actor_type="service",
+        roles=frozenset({"writer"}),
+    )
+    scope = QueryScope(organization_id=ORG, actor_id=actor.actor_id)
+    app = PostgresAppServices(
+        repository=repository,
+        search_index=FakeIndex([]),
+        actor_provider=lambda: actor,
+        scope_provider=lambda: scope,
+        settings=Settings.model_construct(
+            require_idempotency_key=True, require_expected_revision=True
+        ),
+    )
+
+    created = await app.tool_add(
+        namespace="plk.domain.dev",
+        kind="knowhow",
+        statement="A new fact does not require an expected revision",
+        why="there is no existing mutable row to compare during creation",
+        how_to_apply="require revisions only for invalidate and supersedes",
+        source="session 00000000-0000-0000-0000-000000000001",
+        idempotency_key="new-fact",
+    )
+    rejected = await app.tool_invalidate(
+        "F1", "obsolete after review", idempotency_key="invalidate"
+    )
+
+    assert "fact_id" in created
+    assert rejected["error"] == "expected_revision is required"

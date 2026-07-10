@@ -431,6 +431,13 @@ Index(
     approval_requests.c.created_at,
 )
 Index(
+    "uq_approval_requests_one_pending_per_fact",
+    approval_requests.c.organization_id,
+    approval_requests.c.fact_id,
+    unique=True,
+    postgresql_where=approval_requests.c.status == "pending",
+)
+Index(
     "ix_audit_events_org_resource_created",
     audit_events.c.organization_id,
     audit_events.c.resource_type,

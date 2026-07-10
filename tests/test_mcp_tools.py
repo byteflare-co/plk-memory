@@ -14,6 +14,7 @@ async def test_plk_tools_have_agent_facing_descriptions():
 
     assert set(tools) == {
         "plk_add",
+        "plk_decide_promotion",
         "plk_history",
         "plk_invalidate",
         "plk_propose_promotion",

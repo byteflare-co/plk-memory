@@ -72,6 +72,11 @@ is not a direct write to plk.shared. Use only when the fact is broadly useful an
 the user has approved the external write. Requires the data repo to have no
 unpushed commits."""
 
+PLK_DECIDE_PROMOTION_DESCRIPTION = """Approve or reject a revision-pinned
+PostgreSQL promotion request. Requires reviewer/admin role. Approval creates a
+new immutable fact revision in plk.shared; if the fact changed after proposal,
+the request becomes stale instead of promoting unseen content."""
+
 
 def build_mcp(services: "AppServices") -> FastMCP:
     auth = None
@@ -143,7 +148,29 @@ def build_mcp(services: "AppServices") -> FastMCP:
         return await services.tool_status()
 
     @mcp.tool(description=PLK_PROPOSE_PROMOTION_DESCRIPTION)
-    async def plk_propose_promotion(fact_id: str, reason: str | None = None) -> dict:
-        return await services.tool_propose_promotion(fact_id, reason)
+    async def plk_propose_promotion(
+        fact_id: str,
+        reason: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict:
+        return await services.tool_propose_promotion(
+            fact_id, reason, idempotency_key=idempotency_key
+        )
+
+    @mcp.tool(description=PLK_DECIDE_PROMOTION_DESCRIPTION)
+    async def plk_decide_promotion(
+        request_id: str,
+        decision: str,
+        rationale: str,
+        expected_revision: int,
+        idempotency_key: str | None = None,
+    ) -> dict:
+        return await services.tool_decide_promotion(
+            request_id,
+            decision,
+            rationale,
+            expected_revision,
+            idempotency_key=idempotency_key,
+        )
 
     return mcp

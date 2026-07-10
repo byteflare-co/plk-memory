@@ -65,8 +65,9 @@ class Repository:
 
 
 class Feed:
-    def __init__(self, claims):
+    def __init__(self, claims, *, fail_raises=False):
         self.claims = tuple(claims)
+        self.fail_raises = fail_raises
         self.acked = []
         self.failed = []
 
@@ -77,6 +78,8 @@ class Feed:
         self.acked.extend(claims)
 
     async def fail(self, claim, **kwargs):
+        if self.fail_raises:
+            raise RuntimeError("lease already reclaimed")
         self.failed.append((claim, kwargs))
 
 
@@ -114,8 +117,8 @@ class Index:
         )
 
 
-def worker(current, claims, *, old=None, fail=False):
-    feed = Feed(claims)
+def worker(current, claims, *, old=None, fail=False, fail_raises=False):
+    feed = Feed(claims, fail_raises=fail_raises)
     state = State(old)
     index = Index(fail=fail)
     settings = Settings.model_construct(
@@ -177,3 +180,13 @@ async def test_index_failure_releases_claim_for_retry():
     assert feed.acked == []
     assert feed.failed[0][0] == wakeup
     assert "index unavailable" in feed.failed[0][1]["error"]
+
+
+async def test_stale_lease_during_failure_does_not_kill_worker():
+    service, feed, state, index = worker(
+        fact(), [claim()], fail=True, fail_raises=True
+    )
+
+    result = await service.run_once()
+
+    assert result == {"claimed": 1, "succeeded": 0, "failed": 1}

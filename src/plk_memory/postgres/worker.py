@@ -96,11 +96,14 @@ class PostgresIndexWorker:
                     * (2 ** max(claim.attempts - 1, 0)),
                 )
                 jittered = delay * (0.75 + random() * 0.5)
-                await self.change_feed.fail(
-                    claim,
-                    error=str(error),
-                    retry_at=datetime.now(UTC) + timedelta(seconds=jittered),
-                )
+                try:
+                    await self.change_feed.fail(
+                        claim,
+                        error=str(error),
+                        retry_at=datetime.now(UTC) + timedelta(seconds=jittered),
+                    )
+                except Exception:  # noqa: BLE001 - stale lease must not kill worker
+                    pass
                 failed += 1
         return {"claimed": len(claims), "succeeded": succeeded, "failed": failed}
 

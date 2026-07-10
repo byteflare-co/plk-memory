@@ -23,6 +23,7 @@ from plk_memory.domain import (
 )
 from plk_memory.ports import FactMissing, PolicyViolation, RevisionConflict
 from plk_memory.postgres.database import PostgresDatabase
+from plk_memory.postgres.approvals import PostgresApprovalRepository
 from plk_memory.postgres.outbox import PostgresChangeFeed, PostgresIndexStateRepository
 from plk_memory.postgres.repository import PostgresFactRepository
 from plk_memory.postgres.schema import outbox_events
@@ -175,6 +176,22 @@ async def test_database_path_enforces_write_policy(database, actor):
             secret,
             expected_superseded_revisions={},
             idempotency_key="secret-rejected",
+        )
+
+    reader = actor.model_copy(update={"roles": frozenset({"reader"})})
+    with pytest.raises(PolicyViolation, match="writer role"):
+        await repository.create(
+            reader,
+            command(str(ULID())),
+            expected_superseded_revisions={},
+            idempotency_key="reader-create-rejected",
+        )
+    with pytest.raises(PolicyViolation, match="writer role"):
+        await repository.invalidate(
+            reader,
+            InvalidateFact(fact_id=create.fact_id, reason="reader cannot invalidate"),
+            expected_revision=1,
+            idempotency_key="reader-invalidate-rejected",
         )
 
 
@@ -459,3 +476,80 @@ async def test_rls_hides_and_rejects_cross_organization_rows(database, actor):
         async with database.engine.begin() as connection:
             await connection.execute(text(f'DROP OWNED BY "{role}"'))
             await connection.execute(text(f'DROP ROLE "{role}"'))
+
+
+async def test_revision_pinned_promotion_approval_is_atomic(database, actor):
+    facts = PostgresFactRepository(database)
+    approvals = PostgresApprovalRepository(database)
+    fact_id = str(ULID())
+    await facts.create(
+        actor,
+        command(fact_id),
+        expected_superseded_revisions={},
+        idempotency_key="promotion-fact",
+    )
+    proposed = await approvals.propose(
+        actor,
+        fact_id,
+        reason="this rule is useful across all domains",
+        idempotency_key="promotion-propose",
+    )
+    replay = await approvals.propose(
+        actor,
+        fact_id,
+        reason="this rule is useful across all domains",
+        idempotency_key="promotion-propose",
+    )
+    assert replay.request_id == proposed.request_id
+
+    reviewer = actor.model_copy(update={"roles": frozenset({"reviewer"})})
+    result = await approvals.decide(
+        reviewer,
+        str(proposed.request_id),
+        decision="approved",
+        rationale="reviewed and confirmed as shared knowledge",
+        expected_revision=1,
+        idempotency_key="promotion-approve",
+    )
+    assert result.request.status == "approved"
+    assert result.fact_revision == 2
+    assert result.event_id is not None
+    scope = QueryScope(organization_id=actor.organization_id, actor_id=actor.actor_id)
+    promoted = await facts.get(scope, fact_id)
+    assert promoted.payload.namespace == "plk.shared"
+    assert promoted.revision == 2
+
+
+async def test_changed_fact_marks_pending_promotion_stale(database, actor):
+    facts = PostgresFactRepository(database)
+    approvals = PostgresApprovalRepository(database)
+    fact_id = str(ULID())
+    await facts.create(
+        actor,
+        command(fact_id),
+        expected_superseded_revisions={},
+        idempotency_key="stale-promotion-fact",
+    )
+    proposed = await approvals.propose(
+        actor,
+        fact_id,
+        reason="candidate for shared knowledge review",
+        idempotency_key="stale-promotion-propose",
+    )
+    await facts.invalidate(
+        actor,
+        InvalidateFact(fact_id=fact_id, reason="changed before human review"),
+        expected_revision=1,
+        idempotency_key="stale-promotion-change",
+    )
+    reviewer = actor.model_copy(update={"roles": frozenset({"reviewer"})})
+    result = await approvals.decide(
+        reviewer,
+        str(proposed.request_id),
+        decision="approved",
+        rationale="attempt approval of the original revision",
+        expected_revision=1,
+        idempotency_key="stale-promotion-decision",
+    )
+    assert result.request.status == "stale"
+    assert result.fact_revision is None

@@ -19,7 +19,7 @@ from plk_memory.settings import Settings
 
 async def run(settings: Settings | None = None) -> None:
     settings = settings or Settings()
-    database_url = settings.worker_database_url or settings.database_url
+    database_url = settings.worker_database_url
     if not database_url:
         raise RuntimeError("PLK_WORKER_DATABASE_URL is required")
     database = PostgresDatabase(

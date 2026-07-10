@@ -64,8 +64,16 @@ class PostgresChangeFeed:
                                     and_(
                                         older.c.aggregate_version
                                         == outbox_events.c.aggregate_version,
-                                        older.c.occurred_at
-                                        < outbox_events.c.occurred_at,
+                                        or_(
+                                            older.c.occurred_at
+                                            < outbox_events.c.occurred_at,
+                                            and_(
+                                                older.c.occurred_at
+                                                == outbox_events.c.occurred_at,
+                                                older.c.event_id
+                                                < outbox_events.c.event_id,
+                                            ),
+                                        ),
                                     ),
                                 ),
                             )
