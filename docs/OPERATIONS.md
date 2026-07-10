@@ -1,17 +1,17 @@
 # plk-memory セットアップ・運用ガイド
 
-PLK メモリ基盤 — Git=SoT + Graphiti 派生索引の MCP メモリサーバー。
+PLK メモリ基盤 — Git互換backend / PostgreSQL組織backend + Graphiti派生索引。
 
 ## 全体像
 
 > 基盤全体のアーキテクチャ・規約・現在地は [`../README.md`](../README.md) を参照。
 
-plk-memory は **Git を SoT（真実の源）とし、graphiti/FalkorDB を再構築可能な派生索引**とする
-組織メモリの MCP サーバー。エージェント（Claude Code / Codex / Hermes / 自作）が `plk_search` で
+plk-memory は個人互換modeでは **Git**、複数writerの組織modeでは **PostgreSQL** を正本とし、
+graphiti/FalkorDB を再構築可能な派生索引とする組織メモリの MCP サーバー。エージェント（Claude Code / Codex / Hermes / 自作）が `plk_search` で
 過去の知見を引き、`plk_add` で書き、`plk_propose_promotion` でドメイン知見を全社共有（`shared/`）へ
 昇格させる。
 
-- **データの実体**: `agent-organization` リポジトリの `knowledge/`（1 ファクト 1 markdown ファイル）。
+- **データの実体**: Git backendは `agent-organization/knowledge/`、PostgreSQL backendはtenant RLS配下のimmutable revision。
 - **アーキテクチャ / 設計判断**: 設計書（SoT）は [`design/`](design/)（入口は [`../README.md`](../README.md)）を参照。
 - **組織展開**: 移行手順は [`MIGRATION.md`](MIGRATION.md)、実測・判断は [`LESSONS.md`](LESSONS.md)。
 - **ポート境界**: FactStore(Git) / GraphIndex(graphiti) / WriteSerializer(flock) / PromotionBackend
@@ -48,6 +48,32 @@ uv sync
 uv run uvicorn plk_memory.app:create_app --factory --host 127.0.0.1 --port 8735
 ```
 
+### PostgreSQL-primary local runtime
+
+API roleとworker roleは本番では必ず分離する。以下の同一owner credential例はlocal smoke専用で、
+RLS分離を検証しない。RLS/IAM authの検証は設計書のproduction gateに従い、stagingで別roleを使う。
+
+```bash
+docker compose --profile postgres up -d postgres falkordb
+PLK_DATABASE_URL=postgresql://plk:plk@127.0.0.1:5432/plk \
+  uv run alembic upgrade head
+
+export PLK_STORAGE_BACKEND=postgres
+export PLK_DATABASE_URL=postgresql://plk:plk@127.0.0.1:5432/plk
+export PLK_WORKER_DATABASE_URL=postgresql://plk:plk@127.0.0.1:5432/plk
+export PLK_DEFAULT_ORGANIZATION_ID=00000000-0000-0000-0000-000000000001
+
+# terminal 1: API（local smokeではowner。productionはNOBYPASSRLS role）
+uv run uvicorn plk_memory.app:create_app --factory --host 127.0.0.1 --port 8735
+
+# terminal 2: index worker（local smokeではowner。productionは専用worker role）
+uv run plk-index-worker
+```
+
+`/healthz` はDBへ接続できない場合503。Graphiti/Ollama停止時はDB writeを維持し、検索だけdegradedになる。
+workerはGraphへの外部副作用をDB leaseだけではfenceできないため1件ずつclaimし、同一factのrevisionを
+順番に処理する。max attempts到達後はdead letterへ移す。
+
 ## ④動作確認
 
 ```bash
@@ -57,7 +83,7 @@ curl -s localhost:8735/healthz
 curl -s -X POST localhost:8735/admin/sync -H "Authorization: Bearer $PLK_ADMIN_TOKEN"
 ```
 
-## ⑤単一レプリカ必須の注意
+## ⑤Git backendのみ: 単一レプリカ必須の注意
 
 データリポジトリへの書き込みは専用 clone 経由の単一 writer（`flock`）を前提としている。
 同一マシンでの多重起動やレプリカの複数同時稼働はロック取得に失敗して起動が失敗する仕様。
@@ -69,8 +95,8 @@ Claude Code / Codex / Hermes / Agent SDK からの接続テンプレートと検
 
 ## ⑦縮退動作
 
-FalkorDB や Ollama が停止していても、書き込み（Git への fact 保存）と SoT（データリポジトリ）は生きたまま起動する。
-グラフ索引が未接続の場合は `plk_search` が `degraded: true` を返し、検索のみ縮退する。
+FalkorDB や Ollama が停止していても、Git backendはGitへのfact保存、PostgreSQL backendはDBへのfact保存を継続する。
+どちらも正本は生きたまま、グラフ索引が未接続の場合は `plk_search` が `degraded: true` を返し、検索のみ縮退する。
 
 ## ⑧常駐運用（launchd）
 

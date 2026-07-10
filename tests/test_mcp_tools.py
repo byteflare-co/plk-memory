@@ -14,6 +14,7 @@ async def test_plk_tools_have_agent_facing_descriptions():
 
     assert set(tools) == {
         "plk_add",
+        "plk_decide_promotion",
         "plk_history",
         "plk_invalidate",
         "plk_propose_promotion",
@@ -30,7 +31,8 @@ async def test_plk_add_description_explains_source_type_constraints():
     description = tools["plk_add"].description or ""
 
     assert 'source_type="agent"' in description
-    assert 'source_type="user"' in description
+    assert "human-authored" in description
+    assert "dedicated authorized role" in description
     assert 'source_type="conversation"' in description
     assert 'namespace="plk.quarantine"' in description
     assert "supersedes=[old_fact_id]" in description
@@ -54,4 +56,4 @@ async def test_plk_add_description_explains_semantic_admission_rubric():
     assert "never invent one" in normalized
     assert "conditional behavior as" in normalized
     assert "old fact id and statement" in normalized
-    assert 'rejects kind="philosophy"' in normalized
+    assert "Philosophy and human-authored facts are protected writes" in normalized

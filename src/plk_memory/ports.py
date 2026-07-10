@@ -16,6 +16,8 @@ from plk_memory.domain import (
     IndexCandidate,
     IndexEntry,
     InvalidateFact,
+    PromotionDecisionResult,
+    PromotionRequestRecord,
     QueryScope,
     SearchQuery,
     WriteResult,
@@ -88,6 +90,28 @@ class FactRepository(Protocol):
     async def history(self, scope: QueryScope, fact_id: str) -> FactHistory: ...
 
 
+class ApprovalRepository(Protocol):
+    async def propose(
+        self,
+        actor: ActorContext,
+        fact_id: str,
+        *,
+        reason: str,
+        idempotency_key: str,
+    ) -> PromotionRequestRecord: ...
+
+    async def decide(
+        self,
+        actor: ActorContext,
+        request_id: str,
+        *,
+        decision: str,
+        rationale: str,
+        expected_revision: int,
+        idempotency_key: str,
+    ) -> PromotionDecisionResult: ...
+
+
 class ChangeFeed(Protocol):
     async def claim(
         self,
@@ -118,7 +142,9 @@ class SearchIndex(Protocol):
 
     async def start(self) -> None: ...
 
-    async def upsert(self, fact: FactRecord) -> IndexEntry: ...
+    async def upsert(
+        self, fact: FactRecord, old: IndexEntry | None = None
+    ) -> IndexEntry: ...
 
     async def delete(
         self,

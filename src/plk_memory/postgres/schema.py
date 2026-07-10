@@ -257,6 +257,7 @@ outbox_events = Table(
     Column("lease_token", UUID(as_uuid=True)),
     Column("lease_until", DateTime(timezone=True)),
     Column("processed_at", DateTime(timezone=True)),
+    Column("dead_lettered_at", DateTime(timezone=True)),
     Column("last_error", Text),
     PrimaryKeyConstraint("organization_id", "event_id"),
     UniqueConstraint(
@@ -350,6 +351,7 @@ search_projection_state = Table(
     Column("indexed_version", Integer, nullable=False),
     Column("content_hash", String(64), nullable=False),
     Column("backend_refs", JSONB, nullable=False, server_default=text("'[]'::jsonb")),
+    Column("partition", String(255)),
     Column("last_event_id", UUID(as_uuid=True), nullable=False),
     Column("indexed_at", DateTime(timezone=True), nullable=False),
     Column(
@@ -427,6 +429,13 @@ Index(
     approval_requests.c.organization_id,
     approval_requests.c.status,
     approval_requests.c.created_at,
+)
+Index(
+    "uq_approval_requests_one_pending_per_fact",
+    approval_requests.c.organization_id,
+    approval_requests.c.fact_id,
+    unique=True,
+    postgresql_where=approval_requests.c.status == "pending",
 )
 Index(
     "ix_audit_events_org_resource_created",

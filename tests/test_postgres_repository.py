@@ -23,6 +23,7 @@ from plk_memory.domain import (
 )
 from plk_memory.ports import FactMissing, PolicyViolation, RevisionConflict
 from plk_memory.postgres.database import PostgresDatabase
+from plk_memory.postgres.approvals import PostgresApprovalRepository
 from plk_memory.postgres.outbox import PostgresChangeFeed, PostgresIndexStateRepository
 from plk_memory.postgres.repository import PostgresFactRepository
 from plk_memory.postgres.schema import outbox_events
@@ -175,6 +176,22 @@ async def test_database_path_enforces_write_policy(database, actor):
             secret,
             expected_superseded_revisions={},
             idempotency_key="secret-rejected",
+        )
+
+    reader = actor.model_copy(update={"roles": frozenset({"reader"})})
+    with pytest.raises(PolicyViolation, match="writer role"):
+        await repository.create(
+            reader,
+            command(str(ULID())),
+            expected_superseded_revisions={},
+            idempotency_key="reader-create-rejected",
+        )
+    with pytest.raises(PolicyViolation, match="writer role"):
+        await repository.invalidate(
+            reader,
+            InvalidateFact(fact_id=create.fact_id, reason="reader cannot invalidate"),
+            expected_revision=1,
+            idempotency_key="reader-invalidate-rejected",
         )
 
 
@@ -331,6 +348,76 @@ async def test_expired_worker_cannot_ack_reclaimed_event(
     await feed.ack([current_claim])
 
 
+async def test_outbox_claims_one_revision_per_fact_in_order(
+    database, worker_database, actor
+):
+    repository = PostgresFactRepository(database)
+    fact_id = str(ULID())
+    created = await repository.create(
+        actor,
+        command(fact_id),
+        expected_superseded_revisions={},
+        idempotency_key="ordered-create",
+    )
+    invalidated = await repository.invalidate(
+        actor,
+        InvalidateFact(fact_id=fact_id, reason="superseded by ordered test"),
+        expected_revision=1,
+        idempotency_key="ordered-invalidate",
+    )
+    feed = PostgresChangeFeed(worker_database)
+
+    first = await feed.claim(
+        consumer="ordered-worker",
+        limit=1000,
+        lease_until=datetime.now(UTC) + timedelta(minutes=1),
+    )
+    own_first = [claim for claim in first if claim.change.fact_id == fact_id]
+    assert [claim.change.event_id for claim in own_first] == [created.event_id]
+    await feed.ack(own_first)
+
+    second = await feed.claim(
+        consumer="ordered-worker",
+        limit=1000,
+        lease_until=datetime.now(UTC) + timedelta(minutes=1),
+    )
+    own_second = [claim for claim in second if claim.change.fact_id == fact_id]
+    assert [claim.change.event_id for claim in own_second] == [invalidated.event_id]
+    await feed.ack(own_second)
+
+
+async def test_outbox_moves_terminal_failure_to_dead_letter(
+    database, worker_database, actor
+):
+    repository = PostgresFactRepository(database)
+    created = await repository.create(
+        actor,
+        command(str(ULID())),
+        expected_superseded_revisions={},
+        idempotency_key="dead-letter-create",
+    )
+    feed = PostgresChangeFeed(worker_database, max_attempts=1)
+    claims = await feed.claim(
+        consumer="dead-letter-worker",
+        limit=1000,
+        lease_until=datetime.now(UTC) + timedelta(minutes=1),
+    )
+    own = next(claim for claim in claims if claim.change.event_id == created.event_id)
+    await feed.fail(
+        own,
+        error="permanent graph failure",
+        retry_at=datetime.now(UTC),
+    )
+
+    async with worker_database.worker_transaction() as session:
+        dead_lettered_at = await session.scalar(
+            select(outbox_events.c.dead_lettered_at).where(
+                outbox_events.c.event_id == created.event_id
+            )
+        )
+    assert dead_lettered_at is not None
+
+
 async def test_rls_hides_and_rejects_cross_organization_rows(database, actor):
     admin_repository = PostgresFactRepository(database)
     other = actor.model_copy(update={"organization_id": uuid4()})
@@ -389,3 +476,119 @@ async def test_rls_hides_and_rejects_cross_organization_rows(database, actor):
         async with database.engine.begin() as connection:
             await connection.execute(text(f'DROP OWNED BY "{role}"'))
             await connection.execute(text(f'DROP ROLE "{role}"'))
+
+
+async def test_revision_pinned_promotion_approval_is_atomic(database, actor):
+    facts = PostgresFactRepository(database)
+    approvals = PostgresApprovalRepository(database)
+    fact_id = str(ULID())
+    await facts.create(
+        actor,
+        command(fact_id),
+        expected_superseded_revisions={},
+        idempotency_key="promotion-fact",
+    )
+    proposed = await approvals.propose(
+        actor,
+        fact_id,
+        reason="this rule is useful across all domains",
+        idempotency_key="promotion-propose",
+    )
+    replay = await approvals.propose(
+        actor,
+        fact_id,
+        reason="this rule is useful across all domains",
+        idempotency_key="promotion-propose",
+    )
+    assert replay.request_id == proposed.request_id
+
+    reviewer = actor.model_copy(update={"roles": frozenset({"reviewer"})})
+    result = await approvals.decide(
+        reviewer,
+        str(proposed.request_id),
+        decision="approved",
+        rationale="reviewed and confirmed as shared knowledge",
+        expected_revision=1,
+        idempotency_key="promotion-approve",
+    )
+    assert result.request.status == "approved"
+    assert result.fact_revision == 2
+    assert result.event_id is not None
+    scope = QueryScope(organization_id=actor.organization_id, actor_id=actor.actor_id)
+    promoted = await facts.get(scope, fact_id)
+    assert promoted.payload.namespace == "plk.shared"
+    assert promoted.revision == 2
+
+
+async def test_changed_fact_marks_pending_promotion_stale(database, actor):
+    facts = PostgresFactRepository(database)
+    approvals = PostgresApprovalRepository(database)
+    fact_id = str(ULID())
+    await facts.create(
+        actor,
+        command(fact_id),
+        expected_superseded_revisions={},
+        idempotency_key="stale-promotion-fact",
+    )
+    proposed = await approvals.propose(
+        actor,
+        fact_id,
+        reason="candidate for shared knowledge review",
+        idempotency_key="stale-promotion-propose",
+    )
+    await facts.invalidate(
+        actor,
+        InvalidateFact(fact_id=fact_id, reason="changed before human review"),
+        expected_revision=1,
+        idempotency_key="stale-promotion-change",
+    )
+    reviewer = actor.model_copy(update={"roles": frozenset({"reviewer"})})
+    result = await approvals.decide(
+        reviewer,
+        str(proposed.request_id),
+        decision="approved",
+        rationale="attempt approval of the original revision",
+        expected_revision=1,
+        idempotency_key="stale-promotion-decision",
+    )
+    assert result.request.status == "stale"
+    assert result.fact_revision is None
+
+
+async def test_wrong_decision_revision_does_not_stale_request(database, actor):
+    facts = PostgresFactRepository(database)
+    approvals = PostgresApprovalRepository(database)
+    fact_id = str(ULID())
+    await facts.create(
+        actor,
+        command(fact_id),
+        expected_superseded_revisions={},
+        idempotency_key="revision-conflict-promotion-fact",
+    )
+    proposed = await approvals.propose(
+        actor,
+        fact_id,
+        reason="candidate remains reviewable after a caller conflict",
+        idempotency_key="revision-conflict-promotion-propose",
+    )
+    reviewer = actor.model_copy(update={"roles": frozenset({"reviewer"})})
+
+    with pytest.raises(RevisionConflict):
+        await approvals.decide(
+            reviewer,
+            str(proposed.request_id),
+            decision="approved",
+            rationale="caller sent the wrong expected revision",
+            expected_revision=2,
+            idempotency_key="revision-conflict-promotion-decision",
+        )
+
+    result = await approvals.decide(
+        reviewer,
+        str(proposed.request_id),
+        decision="approved",
+        rationale="retry with the pinned source revision",
+        expected_revision=1,
+        idempotency_key="revision-conflict-promotion-decision-retry",
+    )
+    assert result.request.status == "approved"

@@ -10,18 +10,25 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Any
+from uuid import NAMESPACE_URL, uuid5
 
 import frontmatter
 from graphiti_core import Graphiti
 from graphiti_core.cross_encoder.client import CrossEncoderClient
 from graphiti_core.driver.falkordb_driver import FalkorDriver
 from graphiti_core.edges import Edge, EntityEdge, create_entity_edge_embeddings
+from graphiti_core.errors import NodeNotFoundError
 from graphiti_core.embedder.openai import OpenAIEmbedder, OpenAIEmbedderConfig
 from graphiti_core.llm_client.anthropic_client import AnthropicClient
 from graphiti_core.llm_client.client import LLMClient
 from graphiti_core.llm_client.config import LLMConfig
 from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
-from graphiti_core.nodes import EntityNode, create_entity_node_embeddings
+from graphiti_core.nodes import (
+    EntityNode,
+    EpisodeType,
+    EpisodicNode,
+    create_entity_node_embeddings,
+)
 from graphiti_core.utils.bulk_utils import add_nodes_and_edges_bulk
 from graphiti_core.utils.maintenance.graph_data_operations import clear_data
 from pydantic import BaseModel
@@ -190,38 +197,87 @@ class GraphIndex:
         self._graphiti = graphiti
         self._ready = True
 
+    async def close(self) -> None:
+        if self._graphiti is not None:
+            await self._graphiti.close()
+        self._graphiti = None
+        self._ready = False
+        self._group_drivers.clear()
+
     # --- 書き込み ---
 
     async def upsert_fact(
-        self, post: frontmatter.Post, old: FactIndexEntry | None
+        self,
+        post: frontmatter.Post,
+        old: FactIndexEntry | None,
+        *,
+        group_id_override: str | None = None,
+        identity_seed: str | None = None,
     ) -> FactIndexEntry:
         # route→操作を原子化する（_op_lock の理由は __init__ のコメント参照）
         async with self._op_lock:
-            if old is not None and old.episode_uuids:
-                await self._delete_entry(old)
-
             if post["status"] == "invalidated":
+                if old is not None and old.episode_uuids:
+                    await self._delete_entry(old)
                 return FactIndexEntry()
 
-            group_id = self.settings.group_for(post["namespace"])
+            group_id = group_id_override or self.settings.group_for(post["namespace"])
             self._route_group(group_id)
 
             if self.settings.ingest_mode == "triplet":
-                return await self._upsert_curated_triplet(post, group_id)
-            return await self._upsert_episode(post, group_id)
+                result = await self._upsert_curated_triplet(
+                    post, group_id, identity_seed=identity_seed
+                )
+            else:
+                result = await self._upsert_episode(
+                    post, group_id, identity_seed=identity_seed
+                )
+            # Keep the previous projection searchable until the replacement has
+            # been created. Missing old episodes are tolerated so a crash after
+            # delete cannot poison every retry of the outbox event.
+            if old is not None and old.episode_uuids:
+                await self._delete_entry(old)
+            return result
 
-    async def _upsert_episode(self, post: frontmatter.Post, group_id: str) -> FactIndexEntry:
+    async def _upsert_episode(
+        self,
+        post: frontmatter.Post,
+        group_id: str,
+        *,
+        identity_seed: str | None = None,
+    ) -> FactIndexEntry:
         graphiti = self._graph()
         created_at = post["created_at"]
         if isinstance(created_at, str):
             created_at = datetime.fromisoformat(created_at)
 
+        episode_uuid = (
+            str(uuid5(NAMESPACE_URL, f"{identity_seed}:episode"))
+            if identity_seed
+            else None
+        )
+        if episode_uuid is not None:
+            try:
+                await EpisodicNode.get_by_uuid(graphiti.driver, episode_uuid)
+            except NodeNotFoundError:
+                await EpisodicNode(
+                    uuid=episode_uuid,
+                    name=episode_name(post),
+                    group_id=group_id,
+                    labels=[],
+                    source=EpisodeType.message,
+                    content=render_episode(post),
+                    source_description=f"plk:{post['id']}",
+                    created_at=datetime.now(timezone.utc),
+                    valid_at=created_at,
+                ).save(graphiti.driver)
         result = await graphiti.add_episode(
             name=episode_name(post),
             episode_body=render_episode(post),
             source_description=f"plk:{post['id']}",
             reference_time=created_at,
             group_id=group_id,
+            uuid=episode_uuid,
         )
         return FactIndexEntry(
             episode_uuids=[result.episode.uuid],
@@ -229,24 +285,58 @@ class GraphIndex:
             group_id=group_id,
         )
 
-    async def _upsert_curated_triplet(self, post: frontmatter.Post, group_id: str) -> FactIndexEntry:
+    async def _upsert_curated_triplet(
+        self,
+        post: frontmatter.Post,
+        group_id: str,
+        *,
+        identity_seed: str | None = None,
+    ) -> FactIndexEntry:
         graphiti = self._graph()
         statement = post["statement"]
         tags: list[str] = list(post.get("tags") or []) or [post["namespace"]]
         now = datetime.now(timezone.utc)
 
         edge_uuids: list[str] = []
-        for tag in tags:
-            fact_node = EntityNode(name=statement, group_id=group_id, labels=["Entity"])
-            tag_node = EntityNode(name=tag, group_id=group_id, labels=["Entity"])
-            edge = EntityEdge(
-                name="RELATES_TO",
-                fact=statement,
-                source_node_uuid=fact_node.uuid,
-                target_node_uuid=tag_node.uuid,
-                group_id=group_id,
-                created_at=now,
-            )
+        for index, tag in enumerate(tags):
+            identity = f"{identity_seed}:tag:{index}:{tag}" if identity_seed else None
+            if identity:
+                fact_node = EntityNode(
+                    uuid=str(uuid5(NAMESPACE_URL, f"{identity}:fact")),
+                    name=statement,
+                    group_id=group_id,
+                    labels=["Entity"],
+                )
+                tag_node = EntityNode(
+                    uuid=str(uuid5(NAMESPACE_URL, f"{identity}:tag")),
+                    name=tag,
+                    group_id=group_id,
+                    labels=["Entity"],
+                )
+                edge = EntityEdge(
+                    uuid=str(uuid5(NAMESPACE_URL, f"{identity}:edge")),
+                    name="RELATES_TO",
+                    fact=statement,
+                    source_node_uuid=fact_node.uuid,
+                    target_node_uuid=tag_node.uuid,
+                    group_id=group_id,
+                    created_at=now,
+                )
+            else:
+                fact_node = EntityNode(
+                    name=statement, group_id=group_id, labels=["Entity"]
+                )
+                tag_node = EntityNode(
+                    name=tag, group_id=group_id, labels=["Entity"]
+                )
+                edge = EntityEdge(
+                    name="RELATES_TO",
+                    fact=statement,
+                    source_node_uuid=fact_node.uuid,
+                    target_node_uuid=tag_node.uuid,
+                    group_id=group_id,
+                    created_at=now,
+                )
             nodes = [fact_node, tag_node]
             edges = [edge]
             # Curated PLK facts are already reviewed. Graphiti.add_triplet() routes even
@@ -278,7 +368,10 @@ class GraphIndex:
             await Edge.delete_by_uuids(graphiti.driver, entry.episode_uuids)
         else:
             for ep_uuid in entry.episode_uuids:
-                await graphiti.remove_episode(ep_uuid)
+                try:
+                    await graphiti.remove_episode(ep_uuid)
+                except NodeNotFoundError:
+                    logger.info("episode already absent during idempotent delete: %s", ep_uuid)
 
     # --- 読み取り ---
 

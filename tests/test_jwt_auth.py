@@ -5,7 +5,7 @@ from fastapi import APIRouter
 from fastmcp.server.auth.providers.jwt import RSAKeyPair
 
 from plk_memory.app import create_app
-from plk_memory.auth import build_jwt_verifier, client_from_jwt
+from plk_memory.auth import actor_from_claims, build_jwt_verifier, client_from_jwt
 from plk_memory.settings import Settings
 from tests.conftest import make_settings as make_app_settings
 from tests.fakes import FakeGraphIndex
@@ -56,6 +56,25 @@ async def test_expired_token_is_rejected(keypair):
 def test_client_from_jwt_extracts_sub(keypair):
     token = keypair.create_token(subject="codex", issuer=ISSUER, audience=AUDIENCE)
     assert client_from_jwt(token) == "codex"
+
+
+def test_actor_from_verified_claims_requires_organization(keypair):
+    settings = make_settings(keypair)
+    actor = actor_from_claims(
+        settings,
+        {
+            "sub": "service:indexer",
+            "organization_id": "00000000-0000-0000-0000-000000000001",
+            "roles": ["writer", "reviewer"],
+            "actor_type": "service",
+        },
+    )
+
+    assert actor is not None
+    assert actor.actor_id == "service:indexer"
+    assert actor.actor_type == "service"
+    assert actor.roles == frozenset({"writer", "reviewer"})
+    assert actor_from_claims(settings, {"sub": "missing-org"}) is None
 
 
 # --- ASGI end-to-end（jwt モードの create_app。拒否経路は必ず BearerAuthMiddleware の

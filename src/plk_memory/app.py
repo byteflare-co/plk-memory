@@ -12,12 +12,14 @@ import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from uuid import UUID
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from starlette.staticfiles import StaticFiles
 
-from plk_memory.auth import BearerAuthMiddleware, current_client
+from plk_memory.auth import BearerAuthMiddleware, current_actor, current_client
+from plk_memory.domain import ActorContext, QueryScope
 from plk_memory.facts import FactError, FactNotFound, FactService
 from plk_memory.gitstore import GitStore, WriteConflict
 from plk_memory.graphindex import GraphIndex
@@ -185,7 +187,11 @@ class AppServices:
         slug: str | None = None,
         source_type: str = "agent",
         supersedes: list[str] | None = None,
+        idempotency_key: str | None = None,
+        expected_revision: int | None = None,
+        expected_superseded_revisions: dict[str, int] | None = None,
     ) -> dict:
+        del idempotency_key, expected_revision, expected_superseded_revisions
         client = self._require_client()
         if self.sync.maintenance:
             return {"error": "maintenance 中（reindex 実行中）", "retry": True}
@@ -202,7 +208,15 @@ class AppServices:
         self._spawn_sync()
         return {"fact_id": fact_id, "note": "索引は非同期で更新される"}
 
-    async def tool_invalidate(self, fact_id: str, reason: str) -> dict:
+    async def tool_invalidate(
+        self,
+        fact_id: str,
+        reason: str,
+        *,
+        idempotency_key: str | None = None,
+        expected_revision: int | None = None,
+    ) -> dict:
+        del idempotency_key, expected_revision
         client = self._require_client()
         if self.sync.maintenance:
             return {"error": "maintenance 中（reindex 実行中）", "retry": True}
@@ -231,7 +245,57 @@ class AppServices:
         ]
         return status
 
-    async def tool_propose_promotion(self, fact_id: str, reason: str | None = None) -> dict:
+    async def ui_list_facts(
+        self,
+        *,
+        namespace: str | None,
+        kind: str | None,
+        status: str,
+    ) -> list[dict]:
+        facts = []
+        for post, rel in self.facts.list_posts():
+            if not post.get("id"):
+                continue
+            if namespace and post.get("namespace") != namespace:
+                continue
+            if kind and post.get("kind") != kind:
+                continue
+            if status and post.get("status") != status:
+                continue
+            facts.append(
+                {
+                    "fact_id": post.get("id"),
+                    "statement": post.get("statement"),
+                    "namespace": post.get("namespace"),
+                    "kind": post.get("kind"),
+                    "status": post.get("status"),
+                    "path": rel,
+                    "created_at": post.get("created_at"),
+                }
+            )
+        return facts
+
+    async def ui_fact_detail(self, fact_id: str) -> dict | None:
+        try:
+            post, rel = self.facts.get(fact_id)
+        except FactNotFound:
+            return None
+        return {
+            "fact_id": fact_id,
+            "path": rel,
+            "meta": dict(post.metadata),
+            "body": post.content,
+            "history": self.facts.history(fact_id),
+        }
+
+    async def tool_propose_promotion(
+        self,
+        fact_id: str,
+        reason: str | None = None,
+        *,
+        idempotency_key: str | None = None,
+    ) -> dict:
+        del idempotency_key
         self._require_client()
         if self.promotion_backend is None:
             return {"error": "promotion backend が未設定（enable_github_promotion=True の常駐プロセスのみ有効）"}
@@ -279,6 +343,18 @@ class AppServices:
         self.promotion_store.upsert(pr)
         return {"promotion_id": pr.id, "pr_url": url, "state": pr.state.value}
 
+    async def tool_decide_promotion(
+        self,
+        request_id: str,
+        decision: str,
+        rationale: str,
+        expected_revision: int,
+        *,
+        idempotency_key: str | None = None,
+    ) -> dict:
+        del request_id, decision, rationale, expected_revision, idempotency_key
+        return {"error": "Git-primaryではGitHub PR上で承認・mergeする"}
+
     async def poll_promotions(self) -> dict:
         if self.promotion_backend is None:
             return {"applied": 0, "rejected": 0, "checked": 0}
@@ -315,12 +391,9 @@ class AppServices:
 
 
 def _build_services(settings: Settings, graph, promotion_backend=None,
-                    enable_github_promotion: bool = False) -> AppServices:
-    if settings.storage_backend != "git":
-        raise RuntimeError(
-            "PostgreSQL persistence foundation is installed, but the MCP/API "
-            "runtime cutover is not enabled yet; use storage_backend=git"
-        )
+                    enable_github_promotion: bool = False):
+    if settings.storage_backend == "postgres":
+        return _build_postgres_services(settings, graph)
     store = GitStore(settings)
     facts = FactService(store, settings)
     if graph is None:
@@ -339,6 +412,69 @@ def _build_services(settings: Settings, graph, promotion_backend=None,
     )
 
 
+def _build_postgres_services(settings: Settings, graph=None):
+    if not settings.database_url:
+        raise RuntimeError("PLK_DATABASE_URL is required for postgres storage")
+    from plk_memory.postgres.application import PostgresAppServices
+    from plk_memory.postgres.approvals import PostgresApprovalRepository
+    from plk_memory.postgres.database import PostgresDatabase
+    from plk_memory.postgres.graph_adapter import PostgresGraphSearchIndex
+    from plk_memory.postgres.repository import PostgresFactRepository
+    from plk_memory.postgres.worker import PostgresProjectionStatus
+
+    database = PostgresDatabase(
+        settings.database_url,
+        pool_size=settings.database_pool_size,
+        application_name="plk-memory-api",
+    )
+    graph = graph or GraphIndex(settings)
+    search_index = PostgresGraphSearchIndex(
+        graph=graph,
+        api_database=database,
+        worker_database=None,
+        settings=settings,
+    )
+    repository = PostgresFactRepository(database)
+
+    def actor_provider() -> ActorContext:
+        actor = current_actor.get()
+        if actor is not None:
+            return actor
+        if settings.ui_organization_id:
+            return ActorContext(
+                organization_id=UUID(settings.ui_organization_id),
+                actor_id="plk-web-ui",
+                actor_type="human",
+                roles=frozenset({"reader"}),
+            )
+        raise PermissionError("認証済みのactorまたはPLK_UI_ORGANIZATION_IDが必要")
+
+    def scope_provider() -> QueryScope:
+        actor = actor_provider()
+        return QueryScope(
+            organization_id=actor.organization_id,
+            actor_id=actor.actor_id,
+            roles=actor.roles,
+        )
+
+    projection_status = PostgresProjectionStatus(database)
+
+    async def status_provider() -> dict:
+        return await projection_status.snapshot(scope_provider().organization_id)
+
+    return PostgresAppServices(
+        repository=repository,
+        search_index=search_index,
+        actor_provider=actor_provider,
+        scope_provider=scope_provider,
+        settings=settings,
+        status_provider=status_provider,
+        close_callback=database.close,
+        health_callback=database.ping,
+        approval_repository=PostgresApprovalRepository(database),
+    )
+
+
 def create_app(settings: Settings | None = None, graph=None, promotion_backend=None,
                 enable_github_promotion: bool = False) -> FastAPI:
     settings = settings or Settings()
@@ -352,6 +488,17 @@ def create_app(settings: Settings | None = None, graph=None, promotion_backend=N
 
     @asynccontextmanager
     async def app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        if settings.storage_backend == "postgres":
+            await services.check_database()
+            try:
+                await services.start()
+            except Exception:  # noqa: BLE001 - DB remains canonical in degraded search mode
+                pass
+            try:
+                yield
+            finally:
+                await services.close()
+            return
         services.store.ensure_repo()
         try:
             await services.graph.start()
@@ -441,16 +588,27 @@ def create_app(settings: Settings | None = None, graph=None, promotion_backend=N
 
     @app.get("/healthz")
     async def healthz() -> dict:
+        if settings.storage_backend == "postgres":
+            try:
+                await services.check_database()
+            except Exception as error:  # noqa: BLE001 - readiness must fail closed
+                raise HTTPException(
+                    status_code=503, detail=f"database unavailable: {error}"
+                ) from error
         return {"ok": True}
 
     @app.post("/admin/sync")
     async def admin_sync() -> dict:
+        if settings.storage_backend == "postgres":
+            return await services.admin_sync()
         if services.sync.maintenance:
             raise HTTPException(status_code=503, detail="maintenance 中（reindex 実行中）")
         return await services.sync.sync()
 
     @app.post("/admin/reindex")
     async def admin_reindex(background_tasks: BackgroundTasks) -> dict:
+        if settings.storage_backend == "postgres":
+            return await services.admin_reindex()
         # フラグをルート側で先行セット（begin_reindex は await を挟まない atomic）。
         # 連打の 2 件目は背景タスク開始前にここで 409 になり、silent drop を防ぐ。
         if not services.sync.begin_reindex():

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import urlparse
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DOMAINS = ("tax", "legal", "shaho", "dev", "backoffice", "biz", "agent")
@@ -28,7 +29,15 @@ class Settings(BaseSettings):
     default_organization_id: str = ""
     database_pool_size: int = 10
     outbox_poll_interval_seconds: float = 1.0
-    outbox_batch_size: int = 100
+    # Graph projection is an external side effect and cannot be fenced by the
+    # database lease. Claim one item at a time so no queued claim expires before
+    # its processing starts.
+    outbox_batch_size: int = Field(default=1, ge=1, le=1)
+    outbox_lease_seconds: int = 60
+    outbox_max_attempts: int = 10
+    outbox_retry_base_seconds: float = 1.0
+    outbox_retry_max_seconds: float = 300.0
+    worker_consumer_name: str = "plk-index-worker"
     require_idempotency_key: bool = False
     require_expected_revision: bool = False
 
@@ -45,6 +54,8 @@ class Settings(BaseSettings):
     auth_mode: str = "bearer"  # bearer | jwt
     jwt_issuer: str = "https://plk-memory.local/"
     jwt_audience: str = "plk-memory"
+    jwt_organization_claim: str = "organization_id"
+    jwt_roles_claim: str = "roles"
     # jwks_uri を設定するとその URI から公開鍵を取得（本番/ローカル JWKS 配信）。
     # 空なら jwt_public_key（PEM）を直接使う（テスト・オフライン検証）。
     jwks_uri: str = ""
@@ -97,6 +108,7 @@ class Settings(BaseSettings):
     # Web UI（read 専用）
     ui_password: str = ""          # 空なら UI ログイン不可（本番のみ設定）
     ui_cookie_name: str = "plk_ui"
+    ui_organization_id: str = ""
 
     @property
     def repo_slug(self) -> str:

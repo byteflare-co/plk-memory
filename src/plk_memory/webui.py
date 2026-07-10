@@ -69,37 +69,24 @@ def build_ui_router(services: "AppServices") -> APIRouter:
                 kind=kind, status=status, limit=50, reason="webui",
             )
             return {"facts": res.get("hits", []), "degraded": res.get("degraded", False)}
-        facts = []
-        for post, rel in services.facts.list_posts():
-            if not post.get("id"):
-                continue
-            if namespace and post.get("namespace") != namespace:
-                continue
-            if kind and post.get("kind") != kind:
-                continue
-            if status and post.get("status") != status:
-                continue
-            facts.append({
-                "fact_id": post.get("id"), "statement": post.get("statement"),
-                "namespace": post.get("namespace"), "kind": post.get("kind"),
-                "status": post.get("status"), "path": rel,
-                "created_at": post.get("created_at"),
-            })
-        return {"facts": facts}
+        return {
+            "facts": await services.ui_list_facts(
+                namespace=namespace, kind=kind, status=status
+            )
+        }
 
     @router.get("/ui/api/facts/{fact_id}")
     async def ui_fact_detail(request: Request, fact_id: str) -> dict:
         _require_cookie(request)
-        from plk_memory.facts import FactNotFound
-        try:
-            post, rel = services.facts.get(fact_id)
-        except FactNotFound:
+        detail = await services.ui_fact_detail(fact_id)
+        if detail is None:
             raise HTTPException(status_code=404, detail="not found")
-        meta = {k: v for k, v in post.metadata.items()}
         return {
-            "fact_id": fact_id, "path": rel, "meta": meta,
-            "body_html": sanitize_markdown(post.content),
-            "history": services.facts.history(fact_id),
+            "fact_id": fact_id,
+            "path": detail["path"],
+            "meta": detail["meta"],
+            "body_html": sanitize_markdown(detail["body"]),
+            "history": detail["history"],
         }
 
     return router

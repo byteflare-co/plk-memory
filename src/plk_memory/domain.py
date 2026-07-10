@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 FactKind = Literal["philosophy", "logic", "knowhow"]
 FactStatus = Literal["active", "invalidated"]
+ApprovalStatus = Literal["pending", "approved", "rejected", "stale", "cancelled"]
 ActorType = Literal["human", "agent", "service"]
 ChangeOperation = Literal["created", "updated", "invalidated", "promoted"]
 
@@ -110,6 +111,25 @@ class FactHistory(FrozenModel):
     superseded_by: tuple[str, ...] = ()
 
 
+class PromotionRequestRecord(FrozenModel):
+    request_id: UUID
+    organization_id: UUID
+    fact_id: str
+    source_revision: int = Field(ge=1)
+    status: ApprovalStatus
+    requested_by: str
+    reason: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class PromotionDecisionResult(FrozenModel):
+    request: PromotionRequestRecord
+    fact_revision: int | None = Field(default=None, ge=1)
+    event_id: UUID | None = None
+    replayed: bool = False
+
+
 class KnowledgeChanged(FrozenModel):
     event_id: UUID
     organization_id: UUID
@@ -123,6 +143,7 @@ class ClaimedChange(FrozenModel):
     change: KnowledgeChanged
     consumer: str = Field(min_length=1, max_length=255)
     lease_token: UUID
+    attempts: int = Field(ge=1)
 
 
 class IndexEntry(FrozenModel):
@@ -131,6 +152,7 @@ class IndexEntry(FrozenModel):
     indexed_revision: int = Field(ge=1)
     content_hash: str
     backend_refs: tuple[str, ...] = ()
+    partition: str | None = None
     last_event_id: UUID | None = None
     indexed_at: datetime
 

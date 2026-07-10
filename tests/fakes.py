@@ -18,7 +18,10 @@ class FakeGraphIndex:
     async def start(self):
         pass
 
-    async def upsert_fact(self, post, old):
+    async def upsert_fact(
+        self, post, old, *, group_id_override=None, identity_seed=None
+    ):
+        del identity_seed
         self.upsert_calls += 1
         if self.upsert_delay:
             await asyncio.sleep(self.upsert_delay)
@@ -30,8 +33,14 @@ class FakeGraphIndex:
         if post["status"] == "invalidated":
             self.docs.pop(fid, None)
             return FactIndexEntry()
-        self.docs[fid] = {"text": render_episode(post), "group_id": "plk-main"}
-        return FactIndexEntry(episode_uuids=[fid], content_hash=content_hash(post), group_id="plk-main")
+        group_id = group_id_override or "plk-main"
+        self.docs[fid] = {"text": render_episode(post), "group_id": group_id}
+        return FactIndexEntry(
+            episode_uuids=[fid], content_hash=content_hash(post), group_id=group_id
+        )
+
+    async def close(self):
+        self.ready = False
 
     async def delete_fact(self, old):
         for u in old.episode_uuids:
@@ -41,7 +50,8 @@ class FakeGraphIndex:
         hits = [
             SearchHit(fact_id=fid, fact_text=d["text"][:80])
             for fid, d in self.docs.items()
-            if any(tok in d["text"] for tok in query.split())
+            if d["group_id"] in group_ids
+            and any(tok in d["text"] for tok in query.split())
         ]
         return hits[:limit]
 

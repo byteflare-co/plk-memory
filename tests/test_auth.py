@@ -2,12 +2,20 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from plk_memory.auth import BearerAuthMiddleware, current_client
+from plk_memory.auth import BearerAuthMiddleware, current_actor, current_client
 from plk_memory.settings import Settings
 
 
+ORG = "00000000-0000-0000-0000-000000000001"
+
+
 def make_app():
-    s = Settings(tokens={"tok-cc": "claude-code"}, admin_token="tok-admin", _env_file=None)
+    s = Settings(
+        tokens={"tok-cc": "claude-code"},
+        admin_token="tok-admin",
+        default_organization_id=ORG,
+        _env_file=None,
+    )
     app = FastAPI()
     app.add_middleware(BearerAuthMiddleware, settings=s)
 
@@ -17,7 +25,11 @@ def make_app():
 
     @app.get("/mcp/echo")
     async def echo():
-        return {"client": current_client.get()}
+        actor = current_actor.get()
+        return {
+            "client": current_client.get(),
+            "organization_id": str(actor.organization_id) if actor else None,
+        }
 
     @app.get("/admin/ping")
     async def admin_ping():
@@ -46,7 +58,10 @@ async def test_mcp_requires_token(client):
 
 async def test_mcp_valid_token_sets_client(client):
     r = await client.get("/mcp/echo", headers={"Authorization": "Bearer tok-cc"})
-    assert r.status_code == 200 and r.json()["client"] == "claude-code"
+    assert r.status_code == 200
+    assert r.json() == {"client": "claude-code", "organization_id": ORG}
+    assert current_client.get() is None
+    assert current_actor.get() is None
 
 
 async def test_admin_needs_admin_token(client):
