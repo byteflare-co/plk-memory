@@ -118,7 +118,9 @@ class SearchIndex(Protocol):
 
     async def start(self) -> None: ...
 
-    async def upsert(self, fact: FactRecord) -> IndexEntry: ...
+    async def upsert(
+        self, fact: FactRecord, old: IndexEntry | None = None
+    ) -> IndexEntry: ...
 
     async def delete(
         self,

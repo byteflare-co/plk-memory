@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import and_, or_, select, update
+from sqlalchemy import and_, case, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import CursorResult
 
@@ -19,8 +19,9 @@ from plk_memory.postgres.schema import outbox_events, search_projection_state
 class PostgresChangeFeed:
     """At-least-once outbox consumer using short committed leases."""
 
-    def __init__(self, database: PostgresDatabase) -> None:
+    def __init__(self, database: PostgresDatabase, *, max_attempts: int = 10) -> None:
         self.database = database
+        self.max_attempts = max_attempts
 
     async def claim(
         self,
@@ -35,17 +36,40 @@ class PostgresChangeFeed:
         if lease_until <= now:
             raise ValueError("lease_until must be in the future")
         async with self.database.worker_transaction() as session:
+            older = outbox_events.alias("older_outbox_event")
             rows = (
                 (
                     await session.execute(
                         select(outbox_events)
                         .where(
-                            outbox_events.c.processed_at.is_(None),
+                        outbox_events.c.processed_at.is_(None),
+                        outbox_events.c.dead_lettered_at.is_(None),
                             outbox_events.c.available_at <= now,
                             or_(
                                 outbox_events.c.lease_until.is_(None),
                                 outbox_events.c.lease_until < now,
                             ),
+                            ~select(older.c.event_id)
+                            .where(
+                                older.c.organization_id
+                                == outbox_events.c.organization_id,
+                                older.c.aggregate_type
+                                == outbox_events.c.aggregate_type,
+                                older.c.aggregate_id == outbox_events.c.aggregate_id,
+                                older.c.processed_at.is_(None),
+                                older.c.dead_lettered_at.is_(None),
+                                or_(
+                                    older.c.aggregate_version
+                                    < outbox_events.c.aggregate_version,
+                                    and_(
+                                        older.c.aggregate_version
+                                        == outbox_events.c.aggregate_version,
+                                        older.c.occurred_at
+                                        < outbox_events.c.occurred_at,
+                                    ),
+                                ),
+                            )
+                            .exists(),
                         )
                         .order_by(outbox_events.c.occurred_at, outbox_events.c.event_id)
                         .limit(limit)
@@ -80,6 +104,7 @@ class PostgresChangeFeed:
                     change=KnowledgeChanged.model_validate(row["payload"]),
                     consumer=consumer,
                     lease_token=lease_token,
+                    attempts=row["attempts"] + 1,
                 )
                 for row in rows
             )
@@ -134,6 +159,13 @@ class PostgresChangeFeed:
                         lease_token=None,
                         lease_until=None,
                         last_error=error[:4000],
+                        dead_lettered_at=case(
+                            (
+                                outbox_events.c.attempts >= self.max_attempts,
+                                datetime.now(UTC),
+                            ),
+                            else_=None,
+                        ),
                     )
                 ),
             )
@@ -173,6 +205,7 @@ class PostgresIndexStateRepository:
             indexed_revision=row["indexed_version"],
             content_hash=row["content_hash"],
             backend_refs=tuple(row["backend_refs"]),
+            partition=row["partition"],
             last_event_id=row["last_event_id"],
             indexed_at=row["indexed_at"],
         )
@@ -189,6 +222,7 @@ class PostgresIndexStateRepository:
             indexed_version=entry.indexed_revision,
             content_hash=entry.content_hash,
             backend_refs=list(entry.backend_refs),
+            partition=entry.partition,
             last_event_id=entry.last_event_id,
             indexed_at=entry.indexed_at,
         )
@@ -198,6 +232,7 @@ class PostgresIndexStateRepository:
                 "indexed_version": statement.excluded.indexed_version,
                 "content_hash": statement.excluded.content_hash,
                 "backend_refs": statement.excluded.backend_refs,
+                "partition": statement.excluded.partition,
                 "last_event_id": statement.excluded.last_event_id,
                 "indexed_at": statement.excluded.indexed_at,
                 "updated_at": datetime.now(UTC),

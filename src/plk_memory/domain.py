@@ -123,6 +123,7 @@ class ClaimedChange(FrozenModel):
     change: KnowledgeChanged
     consumer: str = Field(min_length=1, max_length=255)
     lease_token: UUID
+    attempts: int = Field(ge=1)
 
 
 class IndexEntry(FrozenModel):
@@ -131,6 +132,7 @@ class IndexEntry(FrozenModel):
     indexed_revision: int = Field(ge=1)
     content_hash: str
     backend_refs: tuple[str, ...] = ()
+    partition: str | None = None
     last_event_id: UUID | None = None
     indexed_at: datetime
 

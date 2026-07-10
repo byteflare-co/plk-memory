@@ -163,6 +163,7 @@ def upgrade() -> None:
         sa.Column("lease_token", sa.UUID(), nullable=True),
         sa.Column("lease_until", sa.DateTime(timezone=True), nullable=True),
         sa.Column("processed_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("dead_lettered_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("last_error", sa.Text(), nullable=True),
         sa.CheckConstraint(
             "aggregate_version >= 1",
@@ -309,6 +310,7 @@ def upgrade() -> None:
             server_default=sa.text("'[]'::jsonb"),
             nullable=False,
         ),
+        sa.Column("partition", sa.String(length=255), nullable=True),
         sa.Column("last_event_id", sa.UUID(), nullable=False),
         sa.Column("indexed_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column(

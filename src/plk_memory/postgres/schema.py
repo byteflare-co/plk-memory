@@ -257,6 +257,7 @@ outbox_events = Table(
     Column("lease_token", UUID(as_uuid=True)),
     Column("lease_until", DateTime(timezone=True)),
     Column("processed_at", DateTime(timezone=True)),
+    Column("dead_lettered_at", DateTime(timezone=True)),
     Column("last_error", Text),
     PrimaryKeyConstraint("organization_id", "event_id"),
     UniqueConstraint(
@@ -350,6 +351,7 @@ search_projection_state = Table(
     Column("indexed_version", Integer, nullable=False),
     Column("content_hash", String(64), nullable=False),
     Column("backend_refs", JSONB, nullable=False, server_default=text("'[]'::jsonb")),
+    Column("partition", String(255)),
     Column("last_event_id", UUID(as_uuid=True), nullable=False),
     Column("indexed_at", DateTime(timezone=True), nullable=False),
     Column(

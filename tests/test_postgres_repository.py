@@ -331,6 +331,76 @@ async def test_expired_worker_cannot_ack_reclaimed_event(
     await feed.ack([current_claim])
 
 
+async def test_outbox_claims_one_revision_per_fact_in_order(
+    database, worker_database, actor
+):
+    repository = PostgresFactRepository(database)
+    fact_id = str(ULID())
+    created = await repository.create(
+        actor,
+        command(fact_id),
+        expected_superseded_revisions={},
+        idempotency_key="ordered-create",
+    )
+    invalidated = await repository.invalidate(
+        actor,
+        InvalidateFact(fact_id=fact_id, reason="superseded by ordered test"),
+        expected_revision=1,
+        idempotency_key="ordered-invalidate",
+    )
+    feed = PostgresChangeFeed(worker_database)
+
+    first = await feed.claim(
+        consumer="ordered-worker",
+        limit=1000,
+        lease_until=datetime.now(UTC) + timedelta(minutes=1),
+    )
+    own_first = [claim for claim in first if claim.change.fact_id == fact_id]
+    assert [claim.change.event_id for claim in own_first] == [created.event_id]
+    await feed.ack(own_first)
+
+    second = await feed.claim(
+        consumer="ordered-worker",
+        limit=1000,
+        lease_until=datetime.now(UTC) + timedelta(minutes=1),
+    )
+    own_second = [claim for claim in second if claim.change.fact_id == fact_id]
+    assert [claim.change.event_id for claim in own_second] == [invalidated.event_id]
+    await feed.ack(own_second)
+
+
+async def test_outbox_moves_terminal_failure_to_dead_letter(
+    database, worker_database, actor
+):
+    repository = PostgresFactRepository(database)
+    created = await repository.create(
+        actor,
+        command(str(ULID())),
+        expected_superseded_revisions={},
+        idempotency_key="dead-letter-create",
+    )
+    feed = PostgresChangeFeed(worker_database, max_attempts=1)
+    claims = await feed.claim(
+        consumer="dead-letter-worker",
+        limit=1000,
+        lease_until=datetime.now(UTC) + timedelta(minutes=1),
+    )
+    own = next(claim for claim in claims if claim.change.event_id == created.event_id)
+    await feed.fail(
+        own,
+        error="permanent graph failure",
+        retry_at=datetime.now(UTC),
+    )
+
+    async with worker_database.worker_transaction() as session:
+        dead_lettered_at = await session.scalar(
+            select(outbox_events.c.dead_lettered_at).where(
+                outbox_events.c.event_id == created.event_id
+            )
+        )
+    assert dead_lettered_at is not None
+
+
 async def test_rls_hides_and_rejects_cross_organization_rows(database, actor):
     admin_repository = PostgresFactRepository(database)
     other = actor.model_copy(update={"organization_id": uuid4()})

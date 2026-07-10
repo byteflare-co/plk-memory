@@ -107,16 +107,32 @@ def build_mcp(services: "AppServices") -> FastMCP:
         slug: str | None = None,
         source_type: str = "agent",
         supersedes: list[str] | None = None,
+        idempotency_key: str | None = None,
+        expected_revision: int | None = None,
+        expected_superseded_revisions: dict[str, int] | None = None,
     ) -> dict:
         return await services.tool_add(
             namespace=namespace, kind=kind, statement=statement, why=why,
             how_to_apply=how_to_apply, source=source, tags=tags, body=body,
             slug=slug, source_type=source_type, supersedes=supersedes,
+            idempotency_key=idempotency_key,
+            expected_revision=expected_revision,
+            expected_superseded_revisions=expected_superseded_revisions,
         )
 
     @mcp.tool(description=PLK_INVALIDATE_DESCRIPTION)
-    async def plk_invalidate(fact_id: str, reason: str) -> dict:
-        return await services.tool_invalidate(fact_id, reason)
+    async def plk_invalidate(
+        fact_id: str,
+        reason: str,
+        idempotency_key: str | None = None,
+        expected_revision: int | None = None,
+    ) -> dict:
+        return await services.tool_invalidate(
+            fact_id,
+            reason,
+            idempotency_key=idempotency_key,
+            expected_revision=expected_revision,
+        )
 
     @mcp.tool(description=PLK_HISTORY_DESCRIPTION)
     async def plk_history(fact_id: str) -> dict:

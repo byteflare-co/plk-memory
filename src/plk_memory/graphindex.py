@@ -10,6 +10,7 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Any
+from uuid import NAMESPACE_URL, uuid5
 
 import frontmatter
 from graphiti_core import Graphiti
@@ -190,10 +191,22 @@ class GraphIndex:
         self._graphiti = graphiti
         self._ready = True
 
+    async def close(self) -> None:
+        if self._graphiti is not None:
+            await self._graphiti.close()
+        self._graphiti = None
+        self._ready = False
+        self._group_drivers.clear()
+
     # --- 書き込み ---
 
     async def upsert_fact(
-        self, post: frontmatter.Post, old: FactIndexEntry | None
+        self,
+        post: frontmatter.Post,
+        old: FactIndexEntry | None,
+        *,
+        group_id_override: str | None = None,
+        identity_seed: str | None = None,
     ) -> FactIndexEntry:
         # route→操作を原子化する（_op_lock の理由は __init__ のコメント参照）
         async with self._op_lock:
@@ -203,14 +216,24 @@ class GraphIndex:
             if post["status"] == "invalidated":
                 return FactIndexEntry()
 
-            group_id = self.settings.group_for(post["namespace"])
+            group_id = group_id_override or self.settings.group_for(post["namespace"])
             self._route_group(group_id)
 
             if self.settings.ingest_mode == "triplet":
-                return await self._upsert_curated_triplet(post, group_id)
-            return await self._upsert_episode(post, group_id)
+                return await self._upsert_curated_triplet(
+                    post, group_id, identity_seed=identity_seed
+                )
+            return await self._upsert_episode(
+                post, group_id, identity_seed=identity_seed
+            )
 
-    async def _upsert_episode(self, post: frontmatter.Post, group_id: str) -> FactIndexEntry:
+    async def _upsert_episode(
+        self,
+        post: frontmatter.Post,
+        group_id: str,
+        *,
+        identity_seed: str | None = None,
+    ) -> FactIndexEntry:
         graphiti = self._graph()
         created_at = post["created_at"]
         if isinstance(created_at, str):
@@ -222,6 +245,11 @@ class GraphIndex:
             source_description=f"plk:{post['id']}",
             reference_time=created_at,
             group_id=group_id,
+            uuid=(
+                str(uuid5(NAMESPACE_URL, f"{identity_seed}:episode"))
+                if identity_seed
+                else None
+            ),
         )
         return FactIndexEntry(
             episode_uuids=[result.episode.uuid],
@@ -229,24 +257,58 @@ class GraphIndex:
             group_id=group_id,
         )
 
-    async def _upsert_curated_triplet(self, post: frontmatter.Post, group_id: str) -> FactIndexEntry:
+    async def _upsert_curated_triplet(
+        self,
+        post: frontmatter.Post,
+        group_id: str,
+        *,
+        identity_seed: str | None = None,
+    ) -> FactIndexEntry:
         graphiti = self._graph()
         statement = post["statement"]
         tags: list[str] = list(post.get("tags") or []) or [post["namespace"]]
         now = datetime.now(timezone.utc)
 
         edge_uuids: list[str] = []
-        for tag in tags:
-            fact_node = EntityNode(name=statement, group_id=group_id, labels=["Entity"])
-            tag_node = EntityNode(name=tag, group_id=group_id, labels=["Entity"])
-            edge = EntityEdge(
-                name="RELATES_TO",
-                fact=statement,
-                source_node_uuid=fact_node.uuid,
-                target_node_uuid=tag_node.uuid,
-                group_id=group_id,
-                created_at=now,
-            )
+        for index, tag in enumerate(tags):
+            identity = f"{identity_seed}:tag:{index}:{tag}" if identity_seed else None
+            if identity:
+                fact_node = EntityNode(
+                    uuid=str(uuid5(NAMESPACE_URL, f"{identity}:fact")),
+                    name=statement,
+                    group_id=group_id,
+                    labels=["Entity"],
+                )
+                tag_node = EntityNode(
+                    uuid=str(uuid5(NAMESPACE_URL, f"{identity}:tag")),
+                    name=tag,
+                    group_id=group_id,
+                    labels=["Entity"],
+                )
+                edge = EntityEdge(
+                    uuid=str(uuid5(NAMESPACE_URL, f"{identity}:edge")),
+                    name="RELATES_TO",
+                    fact=statement,
+                    source_node_uuid=fact_node.uuid,
+                    target_node_uuid=tag_node.uuid,
+                    group_id=group_id,
+                    created_at=now,
+                )
+            else:
+                fact_node = EntityNode(
+                    name=statement, group_id=group_id, labels=["Entity"]
+                )
+                tag_node = EntityNode(
+                    name=tag, group_id=group_id, labels=["Entity"]
+                )
+                edge = EntityEdge(
+                    name="RELATES_TO",
+                    fact=statement,
+                    source_node_uuid=fact_node.uuid,
+                    target_node_uuid=tag_node.uuid,
+                    group_id=group_id,
+                    created_at=now,
+                )
             nodes = [fact_node, tag_node]
             edges = [edge]
             # Curated PLK facts are already reviewed. Graphiti.add_triplet() routes even
