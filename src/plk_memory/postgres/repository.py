@@ -335,18 +335,22 @@ class PostgresFactRepository:
                 )
             ).mappings()
             supersedes = await session.scalars(
-                select(knowledge_relations.c.to_fact_id).where(
+                select(knowledge_relations.c.to_fact_id)
+                .where(
                     knowledge_relations.c.organization_id == scope.organization_id,
                     knowledge_relations.c.from_fact_id == fact_id,
                     knowledge_relations.c.relation_type == "supersedes",
                 )
+                .order_by(knowledge_relations.c.to_fact_id)
             )
             superseded_by = await session.scalars(
-                select(knowledge_relations.c.from_fact_id).where(
+                select(knowledge_relations.c.from_fact_id)
+                .where(
                     knowledge_relations.c.organization_id == scope.organization_id,
                     knowledge_relations.c.to_fact_id == fact_id,
                     knowledge_relations.c.relation_type == "supersedes",
                 )
+                .order_by(knowledge_relations.c.from_fact_id)
             )
             return FactHistory(
                 fact_id=fact_id,
@@ -693,6 +697,17 @@ class PostgresFactRepository:
         )
         if len(payload.body) > 2000:
             raise ValueError("body must not exceed 2,000 characters")
-        findings = scan_text(payload.model_dump_json())
+        findings = set(scan_text(payload.model_dump_json()))
+        # Long opaque IDs are valid in source URLs (Notion/Google Drive), so
+        # entropy checks target authored content while known token formats are
+        # still checked across the complete serialized payload above.
+        for authored_text in (
+            payload.statement,
+            payload.why,
+            payload.how_to_apply,
+            payload.body,
+            *payload.tags,
+        ):
+            findings.update(scan_text(authored_text, entropy=True))
         if findings:
-            raise PolicyViolation(f"secret detected: {findings}")
+            raise PolicyViolation(f"secret detected: {sorted(findings)}")

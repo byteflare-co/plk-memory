@@ -17,7 +17,7 @@ IN_MEMORY_ENTROPY_PATTERNS = (
 )
 
 
-def scan_text(text: str) -> list[str]:
+def scan_text(text: str, *, entropy: bool = False) -> list[str]:
     """Scan an in-memory fact before it reaches any persistence adapter."""
 
     findings = {
@@ -25,11 +25,12 @@ def scan_text(text: str) -> list[str]:
         for name, pattern in CUSTOM_PATTERNS
         if pattern.search(text)
     }
-    findings.update(
-        f"custom:{name}"
-        for name, pattern in IN_MEMORY_ENTROPY_PATTERNS
-        if pattern.search(text)
-    )
+    if entropy:
+        findings.update(
+            f"custom:{name}"
+            for name, pattern in IN_MEMORY_ENTROPY_PATTERNS
+            if pattern.search(text)
+        )
     with default_settings():
         for line in text.splitlines():
             findings.update(
