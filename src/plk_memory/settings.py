@@ -13,7 +13,8 @@ DOMAINS = ("tax", "legal", "shaho", "dev", "backoffice", "biz", "agent")
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="PLK_", env_file=".env", extra="ignore")
 
-    # データリポジトリ（SoT = リモート main）
+    # Git-primary compatibility backend のデータリポジトリ。
+    # PostgreSQL-primary では DB→Git snapshot export の出力先になる。
     data_repo_url: str = ""
     data_repo_path: Path = Path.home() / ".plk" / "data-repo"
     knowledge_subdir: str = "knowledge"

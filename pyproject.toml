@@ -1,7 +1,7 @@
 [project]
 name = "plk-memory"
 version = "0.1.0"
-description = "PLK メモリ基盤 — Git=SoT + Graphiti 派生索引の MCP メモリサーバー"
+description = "PLK メモリ基盤 — PostgreSQL/Git storage + 再構築可能な検索索引"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115",

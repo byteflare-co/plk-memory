@@ -1,4 +1,22 @@
 services:
+  postgres:
+    image: postgres:17-alpine
+    profiles: ["postgres"]
+    environment:
+      POSTGRES_DB: plk
+      POSTGRES_USER: plk
+      POSTGRES_PASSWORD: plk
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U plk -d plk"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
   falkordb:
     image: falkordb/falkordb:latest
     ports:
@@ -8,4 +26,5 @@ services:
     restart: unless-stopped
 
 volumes:
+  postgres-data:
   falkordb-data:
