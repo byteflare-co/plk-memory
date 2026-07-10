@@ -119,6 +119,19 @@ PLK_TEST_DATABASE_URL=postgresql://plk:plk@127.0.0.1:5432/plk \
 
 rollback window 中も DB→Git export は行うが、Git を再び writer にする場合は明示的な運用判断と再importが必要。
 
+Shadow parity のみを確認する importer は次で実行する。
+
+```bash
+PLK_DATA_REPO_PATH=/path/to/frozen/git-snapshot \
+PLK_DATABASE_URL=postgresql://... \
+uv run python -m scripts.migration.shadow_import_git \
+  --organization-id 00000000-0000-0000-0000-000000000001
+```
+
+同じ Git commit からの再実行は deterministic idempotency key で replay される。supersedes chain は
+old-to-new の topological order で投入する。これは current content/status/relation の比較専用で、Git の
+historical timestamp を再構成しないため final production cutover には使用しない。
+
 ## 7. SQUEEZE へ逆輸入する際の対応
 
 - Aurora PostgreSQL Serverless v2、IAM DB auth、RDS-managed secret を前提にする。
