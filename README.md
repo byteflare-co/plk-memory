@@ -3,22 +3,32 @@
 > 本書は plk-memory の **全体オーバービュー**。本書 1 枚で基盤の全体像・
 > アーキテクチャ・規約・運用・現在地が分かるように書いてある。人間・AI エージェント・他ディレクトリから
 > 参照するエージェントの共通入口。
-> 最終更新: 2026-07-10（PostgreSQL-primary 基盤追加）
+> 最終更新: 2026-07-10（PostgreSQL-primary runtime追加）
 
 > [!IMPORTANT]
-> 現在は移行期間中。既存 Mac ランタイムは Git-primary のまま動作する一方、
-> 複数人・複数サービス向けの次期正本として PostgreSQL adapter、Alembic migration、
-> transactional outbox、RLS を実装済み。新アーキテクチャと切替条件は
+> `PLK_STORAGE_BACKEND=git` は既存Mac互換、`postgres` は複数人・複数サービス向けruntime。
+> PostgreSQL版はtenant RLS、immutable revision、idempotency、transactional outbox、
+> 独立index worker、revision固定approvalを実装済み。新アーキテクチャと切替条件は
 > [`docs/design/2026-07-10-postgres-primary-architecture.md`](docs/design/2026-07-10-postgres-primary-architecture.md) を参照。
 
 ## 1. これは何か
 
 Byteflare のエージェント群（Claude Code / Codex / Hermes / 自作 Agent SDK）が読み書きする**組織メモリ基盤**。
-現行は **Git を SoT（真実の源）**とする MCP メモリサーバー。次期構成では
+個人運用では **Git を SoT（真実の源）**、組織runtimeでは
 **PostgreSQL を更新可能な正本、Git と検索インデックスを再構築可能な派生物**とし、
 税務・社会保険・法務・過去の意思決定・社内ノウハウを蓄積し検索する。
 1 人法人 Byteflare での実運用を通じて型（規約・namespace・昇格フロー・運用）とコードを検証し、
 **コードごと SQUEEZE へ逆輸入できる複数 writer 基盤**として段階移行中。
+
+### Backend mode
+
+| mode | 正本 | writer | 用途 |
+|---|---|---|---|
+| `git`（既定） | Git/Markdown | 単一プロセス | 現行Mac互換・小規模運用 |
+| `postgres` | PostgreSQL/Aurora | 複数API replica | 組織運用・SQUEEZE逆輸入 |
+
+PostgreSQL版ではAPIとindex workerを別credential・別processで動かす。検索indexは候補IDだけを返し、
+最終結果は必ずRLS配下のDB current revisionから再構成する。下記の従来図はGit backendの構成を示す。
 
 ## 2. アーキテクチャ全体図
 
@@ -95,7 +105,7 @@ flowchart TD
         PROM["ドメインを超えて使えると判断<br/>→ plk_propose_promotion が PR 生成<br/>→ 人間が review & merge<br/>→ poller が検知し shared/ へ"]
     end
 
-    subgraph write["Q2. どういう仕組みで蓄積される？ — 保存先は DB ではなく Git リポジトリ"]
+    subgraph write["Q2. Git backendではどう蓄積される？ — 1 fact 1 fileをcommit"]
         CHK{"規約バリデーション<br/>＋ シークレットスキャン"}
         REJ["違反は書き込み自体を拒否"]
         GITW["markdown ファイルを 1 枚 commit ＝ DB でいう INSERT<br/>（WriteSerializer が同時書き込みを 1 件ずつに直列化）<br/>→ GitHub へ push して確定（履歴・レビュー・CI が効く）"]
@@ -181,6 +191,7 @@ flowchart TD
 | `plk_history` | 変遷照会（frontmatter `id` をキーに。rename でも履歴が切れない） | read |
 | `plk_status` | 索引鮮度（`last_ingested_commit` と HEAD の差）・未 push commit 数・件数・未処理 PromotionRequest 一覧 | read |
 | `plk_propose_promotion` | PromotionRequest 作成 → GitHub PR 生成（push 完了がプリコンディション） | write |
+| `plk_decide_promotion` | PostgreSQL backendのrevision固定proposalを承認・却下。承認時はshared revisionとoutboxを同一transactionで作成 | write |
 
 - **検索動線**（作って使わない対策の中核）: 各クライアントの常駐指示（CLAUDE.md / AGENTS.md / SOUL.md）に 1 行を配布 —
   「税務・社保・法務・過去の意思決定・社内ノウハウに関わる判断の前に `plk_search` を一度呼ぶ（`reason="auto-guideline"` を付ける）」。

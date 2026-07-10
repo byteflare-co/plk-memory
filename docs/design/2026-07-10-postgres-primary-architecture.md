@@ -1,6 +1,6 @@
 # PostgreSQL-primary PLK アーキテクチャ
 
-> Status: foundation implemented, runtime cutover not started  
+> Status: runtime implemented, production deployment gates remain
 > Decision date: 2026-07-10
 
 ## 1. 結論
@@ -143,15 +143,19 @@ invalidation reason、supersedes relation を照合する。
 - migration は service 起動時でなく one-off task で実行する。
 - Aurora engine minor version と拡張は staging で検証後に固定する。local compose の major pin を本番指定として流用しない。
 
-## 8. 残作業と cutover gate
+## 8. 実装状況とproduction gate
 
-foundation があるだけでは production cutover しない。以下が gate。
+実装済み:
 
-- 現行 MCP/API を storage-neutral application service に接続
-- JWT claim から `organization_id`, principal, role を導出
-- outbox index worker と lag/dead-letter metrics
-- Git snapshot importer/exporter と parity report
-- approval API の実装
+- 現行MCP/APIをstorage-neutral application serviceへ接続
+- JWT `organization_id` / roles / actor type とbearer互換actor
+- tenant別Graph partitionとDB current-row rehydrate
+- 独立outbox worker、aggregate順序、lease fencing、retry/dead-letter、lag status
+- commit固定shadow importerと全payload/relation parity
+- revision固定promotion proposal/approval/rejection/stale判定
+
+production deployment前に残るgate:
+
 - two API replicas + two workers の負荷/障害試験
 - backup/restore、PITR、RTO/RPO の実証
 - SQUEEZE staging Aurora で RLS/IAM auth/migration を実証

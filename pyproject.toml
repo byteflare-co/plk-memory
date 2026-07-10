@@ -23,6 +23,9 @@ dependencies = [
     "alembic==1.18.4",
 ]
 
+[project.scripts]
+plk-index-worker = "plk_memory.index_worker:main"
+
 [dependency-groups]
 dev = [
     "pytest>=8",

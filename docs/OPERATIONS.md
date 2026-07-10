@@ -1,17 +1,17 @@
 # plk-memory セットアップ・運用ガイド
 
-PLK メモリ基盤 — Git=SoT + Graphiti 派生索引の MCP メモリサーバー。
+PLK メモリ基盤 — Git互換backend / PostgreSQL組織backend + Graphiti派生索引。
 
 ## 全体像
 
 > 基盤全体のアーキテクチャ・規約・現在地は [`../README.md`](../README.md) を参照。
 
-plk-memory は **Git を SoT（真実の源）とし、graphiti/FalkorDB を再構築可能な派生索引**とする
-組織メモリの MCP サーバー。エージェント（Claude Code / Codex / Hermes / 自作）が `plk_search` で
+plk-memory は個人互換modeでは **Git**、複数writerの組織modeでは **PostgreSQL** を正本とし、
+graphiti/FalkorDB を再構築可能な派生索引とする組織メモリの MCP サーバー。エージェント（Claude Code / Codex / Hermes / 自作）が `plk_search` で
 過去の知見を引き、`plk_add` で書き、`plk_propose_promotion` でドメイン知見を全社共有（`shared/`）へ
 昇格させる。
 
-- **データの実体**: `agent-organization` リポジトリの `knowledge/`（1 ファクト 1 markdown ファイル）。
+- **データの実体**: Git backendは `agent-organization/knowledge/`、PostgreSQL backendはtenant RLS配下のimmutable revision。
 - **アーキテクチャ / 設計判断**: 設計書（SoT）は [`design/`](design/)（入口は [`../README.md`](../README.md)）を参照。
 - **組織展開**: 移行手順は [`MIGRATION.md`](MIGRATION.md)、実測・判断は [`LESSONS.md`](LESSONS.md)。
 - **ポート境界**: FactStore(Git) / GraphIndex(graphiti) / WriteSerializer(flock) / PromotionBackend
@@ -47,6 +47,30 @@ uv sync
 ```bash
 uv run uvicorn plk_memory.app:create_app --factory --host 127.0.0.1 --port 8735
 ```
+
+### PostgreSQL-primary local runtime
+
+API roleとworker roleは本番では必ず分離する。以下の同一credential例はlocal開発専用。
+
+```bash
+docker compose --profile postgres up -d postgres falkordb
+PLK_DATABASE_URL=postgresql://plk:plk@127.0.0.1:5432/plk \
+  uv run alembic upgrade head
+
+export PLK_STORAGE_BACKEND=postgres
+export PLK_DATABASE_URL=postgresql://plk:plk@127.0.0.1:5432/plk
+export PLK_WORKER_DATABASE_URL=postgresql://plk:plk@127.0.0.1:5432/plk
+export PLK_DEFAULT_ORGANIZATION_ID=00000000-0000-0000-0000-000000000001
+
+# terminal 1: API（NOBYPASSRLS role）
+uv run uvicorn plk_memory.app:create_app --factory --host 127.0.0.1 --port 8735
+
+# terminal 2: index worker（BYPASSRLS role）
+uv run plk-index-worker
+```
+
+`/healthz` はDBへ接続できない場合503。Graphiti/Ollama停止時はDB writeを維持し、検索だけdegradedになる。
+workerは同一factのrevisionを順番に処理し、max attempts到達後はdead letterへ移す。
 
 ## ④動作確認
 
