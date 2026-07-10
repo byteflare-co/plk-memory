@@ -41,8 +41,11 @@ plk-validator = { path = "../agent-organization/tools/validator", editable = tru
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-markers = ["live: 外部サービス（FalkorDB/Ollama/Anthropic）が必要な統合テスト"]
-addopts = "-m 'not live'"
+markers = [
+    "live: 外部サービス（FalkorDB/Ollama/Anthropic）が必要な統合テスト",
+    "postgres: PostgreSQL が必要な永続化統合テスト",
+]
+addopts = "-m 'not live and not postgres'"
 
 [build-system]
 requires = ["hatchling"]
