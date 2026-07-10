@@ -125,6 +125,7 @@ class IndexEntry(FrozenModel):
     indexed_revision: int = Field(ge=1)
     content_hash: str
     backend_refs: tuple[str, ...] = ()
+    last_event_id: UUID | None = None
     indexed_at: datetime
 
 
@@ -138,4 +139,3 @@ class IndexCandidate(FrozenModel):
     fact_id: str
     indexed_revision: int = Field(ge=1)
     score: float | None = None
-

@@ -64,6 +64,18 @@ class PostgresDatabase:
             await set_organization_context(session, organization_id)
             yield session
 
+    @asynccontextmanager
+    async def worker_transaction(self) -> AsyncIterator[AsyncSession]:
+        """Open a transaction for a dedicated worker role with ``BYPASSRLS``.
+
+        API request paths must use :meth:`transaction`. This method exists for
+        the cross-organization outbox/index worker and therefore requires a
+        separately provisioned database role.
+        """
+
+        async with self.sessions() as session, session.begin():
+            yield session
+
 
 async def set_organization_context(
     session: AsyncSession,
