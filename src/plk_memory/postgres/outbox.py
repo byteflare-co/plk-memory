@@ -30,6 +30,10 @@ class PostgresChangeFeed:
         lease_until: datetime,
     ) -> Sequence[KnowledgeChanged]:
         now = datetime.now(UTC)
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        if lease_until <= now:
+            raise ValueError("lease_until must be in the future")
         async with self.database.worker_transaction() as session:
             rows = (
                 await session.execute(
@@ -67,13 +71,16 @@ class PostgresChangeFeed:
             )
             return tuple(KnowledgeChanged.model_validate(row["payload"]) for row in rows)
 
-    async def ack(self, event_ids: Sequence[str]) -> None:
+    async def ack(self, event_ids: Sequence[str], *, consumer: str) -> None:
         if not event_ids:
             return
         async with self.database.worker_transaction() as session:
             await session.execute(
                 update(outbox_events)
-                .where(outbox_events.c.event_id.in_([UUID(value) for value in event_ids]))
+                .where(
+                    outbox_events.c.event_id.in_([UUID(value) for value in event_ids]),
+                    outbox_events.c.lease_owner == consumer,
+                )
                 .values(
                     processed_at=datetime.now(UTC),
                     lease_owner=None,
@@ -83,12 +90,15 @@ class PostgresChangeFeed:
             )
 
     async def fail(
-        self, event_id: str, *, error: str, retry_at: datetime
+        self, event_id: str, *, consumer: str, error: str, retry_at: datetime
     ) -> None:
         async with self.database.worker_transaction() as session:
             await session.execute(
                 update(outbox_events)
-                .where(outbox_events.c.event_id == UUID(event_id))
+                .where(
+                    outbox_events.c.event_id == UUID(event_id),
+                    outbox_events.c.lease_owner == consumer,
+                )
                 .values(
                     available_at=retry_at,
                     lease_owner=None,
@@ -130,6 +140,8 @@ class PostgresIndexStateRepository:
         )
 
     async def put_if_newer(self, entry: IndexEntry) -> bool:
+        if entry.last_event_id is None:
+            raise ValueError("last_event_id is required for PostgreSQL projection state")
         statement = pg_insert(search_projection_state).values(
             organization_id=entry.organization_id,
             backend=self.backend,
@@ -137,7 +149,7 @@ class PostgresIndexStateRepository:
             indexed_version=entry.indexed_revision,
             content_hash=entry.content_hash,
             backend_refs=list(entry.backend_refs),
-            last_event_id=entry.last_event_id or UUID(int=0),
+            last_event_id=entry.last_event_id,
             indexed_at=entry.indexed_at,
         )
         statement = statement.on_conflict_do_update(

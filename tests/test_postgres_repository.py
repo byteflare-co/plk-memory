@@ -182,7 +182,7 @@ async def test_outbox_lease_ack_and_projection_version_guard(database, actor):
     )
     own_event = next(event for event in events if event.event_id == created.event_id)
     assert own_event.revision == 1
-    await feed.ack([str(own_event.event_id)])
+    await feed.ack([str(own_event.event_id)], consumer="worker-1")
 
     projection = PostgresIndexStateRepository(database, backend="test-index")
     now = datetime.now(UTC)
