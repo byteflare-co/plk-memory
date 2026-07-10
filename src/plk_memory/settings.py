@@ -18,6 +18,18 @@ class Settings(BaseSettings):
     data_repo_path: Path = Path.home() / ".plk" / "data-repo"
     knowledge_subdir: str = "knowledge"
 
+    # Persistence backend. Git remains the compatibility default while the
+    # PostgreSQL reference path is rolled out and shadow-verified.
+    storage_backend: str = "git"  # git | postgres
+    database_url: str = ""
+    database_schema: str = "plk_memory"
+    default_organization_id: str = ""
+    database_pool_size: int = 10
+    outbox_poll_interval_seconds: float = 1.0
+    outbox_batch_size: int = 100
+    require_idempotency_key: bool = False
+    require_expected_revision: bool = False
+
     # ローカル状態
     state_path: Path = Path.home() / ".plk" / "state.json"
     usage_log_path: Path = Path.home() / ".plk" / "usage.jsonl"
