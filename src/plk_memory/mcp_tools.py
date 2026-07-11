@@ -23,27 +23,36 @@ result has degraded=true, treat it as an index failure and answer with caveats o
 fallback evidence."""
 
 PLK_ADD_DESCRIPTION = """Add a candidate only after it passes the PLK admission
-rubric: it has durable value across future sessions (or records a reasoned
-organizational decision), is verified rather than speculative (except information
+rubric. The top-level gate is counterfactual usefulness: name the future situation
+in which retrieving this fact changes a decision or action, and how it changes it.
+If that cannot be stated concretely, do not propose or add it. A past organizational
+decision is not exempt merely because it was important; architecture state, ADRs,
+task history, and implementation choices belong in their existing source of truth
+unless their rationale will change a likely future decision. The candidate must
+have durable value across future sessions, be verified rather than speculative (except information
 intentionally isolated as external-untrusted in plk.quarantine), does not copy a
 volatile value, raw data, or whole-source summary from an existing source of truth,
 is not limited to one customer/session, fits philosophy (unconditional norm), logic (conditional norm),
 or knowhow (verifiable fact/procedure), and is one independently invalidatable
 claim. Do not call this tool for transient dates/prices/status, conversation or work
-summaries or single-customer reactions. Stable facts/procedures from official docs,
-code, or runbooks may be distilled as minimal knowhow when they have cross-session
-retrieval value and point to the source; do not copy the source itself. Before asking
+summaries, single-customer reactions, current architecture/configuration that code
+or design docs already describe, or decisions with no concrete future application.
+Stable facts/procedures from official docs, code, or runbooks may be distilled as
+minimal knowhow only when retrieving them changes a future decision or action and
+they point to the source; do not copy the source itself. Before asking
 the user for approval, normalize the candidate and use
 plk_search to check duplicates and updates. Do not ask a generic "save to PLK?"
-question: show the proposed statement, kind, namespace, and whether it is new or an
-update. Choose an existing namespace from plk.domain.tax/legal/shaho/dev/backoffice/
+question: show the proposed statement, kind, namespace, whether it is new or an
+update, the future retrieval situation, and the decision or action that changes
+compared with not retrieving it. Choose an existing namespace from plk.domain.tax/legal/shaho/dev/backoffice/
 biz/agent (or plk.quarantine for external-untrusted data); never invent one. When an
 observed result motivates a future behavior, store the conditional behavior as
 logic and put the observation in why/source; create a separate knowhow fact only if
 the observation itself has durable retrieval value. For an update preview the old
-fact id and statement that supersedes will invalidate. Philosophy and human-authored
-facts are protected writes: ordinary agent credentials are rejected; use the backend's
-human review path or a dedicated authorized role. Normal agent callers should omit
+fact id and statement that supersedes will invalidate. Philosophy candidates must
+be proposed for human PR direct editing, not sent to plk_add by an ordinary agent.
+The backend may expose protected administrative write roles, but they do not change
+this agent proposal workflow. Normal agent callers should omit
 source_type or set source_type="agent". Do not use source_type="conversation";
 ordinary agent credentials may use "agent" and
 "external-untrusted" for API callers. Use external-untrusted only with

@@ -31,8 +31,8 @@ async def test_plk_add_description_explains_source_type_constraints():
     description = tools["plk_add"].description or ""
 
     assert 'source_type="agent"' in description
-    assert "human-authored" in description
-    assert "dedicated authorized role" in description
+    assert "human PR direct editing" in description
+    assert "protected administrative write roles" in description
     assert 'source_type="conversation"' in description
     assert 'namespace="plk.quarantine"' in description
     assert "supersedes=[old_fact_id]" in description
@@ -46,6 +46,11 @@ async def test_plk_add_description_explains_semantic_admission_rubric():
     normalized = " ".join(description.split())
 
     assert "future sessions" in normalized
+    assert "counterfactual usefulness" in normalized
+    assert "changes a decision or action" in normalized
+    assert "organizational decision is not exempt" in normalized
+    assert "current architecture/configuration" in normalized
+    assert "decisions with no concrete future application" in normalized
     assert "source of truth" in normalized
     assert "Stable facts/procedures" in normalized
     assert "plk.quarantine" in normalized
@@ -53,7 +58,10 @@ async def test_plk_add_description_explains_semantic_admission_rubric():
     assert "single-customer reactions" in normalized
     assert 'generic "save to PLK?"' in normalized
     assert "statement, kind, namespace" in normalized
+    assert "future retrieval situation" in normalized
+    assert "decision or action that changes compared with not retrieving it" in normalized
     assert "never invent one" in normalized
     assert "conditional behavior as" in normalized
     assert "old fact id and statement" in normalized
-    assert "Philosophy and human-authored facts are protected writes" in normalized
+    assert "Philosophy candidates must be proposed for human PR direct editing" in normalized
+    assert "not sent to plk_add by an ordinary agent" in normalized
