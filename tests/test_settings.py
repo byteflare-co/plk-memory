@@ -4,7 +4,7 @@ from plk_memory.settings import Settings
 def make(**kw) -> Settings:
     base = dict(tokens={"t1": "claude-code"}, admin_token="adm", _env_file=None)
     base.update(kw)
-    return Settings(**base)
+    return Settings(**base)  # pyright: ignore[reportArgumentType]
 
 
 def test_group_single_mode_folds_namespaces():

@@ -15,6 +15,9 @@ from fastapi import APIRouter, HTTPException, Request, Response
 
 if TYPE_CHECKING:
     from plk_memory.app import AppServices
+    from plk_memory.postgres.application import PostgresAppServices
+
+    ServiceFacade = AppServices | PostgresAppServices
 
 _ALLOWED_TAGS = {
     "h1", "h2", "h3", "h4", "p", "ul", "ol", "li", "strong", "em", "code",
@@ -32,7 +35,7 @@ def _cookie_value(password: str) -> str:
     return hashlib.sha256(("plk-ui:" + password).encode("utf-8")).hexdigest()
 
 
-def build_ui_router(services: "AppServices") -> APIRouter:
+def build_ui_router(services: "ServiceFacade") -> APIRouter:
     router = APIRouter()
     settings = services.settings
     expected = _cookie_value(settings.ui_password) if settings.ui_password else None

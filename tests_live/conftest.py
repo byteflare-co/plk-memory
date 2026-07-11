@@ -37,7 +37,11 @@ def _check_ollama(base_url: str) -> str | None:
 
 
 def _live_prerequisites() -> list[str]:
-    s = Settings(tokens={"t": "c"}, admin_token="a", _env_file=None)
+    s = Settings(
+        tokens={"t": "c"},
+        admin_token="a",
+        _env_file=None,  # pyright: ignore[reportCallIssue]
+    )
     checks = [
         _check_falkordb(s.falkordb_host, s.falkordb_port),
         _check_ollama(s.llm_base_url),

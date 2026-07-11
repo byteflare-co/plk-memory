@@ -29,7 +29,9 @@ class FakeGraphIndex:
         if fid in self.fail_for:
             raise RuntimeError(f"fake ingest failure: {fid}")
         if old:
-            self.docs.pop(next(iter(old.episode_uuids), None), None)
+            old_uuid = next(iter(old.episode_uuids), None)
+            if old_uuid is not None:
+                self.docs.pop(old_uuid, None)
         if post["status"] == "invalidated":
             self.docs.pop(fid, None)
             return FactIndexEntry()

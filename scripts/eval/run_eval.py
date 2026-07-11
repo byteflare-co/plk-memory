@@ -66,9 +66,10 @@ def load_facts(settings: Settings) -> list[Fact]:
             continue
         post = frontmatter.load(str(path))
         fid = post.get("id")
-        if not fid:
+        status = post.get("status", "active")
+        if not isinstance(fid, str) or not isinstance(status, str):
             continue
-        facts.append(Fact(fid, path, post.get("status", "active"), post))
+        facts.append(Fact(fid, path, status, post))
     return facts
 
 
@@ -178,7 +179,9 @@ def run_embed(query: str, settings: Settings, index: list[tuple[str, list[float]
 # ランナー: graph（GraphIndex.search）
 # --------------------------------------------------------------------------
 
-async def run_graph_all(queries: list[dict], settings: Settings) -> dict[str, list[str]]:
+async def run_graph_all(
+    queries: list[dict], settings: Settings
+) -> tuple[dict[str, list[str]], int, int]:
     """全クエリを 1 つの GraphIndex インスタンスで検索して {query: ranked_ids} を返す。"""
     from plk_memory.graphindex import GraphIndex
 

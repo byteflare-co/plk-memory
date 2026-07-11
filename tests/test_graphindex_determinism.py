@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from typing import Any, cast
 from uuid import NAMESPACE_URL, uuid5
 
 import frontmatter
@@ -29,7 +30,7 @@ async def test_episode_projection_precreates_deterministic_uuid(monkeypatch):
         ),
     )
     index = GraphIndex(Settings.model_construct())
-    index._graphiti = graphiti
+    cast(Any, index)._graphiti = graphiti
     post = frontmatter.Post(
         "body",
         id="01JZC2V7E8B3F4G5H6J7K8M9N0",

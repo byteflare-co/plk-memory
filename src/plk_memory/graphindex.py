@@ -33,6 +33,11 @@ from graphiti_core.utils.bulk_utils import add_nodes_and_edges_bulk
 from graphiti_core.utils.maintenance.graph_data_operations import clear_data
 from pydantic import BaseModel
 
+from plk_memory.facts import (
+    require_metadata_datetime,
+    require_metadata_str,
+    require_metadata_str_list,
+)
 from plk_memory.rendering import content_hash, episode_name, render_episode
 from plk_memory.settings import Settings
 from plk_memory.state import FactIndexEntry
@@ -221,7 +226,8 @@ class GraphIndex:
                     await self._delete_entry(old)
                 return FactIndexEntry()
 
-            group_id = group_id_override or self.settings.group_for(post["namespace"])
+            namespace = require_metadata_str(post, "namespace")
+            group_id = group_id_override or self.settings.group_for(namespace)
             self._route_group(group_id)
 
             if self.settings.ingest_mode == "triplet":
@@ -247,9 +253,7 @@ class GraphIndex:
         identity_seed: str | None = None,
     ) -> FactIndexEntry:
         graphiti = self._graph()
-        created_at = post["created_at"]
-        if isinstance(created_at, str):
-            created_at = datetime.fromisoformat(created_at)
+        created_at = require_metadata_datetime(post, "created_at")
 
         episode_uuid = (
             str(uuid5(NAMESPACE_URL, f"{identity_seed}:episode"))
@@ -293,8 +297,11 @@ class GraphIndex:
         identity_seed: str | None = None,
     ) -> FactIndexEntry:
         graphiti = self._graph()
-        statement = post["statement"]
-        tags: list[str] = list(post.get("tags") or []) or [post["namespace"]]
+        statement = require_metadata_str(post, "statement")
+        namespace = require_metadata_str(post, "namespace")
+        tags = require_metadata_str_list(post, "tags")
+        if not tags:
+            tags = [namespace]
         now = datetime.now(timezone.utc)
 
         edge_uuids: list[str] = []

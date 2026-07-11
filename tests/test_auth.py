@@ -14,7 +14,7 @@ def make_app():
         tokens={"tok-cc": "claude-code"},
         admin_token="tok-admin",
         default_organization_id=ORG,
-        _env_file=None,
+        _env_file=None,  # pyright: ignore[reportCallIssue]
     )
     app = FastAPI()
     app.add_middleware(BearerAuthMiddleware, settings=s)

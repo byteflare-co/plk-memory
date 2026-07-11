@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from typing import Any, cast
 
 from plk_memory.mcp_tools import build_mcp
 
@@ -8,7 +9,7 @@ class DummyServices:
 
 
 async def test_plk_tools_have_agent_facing_descriptions():
-    mcp = build_mcp(DummyServices())
+    mcp = build_mcp(cast(Any, DummyServices()))
 
     tools = {tool.name: tool for tool in await mcp.list_tools()}
 
@@ -25,7 +26,7 @@ async def test_plk_tools_have_agent_facing_descriptions():
 
 
 async def test_plk_add_description_explains_source_type_constraints():
-    mcp = build_mcp(DummyServices())
+    mcp = build_mcp(cast(Any, DummyServices()))
 
     tools = {tool.name: tool for tool in await mcp.list_tools()}
     description = tools["plk_add"].description or ""
@@ -39,7 +40,7 @@ async def test_plk_add_description_explains_source_type_constraints():
 
 
 async def test_plk_add_description_explains_semantic_admission_rubric():
-    mcp = build_mcp(DummyServices())
+    mcp = build_mcp(cast(Any, DummyServices()))
 
     tools = {tool.name: tool for tool in await mcp.list_tools()}
     description = tools["plk_add"].description or ""

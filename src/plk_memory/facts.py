@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timezone
+from typing import Any
 
 import frontmatter
 from pydantic import ValidationError
@@ -28,6 +29,35 @@ class FactNotFound(KeyError):
     pass
 
 
+def require_metadata_str(post: frontmatter.Post, key: str) -> str:
+    """frontmatter の必須文字列を型変換せずに検証する。"""
+    value: Any = post.get(key)
+    if not isinstance(value, str) or not value:
+        raise FactError(f"frontmatter.{key} は空でない文字列である必要があります")
+    return value
+
+
+def require_metadata_datetime(post: frontmatter.Post, key: str) -> datetime:
+    """YAML が datetime または ISO 文字列として読んだ日時を検証する。"""
+    value: Any = post.get(key)
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError as exc:
+            raise FactError(f"frontmatter.{key} は ISO 8601 日時である必要があります") from exc
+    raise FactError(f"frontmatter.{key} は日時である必要があります")
+
+
+def require_metadata_str_list(post: frontmatter.Post, key: str) -> list[str]:
+    """frontmatter の文字列配列を検証し、scalar 等を暗黙変換しない。"""
+    value: Any = post.get(key)
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        raise FactError(f"frontmatter.{key} は文字列の配列である必要があります")
+    return value
+
+
 class FactService:
     def __init__(self, store: GitStore, settings: Settings):
         self.store = store
@@ -45,9 +75,17 @@ class FactService:
         return out
 
     def index(self) -> dict[str, str]:
-        return {
-            post["id"]: rel for post, rel in self.list_posts() if post.get("id")
-        }
+        result: dict[str, str] = {}
+        for post, rel in self.list_posts():
+            if post.get("id") is not None:
+                try:
+                    result[require_metadata_str(post, "id")] = rel
+                except FactError:
+                    # SyncEngine records malformed facts as dead letters. Reads must
+                    # keep healthy facts available instead of letting one bad file
+                    # make every get/history/invalidate operation fail.
+                    continue
+        return result
 
     def get(self, fact_id: str) -> tuple[frontmatter.Post, str]:
         rel = self.index().get(fact_id)

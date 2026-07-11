@@ -1,4 +1,5 @@
 import subprocess
+from typing import Any, cast
 
 import pytest
 
@@ -66,7 +67,7 @@ class _FakeSettings:
 
 
 def _backend():
-    return GitHubPromotionBackend(_FakeStore(), _FakeSettings())
+    return GitHubPromotionBackend(cast(Any, _FakeStore()), cast(Any, _FakeSettings()))
 
 
 async def test_create_pr_builds_args_and_extracts_number_from_url(monkeypatch):
@@ -82,8 +83,9 @@ async def test_create_pr_builds_args_and_extracts_number_from_url(monkeypatch):
 
     assert number == 123
     assert url == "https://github.com/cutsome/agent-organization/pull/123"
-    assert len(backend.store.build_calls) == 1
-    assert backend.store.build_calls[0]["branch"] == "promote/01JZC2V7E8B3F4G5H6J7K8M9N0"
+    store = cast(Any, backend.store)
+    assert len(store.build_calls) == 1
+    assert store.build_calls[0]["branch"] == "promote/01JZC2V7E8B3F4G5H6J7K8M9N0"
 
     (args,) = calls
     assert args[:2] == ("pr", "create")

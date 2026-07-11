@@ -37,7 +37,7 @@ def make_settings(tmp_path, origin, *, tokens=None, admin_token="a", **overrides
         state_path=tmp_path / "state.json",
         usage_log_path=tmp_path / "usage.jsonl",
         tokens=tokens if tokens is not None else {"t": "c"}, admin_token=admin_token,
-        _env_file=None,
+        _env_file=None,  # pyright: ignore[reportCallIssue]
         **overrides,
     )
 

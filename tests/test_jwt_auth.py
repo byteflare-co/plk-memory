@@ -22,7 +22,8 @@ def keypair():
 def make_settings(keypair) -> Settings:
     return Settings(
         auth_mode="jwt", jwt_issuer=ISSUER, jwt_audience=AUDIENCE,
-        jwt_public_key=keypair.public_key, _env_file=None,
+        jwt_public_key=keypair.public_key,
+        _env_file=None,  # pyright: ignore[reportCallIssue]
     )
 
 

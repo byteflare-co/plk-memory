@@ -18,7 +18,7 @@ import json
 import time
 from pathlib import Path
 
-from plk_memory.app import _build_services
+from plk_memory.app import AppServices, _build_services
 from plk_memory.settings import Settings
 
 
@@ -28,6 +28,8 @@ async def _run(mode: str | None) -> dict:
         settings.ingest_mode = mode
 
     services = _build_services(settings, graph=None)
+    if not isinstance(services, AppServices):
+        raise RuntimeError("measure_ingest requires the Git storage backend")
 
     services.store.ensure_repo()
     await services.graph.start()

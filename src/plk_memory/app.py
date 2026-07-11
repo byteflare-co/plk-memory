@@ -12,6 +12,7 @@ import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
@@ -31,12 +32,15 @@ from plk_memory.sync import SyncEngine
 from plk_memory.usage_log import UsageLog
 from plk_memory.webui import build_ui_router
 
+if TYPE_CHECKING:
+    from plk_memory.postgres.application import PostgresAppServices
+
 try:
-    from fastmcp.utilities.lifespan import combine_lifespans
+    from fastmcp.utilities.lifespan import combine_lifespans as _combine_lifespans
 except ImportError:  # pragma: no cover - フォールバック（API 変更時のみ到達）
     from contextlib import AsyncExitStack
 
-    def combine_lifespans(*lifespans):
+    def _combine_lifespans(*lifespans: Any) -> Any:
         @asynccontextmanager
         async def combined(app):
             async with AsyncExitStack() as stack:
@@ -306,7 +310,7 @@ class AppServices:
         if post.get("status") != "active":
             return {"error": "active な fact のみ昇格できる"}
         ns = post.get("namespace")
-        if not str(ns).startswith("plk.domain."):
+        if not isinstance(ns, str) or not ns.startswith("plk.domain."):
             return {"error": f"昇格できるのは plk.domain.* のみ（現在: {ns}）"}
         # push 完了がプリコンディション（設計書 §5）。
         # ここで先に await（to_thread）を消化しておくことで、以降の
@@ -391,7 +395,8 @@ class AppServices:
 
 
 def _build_services(settings: Settings, graph, promotion_backend=None,
-                    enable_github_promotion: bool = False):
+                    enable_github_promotion: bool = False) -> "AppServices | PostgresAppServices":
+    """Select a backend facade at the dynamic composition boundary."""
     if settings.storage_backend == "postgres":
         return _build_postgres_services(settings, graph)
     store = GitStore(settings)
@@ -482,6 +487,8 @@ def create_app(settings: Settings | None = None, graph=None, promotion_backend=N
         settings, graph, promotion_backend=promotion_backend,
         enable_github_promotion=enable_github_promotion,
     )
+    git_services = cast(AppServices, services)
+    postgres_services = cast("PostgresAppServices", services)
 
     mcp = build_mcp(services)
     mcp_app = mcp.http_app(path="/")
@@ -489,26 +496,26 @@ def create_app(settings: Settings | None = None, graph=None, promotion_backend=N
     @asynccontextmanager
     async def app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
         if settings.storage_backend == "postgres":
-            await services.check_database()
+            await postgres_services.check_database()
             try:
-                await services.start()
+                await postgres_services.start()
             except Exception:  # noqa: BLE001 - DB remains canonical in degraded search mode
                 pass
             try:
                 yield
             finally:
-                await services.close()
+                await postgres_services.close()
             return
-        services.store.ensure_repo()
+        git_services.store.ensure_repo()
         try:
-            await services.graph.start()
+            await git_services.graph.start()
         except Exception as e:  # noqa: BLE001 - degraded 記録して起動は続行（brief 動作規則）
-            services.sync.degraded = str(e)
+            git_services.sync.degraded = str(e)
 
         async def _periodic_sync() -> None:
             while True:
                 try:
-                    await services.sync.sync()
+                    await git_services.sync.sync()
                 except Exception:  # noqa: BLE001 - 周期同期の失敗でサーバーを落とさない
                     pass
                 await asyncio.sleep(settings.sync_interval_seconds)
@@ -519,7 +526,7 @@ def create_app(settings: Settings | None = None, graph=None, promotion_backend=N
             while True:
                 await asyncio.sleep(settings.sync_interval_seconds)
                 try:
-                    await services.poll_promotions()
+                    await git_services.poll_promotions()
                 except Exception:  # noqa: BLE001 - 周期ポーリングの失敗でサーバーを落とさない
                     pass
 
@@ -537,12 +544,12 @@ def create_app(settings: Settings | None = None, graph=None, promotion_backend=N
                 await poll_task
             except asyncio.CancelledError:
                 pass
-            for t in list(services._bg_tasks):
+            for t in list(git_services._bg_tasks):
                 t.cancel()
-            if services._bg_tasks:
-                await asyncio.gather(*services._bg_tasks, return_exceptions=True)
+            if git_services._bg_tasks:
+                await asyncio.gather(*git_services._bg_tasks, return_exceptions=True)
 
-    app = FastAPI(lifespan=combine_lifespans(app_lifespan, mcp_app.lifespan))
+    app = FastAPI(lifespan=_combine_lifespans(app_lifespan, mcp_app.lifespan))
     app.state.services = services
 
     from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -590,7 +597,7 @@ def create_app(settings: Settings | None = None, graph=None, promotion_backend=N
     async def healthz() -> dict:
         if settings.storage_backend == "postgres":
             try:
-                await services.check_database()
+                await postgres_services.check_database()
             except Exception as error:  # noqa: BLE001 - readiness must fail closed
                 raise HTTPException(
                     status_code=503, detail=f"database unavailable: {error}"
@@ -600,27 +607,27 @@ def create_app(settings: Settings | None = None, graph=None, promotion_backend=N
     @app.post("/admin/sync")
     async def admin_sync() -> dict:
         if settings.storage_backend == "postgres":
-            return await services.admin_sync()
-        if services.sync.maintenance:
+            return await postgres_services.admin_sync()
+        if git_services.sync.maintenance:
             raise HTTPException(status_code=503, detail="maintenance 中（reindex 実行中）")
-        return await services.sync.sync()
+        return await git_services.sync.sync()
 
     @app.post("/admin/reindex")
     async def admin_reindex(background_tasks: BackgroundTasks) -> dict:
         if settings.storage_backend == "postgres":
-            return await services.admin_reindex()
+            return await postgres_services.admin_reindex()
         # フラグをルート側で先行セット（begin_reindex は await を挟まない atomic）。
         # 連打の 2 件目は背景タスク開始前にここで 409 になり、silent drop を防ぐ。
-        if not services.sync.begin_reindex():
+        if not git_services.sync.begin_reindex():
             raise HTTPException(status_code=409, detail="reindex は既に実行中")
 
         async def _guarded_reindex() -> None:
             try:
-                await services.sync._do_reindex()
+                await git_services.sync._do_reindex()
             except Exception:  # noqa: BLE001 - 背景ジョブの失敗でサーバーを落とさない
                 pass
             finally:
-                services.sync.end_reindex()
+                git_services.sync.end_reindex()
 
         background_tasks.add_task(_guarded_reindex)
         return {"status": "started"}

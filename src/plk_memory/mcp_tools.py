@@ -12,7 +12,9 @@ from fastmcp import FastMCP
 
 if TYPE_CHECKING:
     from plk_memory.app import AppServices
+    from plk_memory.postgres.application import PostgresAppServices
 
+    ServiceFacade = AppServices | PostgresAppServices
 
 PLK_SEARCH_DESCRIPTION = """Search PLK facts before making decisions about tax,
 social insurance, legal, accounting, company know-how, or prior decisions. Use
@@ -87,7 +89,12 @@ new immutable fact revision in plk.shared; if the fact changed after proposal,
 the request becomes stale instead of promoting unseen content."""
 
 
-def build_mcp(services: "AppServices") -> FastMCP:
+def build_mcp(services: "ServiceFacade") -> FastMCP:
+    """Build the transport surface around either storage backend's service facade.
+
+    The Git and PostgreSQL facades intentionally share a duck-typed tool surface;
+    the concrete backend is selected at the composition root.
+    """
     auth = None
     if services.settings.auth_mode == "jwt":
         from plk_memory.auth import build_jwt_verifier

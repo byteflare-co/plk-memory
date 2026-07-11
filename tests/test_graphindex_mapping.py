@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from typing import Any, cast
 
 import frontmatter
 import pytest
@@ -45,7 +46,7 @@ def test_resolve_maps_by_edge_uuid_for_triplet_mode():
 def make_settings(**kw) -> Settings:
     base = dict(tokens={"t1": "claude-code"}, admin_token="adm", _env_file=None)
     base.update(kw)
-    return Settings(**base)
+    return Settings(**base)  # pyright: ignore[reportArgumentType]
 
 
 def test_build_llm_client_unknown_provider_raises():
@@ -128,7 +129,7 @@ async def test_search_route_is_atomic_under_concurrency():
         g.search("q", ["group-a", "group-b"], {}, limit=3),
     )
 
-    fake = g._graphiti
+    fake = cast(Any, g._graphiti)
     assert len(fake.observed) == 4  # 1 + 1 + 2 groups
     for start_db, end_db in fake.observed:
         assert start_db == end_db, f"driver が操作中に付け替わった: {start_db} -> {end_db}"

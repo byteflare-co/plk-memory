@@ -14,7 +14,11 @@ pytestmark = pytest.mark.live
 
 
 async def test_upsert_search_delete_roundtrip():
-    s = Settings(tokens={"t": "c"}, admin_token="a", _env_file=None)
+    s = Settings(
+        tokens={"t": "c"},
+        admin_token="a",
+        _env_file=None,  # pyright: ignore[reportCallIssue]
+    )
     g = GraphIndex(s)
     await g.start()
     meta = {

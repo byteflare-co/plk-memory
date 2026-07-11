@@ -13,7 +13,7 @@ import asyncio
 
 import frontmatter
 
-from plk_memory.facts import FactService
+from plk_memory.facts import FactService, require_metadata_str
 from plk_memory.gitstore import GitStore, HistoryRewritten
 from plk_memory.settings import Settings
 from plk_memory.state import StateStore, SyncState
@@ -101,11 +101,11 @@ class SyncEngine:
                     state.dead_letters.pop(rel, None)
                     continue
                 post = frontmatter.load(path)
-                fid = post.get("id")
-                if not fid:
+                if post.get("id") is None:
                     # ファクトの frontmatter を持たない md（非対象ファイル）は無視する。
                     state.dead_letters.pop(rel, None)
                     continue
+                fid = require_metadata_str(post, "id")
                 old = state.facts.get(fid)
                 entry = await self.graph.upsert_fact(post, old)
                 if entry.episode_uuids:
@@ -126,7 +126,10 @@ class SyncEngine:
 
     def _id_at(self, ref: str, rel: str) -> str | None:
         try:
-            return frontmatter.loads(self.store.git("show", f"{ref}:{rel}")).get("id")
+            post = frontmatter.loads(self.store.git("show", f"{ref}:{rel}"))
+            if post.get("id") is None:
+                return None
+            return require_metadata_str(post, "id")
         except Exception:
             return None
 
