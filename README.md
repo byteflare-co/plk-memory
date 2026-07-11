@@ -1,263 +1,181 @@
-# plk-memory — Byteflare エージェント共通メモリ基盤（全体オーバービュー）
+# plk-memory
 
-> 本書は plk-memory の **全体オーバービュー**。本書 1 枚で基盤の全体像・
-> アーキテクチャ・規約・運用・現在地が分かるように書いてある。人間・AI エージェント・他ディレクトリから
-> 参照するエージェントの共通入口。
-> 最終更新: 2026-07-10（PostgreSQL-primary runtime追加）
+ByteflareのAIエージェントとサービスが、組織の知識を安全に読み書きするためのメモリ基盤です。
+税務・社会保険・法務・事業判断・社内ノウハウを、将来のセッションや別サービスから再利用できる形で管理します。
 
 > [!IMPORTANT]
-> `PLK_STORAGE_BACKEND=git` は既存Mac互換、`postgres` は複数人・複数サービス向けruntime。
-> PostgreSQL版はtenant RLS、immutable revision、idempotency、transactional outbox、
-> 独立index worker、revision固定approvalを実装済み。新アーキテクチャと切替条件は
-> [`docs/design/2026-07-10-postgres-primary-architecture.md`](docs/design/2026-07-10-postgres-primary-architecture.md) を参照。
+> 複数人・複数サービス向けのアーキテクチャは、PostgreSQLを更新可能な正本とする設計です。
+> Git backendは既存Mac環境との互換性のために残しています。現在の実装状況とproduction gateは
+> [PostgreSQL-primary設計書](docs/design/2026-07-10-postgres-primary-architecture.md)を参照してください。
 
-## 1. これは何か
+## 全体像
 
-Byteflare のエージェント群（Claude Code / Codex / Hermes / 自作 Agent SDK）が読み書きする**組織メモリ基盤**。
-個人運用では **Git を SoT（真実の源）**、組織runtimeでは
-**PostgreSQL を更新可能な正本、Git と検索インデックスを再構築可能な派生物**とし、
-税務・社会保険・法務・過去の意思決定・社内ノウハウを蓄積し検索する。
-1 人法人 Byteflare での実運用を通じて型（規約・namespace・昇格フロー・運用）とコードを検証し、
-**コードごと SQUEEZE へ逆輸入できる複数 writer 基盤**として段階移行中。
+設計の中心は、次の4点です。
 
-### Backend mode
-
-| mode | 正本 | writer | 用途 |
-|---|---|---|---|
-| `git`（既定） | Git/Markdown | 単一プロセス | 現行Mac互換・小規模運用 |
-| `postgres` | PostgreSQL/Aurora | 複数API replica | 組織運用・SQUEEZE逆輸入 |
-
-PostgreSQL版ではAPIとindex workerを別credential・別processで動かす。検索indexは候補IDだけを返し、
-最終結果は必ずRLS配下のDB current revisionから再構成する。Git backendはローカル互換経路として残す。
-
-## 2. アーキテクチャ全体図
-
-Mermaid はテキストなので、この図はエージェントもそのまま構造として読める。ノード名は実装の実体名。
+- **正本はPostgreSQL**: factの変更をimmutable revisionとして保持し、RLSでorganizationを分離する
+- **検索indexは派生物**: Graphiti/FalkorDBは候補検索だけを担い、結果は必ずDBのcurrent revisionで再検証する
+- **書き込みと索引更新を分離**: DB transactionでoutboxまで確定し、独立workerがat-least-onceでGraphへ投影する
+- **人間の承認内容を固定**: 共有知識への昇格はsource revisionを固定し、承認前に変わった内容はstaleとして拒否する
 
 ```mermaid
-flowchart LR
+flowchart TD
     subgraph clients["利用者・サービス"]
-        CC["Claude Code"]
-        CX["Codex"]
-        HM["Hermes"]
-        SDK["Agent SDK / 他サービス"]
-        HUMAN["人間の reviewer / admin"]
+        AGENTS["Claude Code / Codex / Hermes"]
+        SERVICES["Agent SDK / 他サービス"]
+        HUMAN["reviewer / admin"]
     end
 
-    clients -->|"MCP / HTTP + JWT・Bearer"| LB["Load Balancer / service endpoint"]
+    clients -->|"MCP / HTTP<br/>JWT・Bearer"| API
 
-    subgraph api["API plane（NOBYPASSRLS credential・複数replica可）"]
-        API1["plk-memory-api replica 1"]
-        API2["plk-memory-api replica N"]
-        AUTH["JWT claims → ActorContext<br/>organization_id / roles / actor_type"]
-        APP["PostgresAppServices<br/>validation / policy / idempotency / optimistic revision"]
-        REHYDRATE["候補IDをDB current revisionで再hydrate<br/>tenant・status・namespaceを再検証"]
+    subgraph api_plane["API plane（NOBYPASSRLS・複数replica可）"]
+        API["plk-memory-api"]
+        AUTH["ActorContext<br/>organization / roles / actor type"]
+        APP["PostgresAppServices<br/>policy / idempotency / revision check"]
+        REHYDRATE["DB current revisionで再hydrate"]
+        API --> AUTH --> APP
     end
 
-    LB --> API1
-    LB --> API2
-    API1 --> AUTH
-    API2 --> AUTH
-    AUTH --> APP
-
-    subgraph db["PostgreSQL / Aurora（更新可能な正本）"]
-        FACTS[("knowledge_facts<br/>immutable revisions / current head")]
-        AUDIT[("audit events / relations<br/>approval requests / decisions")]
+    subgraph postgres["PostgreSQL / Aurora（更新可能な正本）"]
+        FACTS[("facts + immutable revisions")]
+        AUDIT[("audit + relations + approvals")]
         OUTBOX[("transactional outbox")]
-        PROJECTION[("search_projection_state")]
+        STATE[("projection state")]
     end
 
-    APP -->|"plk_add / invalidate<br/>1 transaction + RLS"| FACTS
+    APP -->|"add / invalidate<br/>1 transaction + RLS"| FACTS
     APP --> AUDIT
     APP --> OUTBOX
     HUMAN -->|"revision固定 approve / reject"| APP
 
-    subgraph worker["Projection plane（専用worker credential）"]
-        IW["plk-index-worker<br/>claim 1件 + lease heartbeat<br/>retry / dead-letter"]
-        ADAPTER["PostgresGraphSearchIndex<br/>org × namespace partition"]
+    subgraph projection["Projection plane（専用worker credential）"]
+        WORKER["plk-index-worker<br/>lease heartbeat / retry / dead-letter"]
+        ADAPTER["tenant別Graph partition"]
+        WORKER --> ADAPTER
     end
 
-    OUTBOX -->|"SKIP LOCKED + lease fencing"| IW
-    IW -->|"DB current headを再取得"| FACTS
-    IW --> ADAPTER
+    OUTBOX -->|"SKIP LOCKED + lease fencing"| WORKER
+    WORKER -->|"current headを再取得"| FACTS
     ADAPTER --> GRAPH[("Graphiti + FalkorDB<br/>再構築可能な派生索引")]
-    ADAPTER --> PROJECTION
-    ADAPTER -->|"embedding / entity extraction"| MODEL["Ollama / configured LLM・embedder"]
+    ADAPTER --> STATE
+    ADAPTER --> MODELS["LLM / embedder"]
 
-    APP -->|"plk_search"| GRAPH
+    APP -->|"search"| GRAPH
     GRAPH -->|"候補 fact_id + score"| REHYDRATE
     REHYDRATE -->|"RLS query"| FACTS
-    REHYDRATE -->|"権限確認済み results"| LB
+    REHYDRATE -->|"権限・鮮度確認済みresult"| API
 
     GIT["Git compatibility backend<br/>1 fact = 1 Markdown"] -.->|"shadow import / snapshot export"| FACTS
 ```
 
-**フローの要点**: 書き込みは検証済みactorとtenantを境界に、fact revision・監査・outboxを同一DB transactionで確定する。
-workerはoutboxをat-least-onceで処理し、イベントのpayloadを正本扱いせずDB current headを再取得してtenant別Graphへ投影する。
-検索時のGraphは候補生成だけを担い、最終結果は必ずRLS配下のcurrent revisionから再構成する。Graph停止時もDB writeは継続し、
-検索だけ `degraded: true` で縮退する。昇格は提案時のrevisionを固定し、人間の承認時に内容が変わっていればstaleとして拒否する。
+## 主要フロー
 
-書き込み候補は「新しい確定事実」だけでは足りない。将来価値・耐久性・確実性・SoT非重複・
-適用範囲・P/L/K分類・原子性の7条件を全て満たしたものだけを正規化し、提案前に `plk_search` で
-重複・更新対象を確認する。候補がなければ PLK への保存質問自体をしない。完全な基準は
-`agent-organization/knowledge/CONVENTIONS.md` を正とする。
+### 書き込む
 
-### ユーザー目線の一枚絵 — 初見の 5 つの疑問に答える
+1. JWTまたはBearer tokenから`ActorContext`を導出する
+2. role、namespace、内容、secret、idempotency key、expected revisionを検証する
+3. fact revision、current head、audit、outboxを同一transactionで確定する
+4. workerがoutboxを取得し、DBのcurrent headをtenant別Graphへ投影する
 
-上の構成図がコンポーネント視点なのに対し、こちらは**使う側（エージェント・人間）から見た動線**。
-初見で気になる 5 つの疑問 — Q1 どこから読み書きする？ / Q2 どういう仕組みで蓄積される？ /
-Q3 どういうデータがどこにある？ / Q4 どうやって検索できる？ / Q5 どういう判断で更新される？ —
-に図のブロックがそのまま対応する。補足: PostgreSQL modeのQ3はtenant RLS配下のDBが正本で、
-GitHub `agent-organization/knowledge/` はGit互換modeの正本およびsnapshot/export先となる。
+Graphやモデルが停止していてもDBへの書き込みは継続します。索引更新はretryされ、上限到達後はdead letterへ移ります。
 
-```mermaid
-flowchart TD
-    AGENT["エージェント<br/>（Claude Code / Codex / Hermes / Agent SDK）"]
-    HUMAN["人間の reviewer / admin<br/>（MCP・APIでdecision、Web UIで閲覧）"]
+### 検索する
 
-    subgraph entry["Q1. どこから読み書きする？ — MCP ツールが唯一の入口"]
-        SEARCH["読む: plk_search<br/>自然文クエリ＋ namespace /<br/>kind / 期間で絞り込み"]
-        ADD["書く: plk_add<br/>1 ファクト＝ statement /<br/>why / how_to_apply / source"]
-        MAINT["直す・共有する: plk_invalidate ・<br/>plk_propose_promotion ・ plk_decide_promotion ・<br/>plk_history"]
-    end
+1. Graphiti/FalkorDBから候補のfact IDとscoreを得る
+2. 候補をRLS配下のPostgreSQLから再取得する
+3. current revision、status、namespace、organizationを再検証して返す
 
-    subgraph update["Q5. どういう判断で更新される？"]
-        SUP["内容が古い・誤りと判明<br/>→ plk_add の supersedes で旧 id を指定して置換<br/>／ plk_invalidate で無効化（理由必須）"]
-        PROM["ドメインを超えて使えると判断<br/>→ source revision固定でproposal<br/>→ reviewerがapprove / reject<br/>→ 変更済みならstale、未変更ならshared revision作成"]
-    end
+Graphは正本ではありません。停止時は検索だけが`degraded: true`になり、DBに保存された知識は失われません。
 
-    subgraph write["Q2. PostgreSQL modeではどう蓄積される？ — 1操作を1 transactionで確定"]
-        CHK{"actor role・規約・secret<br/>idempotency・expected revision"}
-        REJ["違反は書き込み自体を拒否"]
-        TX["fact immutable revision ＋ current head<br/>＋ audit ＋ outboxを同時commit"]
-    end
+### 共有知識へ昇格する
 
-    subgraph sot["Q3. 何が正本？ — tenant RLS配下のPostgreSQL current revision"]
-        DB[("knowledge facts / revisions<br/>domain・shared・quarantine namespace<br/>履歴と無効化を物理削除せず保持")]
-        APPROVAL[("approval requests / decisions<br/>監査可能な昇格履歴")]
-        OUTBOX2[("transactional outbox<br/>正本変更と取りこぼしなく連動")]
-    end
+1. `plk_propose_promotion`でdomain factのsource revisionを固定する
+2. reviewerが`plk_decide_promotion`で承認または却下する
+3. factが提案後に変更されていればstale、変わっていなければshared revisionとoutboxを同一transactionで作る
 
-    subgraph index["Q4. どう検索する？ — Graphは候補生成、DBが最終判定"]
-        WORKER["独立worker<br/>outbox → DB current head再取得<br/>→ tenant別partitionへ投影"]
-        FALKOR[("FalkorDB（グラフ DB）<br/>蓄積物: 埋め込みベクトル＋知識グラフ<br/>SoT からいつでも再構築可能な派生データ<br/>（停止時は検索のみ degraded で縮退）")]
-        FILTER["候補fact_idをDBで再hydrate<br/>RLS・current revision・statusを確認"]
-    end
+## Backend
 
-    subgraph ai["モデル境界（Q4 の内側）— 設定したLLM・embedderへ交換可能"]
-        LLM["LLM（既定: Ollama gpt-oss:20b）<br/>取り込み時: ファクト文から<br/>エンティティ・関係を抽出"]
-        EMB["embedder（既定: Ollama bge-m3）<br/>取り込み時: ファクト文をベクトル化<br/>検索時: クエリをベクトル化"]
-    end
+| mode | 正本 | writer | 主な用途 |
+|---|---|---|---|
+| `postgres` | PostgreSQL / Aurora | 複数API replica | 組織運用、複数サービス、SQUEEZEへの逆輸入 |
+| `git`（設定上の既定） | Git / Markdown | 単一プロセス | 既存Mac環境、小規模運用、互換性維持 |
 
-    AGENT -->|"判断の前に一度検索"| SEARCH
-    AGENT -->|"確定した事実・意思決定を保存"| ADD
-    AGENT -->|"古い知見に気づいたら"| MAINT
+Gitにファイルとして保存する構成は、人間が直接読み、レビューし、履歴を追える小規模運用には適しています。
+一方、複数writerの同時更新、tenant分離、idempotency、低遅延APIが必要な組織runtimeではPostgreSQLを正本にします。
 
-    ADD --> CHK
-    CHK -->|"違反"| REJ
-    CHK -->|"合格"| TX
-    TX --> DB
-    TX --> OUTBOX2
+## 知識のモデル
 
-    MAINT --> SUP
-    MAINT --> PROM
-    SUP -->|"新revisionと旧fact無効化を同一transactionで"| CHK
-    PROM --> APPROVAL
-    HUMAN -->|"revision固定decision"| APPROVAL
-    APPROVAL -->|"approved"| TX
+1つのfactは、独立して無効化できる最小の主張です。主な要素は以下です。
 
-    OUTBOX2 --> WORKER
-    WORKER -->|"active current fact"| LLM
-    WORKER -->|"active current fact"| EMB
-    LLM -->|"グラフを書き込み"| FALKOR
-    EMB -->|"ベクトルを書き込み"| FALKOR
-    SEARCH -->|"クエリを渡す"| EMB
-    FALKOR -->|"候補ID + score"| FILTER
-    FILTER -->|"RLS query"| DB
-    FILTER -.->|"権限・鮮度確認済みhitを返す"| AGENT
+| 要素 | 意味 |
+|---|---|
+| `statement` | 再利用する主張 |
+| `why` | なぜ保持するのか、判断理由や根拠 |
+| `how_to_apply` | どの状況でどう使うか |
+| `kind` | `philosophy` / `logic` / `knowhow` |
+| `namespace` | domain、shared、quarantineの適用範囲 |
+| `source` | 一次情報、Notion ID、session IDなどの参照 |
+| `status` | activeまたはinvalidated |
+
+保存候補は、将来価値・耐久性・確実性・既存SoTとの非重複・適用範囲・P/L/K分類・原子性の条件を満たす必要があります。
+完全な規約とnamespace定義は
+[CONVENTIONS.md](https://github.com/cutsome/agent-organization/blob/main/knowledge/CONVENTIONS.md)が正本です。
+
+## MCP tools
+
+| tool | 役割 | 認可 |
+|---|---|---|
+| `plk_search` | 知識を検索する。PostgreSQL modeでは候補をDBで再検証する | read |
+| `plk_add` | factを追加し、`supersedes`対象があれば同時に無効化する | write |
+| `plk_invalidate` | 理由を記録してactive factを無効化する | write |
+| `plk_history` | factの変更・revision履歴を取得する | read |
+| `plk_status` | backend、Graph、同期またはoutboxの状態を確認する | read |
+| `plk_propose_promotion` | sharedへの昇格proposalを作る | write |
+| `plk_decide_promotion` | revision固定proposalを承認または却下する | reviewer / admin |
+
+各クライアントには、税務・社保・法務・過去の意思決定・社内ノウハウに関する判断前に
+`plk_search(reason="auto-guideline")`を一度呼ぶルールを配布します。
+
+## 開発と運用
+
+```bash
+uv sync
+uv run pytest -q
 ```
 
-## 3. 2 リポジトリの役割とランタイム配置
+PostgreSQL modeでは、APIとindex workerを別credential・別processで起動します。migration、環境変数、
+Git backendのlaunchd運用、縮退動作、トラブルシューティングは[運用ガイド](docs/OPERATIONS.md)に集約しています。
 
-| リポジトリ | 役割 | 中身 | 公開 |
-|---|---|---|---|
-| **plk-memory** | **コード + 設計資料**（この基盤の実装と SoT ドキュメント） | FastAPI + MCP サーバー、GitStore / GraphIndex / 昇格 / 認証、`clients/`・`docs/`（本書・設計書・Phase 記録）・`scripts/` | GitHub `cutsome/plk-memory` |
-| **agent-organization** | **Git互換データ + バリデータ** | `knowledge/`（Git backendのSoT・PostgreSQLのsnapshot/export先）、`tools/validator`（規約 CI）、`reports/`（評価） | GitHub `cutsome/agent-organization` |
+## リポジトリの境界
 
-旧 `agent-memory` リポジトリ（設計資料）は本リポジトリに統合済み（`README.md`・`docs/design/`・`docs/history/`）。
-
-**Git backendのランタイム配置（Mac 常駐期）**:
-
-- `plk-memory-api`: FastAPI 単一プロセス。本番エントリ `plk_memory.app:create_prod_app`、`127.0.0.1:8735` bind、`workers=1` 固定。
-- サーバー専用 clone: `~/.plk/data-repo`（人間の編集ディレクトリと物理分離。人間の編集は必ず GitHub 経由で取り込む）。
-- 利用ログ: `~/.plk/usage.jsonl`。ログ: `~/.plk/logs/plk-memory.{out,err}.log`。
-- 常駐: launchd（`deploy/com.byteflare.plk-memory.plist` → `~/Library/LaunchAgents/`）。
-- 依存サービス: FalkorDB（Docker / OrbStack、`127.0.0.1:6379`）・Ollama（`localhost:11434`）。どちらか停止時は検索のみ degraded。
-
-## 4. 書き込み規約の要点（規約 v1）
-
-- **1 ファクト 1 ファイル**。markdown + YAML frontmatter。生データはコピーせず `source` に参照（URL / Notion ID / セッション ID）。
-- frontmatter 必須フィールド: `id`（ULID・不変）/ `kind`（philosophy・logic・knowhow）/ `statement`（20〜200 字）/ `why`（20 字以上・定型文不可）/ `how_to_apply`（15 字以上・定型文不可）/ `source`（形式検証。tax・legal・shaho の knowhow（`decision` タグなし）は一次情報 https URL 1 件以上）/ `source_type`（user・agent・external-untrusted）/ `namespace`（ディレクトリと一致）/ `status`（active・invalidated）/ `written_by`（**サーバーがトークンから導出**・申告値は無視）/ `created_at` 他。
-- **ディレクトリ = namespace**。`knowledge/shared/`（昇格済みのみ・**直接書き込み禁止**）／`knowledge/domains/{tax,legal,shaho,dev,backoffice,biz}/`／`knowledge/quarantine/`（`external-untrusted` 隔離・検索デフォルト除外）。
-- 強制はツールレベル: `plk_add` がバリデーション・シークレット検知・上限で書き込み自体を拒否。人間の直接編集はデータリポジトリ CI（同一バリデータ + gitleaks）で同一規約を強制。
-- **API 経由の `source_type` 上限は `agent`**（`user` は人間の PR 直編集のみ・CI 強制 = 記憶汚染の上方向偽装を遮断）。
-- **kind の 3 分類（P/L/K）**: 分類軸は「規範か記述か × 変更権限」（規約 v1.1）。philosophy＝無条件の規範（変更は人間の承認必須、API追加は拒否しPR直編集のみ）／logic＝条件付きの規範（「X なら Y」という我々の決め方。**ドメイン固有でよい**）／knowhow＝記述（世界・制度・ツールの事実・手順。外部証拠で検証可能）。共有スコープとドメイン汎用性は namespace の軸であり kind の判定に使わない。意思決定の記録は knowhow ＋ `tags: [decision]`。定義と具体例は `CONVENTIONS.md`「kind の定義」を参照。
-- 詳細は `../agent-organization/knowledge/CONVENTIONS.md`。
-
-## 5. MCP ツールと検索動線
-
-| ツール | 機能 | 認可 |
-|---|---|---|
-| `plk_search` | ハイブリッド検索（query, namespace[], kind, status, 期間）。Byteflare 既定は全 namespace（単一 group `plk-main`） | read |
-| `plk_add` | 知見追加。`supersedes: [id]` で旧ファクト invalidate まで同一 commit でアトミック実行 | write |
-| `plk_invalidate` | 無効化（`invalidation_reason` 必須 → frontmatter へ書き込み → commit ＋ グラフから削除） | write |
-| `plk_history` | 変遷照会（frontmatter `id` をキーに。rename でも履歴が切れない） | read |
-| `plk_status` | 索引鮮度（`last_ingested_commit` と HEAD の差）・未 push commit 数・件数・未処理 PromotionRequest 一覧 | read |
-| `plk_propose_promotion` | PromotionRequest 作成 → GitHub PR 生成（push 完了がプリコンディション） | write |
-| `plk_decide_promotion` | PostgreSQL backendのrevision固定proposalを承認・却下。承認時はshared revisionとoutboxを同一transactionで作成 | write |
-
-- **検索動線**（作って使わない対策の中核）: 各クライアントの常駐指示（CLAUDE.md / AGENTS.md / SOUL.md）に 1 行を配布 —
-  「税務・社保・法務・過去の意思決定・社内ノウハウに関わる判断の前に `plk_search` を一度呼ぶ（`reason="auto-guideline"` を付ける）」。
-  `reason` で「自発（プロンプト誘導）／人間の明示指示」を利用ログで区別し、キル基準判定の対象を切り分ける。
-- 全 MCP ツールは 60 秒以内応答（Codex `tool_timeout` 制約）。`/healthz` は即応（Codex の起動 10 秒ブロック対策）。
-
-## 6. 運用コマンド早見
-
-| 目的 | コマンド |
+| repository | 役割 |
 |---|---|
-| ヘルスチェック | `curl -s localhost:8735/healthz` → `{"ok":true}` |
-| 手動同期（SoT 差分を索引へ） | `curl -s -X POST localhost:8735/admin/sync -H "Authorization: Bearer $PLK_ADMIN_TOKEN"` |
-| 索引再構築（group / 全体・非同期・実行中は書込 503） | `curl -s -X POST localhost:8735/admin/reindex -H "Authorization: Bearer $PLK_ADMIN_TOKEN"` |
-| 常駐 起動 / 停止 / 再起動 | `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.byteflare.plk-memory.plist` ／ `launchctl bootout gui/$(id -u)/com.byteflare.plk-memory` ／ `launchctl kickstart -k gui/$(id -u)/com.byteflare.plk-memory` |
-| Web UI（read 専用・cookie 認証・CSP） | ブラウザで `http://127.0.0.1:8735/`（ログイン `/ui/login`） |
-| 月次キュレーションレポート | `uv run python scripts/curation/run_report.py`（`reports/curation/` に commit） |
+| **plk-memory** | API、MCP tools、PostgreSQL/Git adapter、worker、migration、設計・運用資料 |
+| **agent-organization** | Git互換データ、PostgreSQL snapshot/export先、バリデータ、評価レポート |
 
-## 7. 実績と現在地
+## 現在地
 
-- **Phase 0〜3 すべて完了**（2026-07-03）: 規約・CI（P0）→ ローカル PoC（P1）→ Mac 常駐・昇格フロー・Web UI（P2）→ 逆輸入パッケージ（P3）。
-- **テスト 120 本 passed**（plk-memory HEAD `90393a0`）。昇格パイプは 1 往復実証済み（PR 作成 → CI green → 人間 merge → poller 検知 → applied → shared ingest）。全 4 クライアント実接続・検索疎通済み。
-- **評価実測**（コーパス 23 件・完全ローカル・API 費用 $0）:
-  - 素の埋め込み（bge-m3 cosine top5）: **20/20・MRR 1.000**（全て rank1）。
-  - graph(triplet): 20/20・MRR 1.000（ただし実質「statement 埋め込み + RRF」でグラフ構造由来の付加価値ではない）。
-  - graph(episode): 16/20・MRR 0.612（ローカル 20B の抽出を挟むぶんベースラインに負ける。品質下限条件）。
-  - ripgrep 字句一致: 0/20（日本語口語クエリは空白を含まず 1 トークン化）。
-  - ingest 壁時計: episode 280〜302 秒/件・triplet 126〜131 秒/件（$0・費用でなく時間が制約）。
-- **グラフ層は 50 件まで凍結気味**: 小コーパス（〜50 件）では素の埋め込みで十分という一次所見。撤退ライン判定は**コーパス 50 件以上**で実施する取り決めで、23 件の数値は判定に使わない。マルチホップ・時間推論・50 件以上での再評価が次の判断材料。
-- **EC2 移行は延期**: 既存の小規模 EC2（t4g.small 2GiB）はローカル LLM が載らず、全クライアントが 1 台の Mac 上にあるため実益が薄いと判明。Mac 常駐のまま運用し、EC2 移行は n8n 連携 or 組織展開 逆輸入直前に実施。
+PostgreSQL-primary runtimeとして、以下を実装済みです。
 
-## 8. もっと知りたい人へ
+- tenant RLSとJWT actor context
+- immutable revision、監査、relation、idempotency、optimistic concurrency
+- transactional outbox、aggregate順序、lease fencing・heartbeat、retry・dead-letter
+- tenant別Graph partitionとDB current-row rehydrate
+- revision固定のpromotion proposal / approval / rejection / stale判定
+- Git snapshotのshadow importとparity検証
 
-パスはリポジトリルートからの相対。
+production deployment前には、次の検証が必要です。
 
-| 知りたいこと | 参照先 |
+- 複数API replicaと複数workerの負荷・障害試験
+- backup / restore、PITR、RTO / RPOの実証
+- SQUEEZE staging AuroraでのRLS、IAM auth、migration検証
+
+## Documentation
+
+| 目的 | 参照先 |
 |---|---|
-| 設計判断の全体（目的・確定判断・ポート定義・逆輸入マッピング・Phase 表） | [`docs/design/2026-07-02-plk-memory-design.md`](docs/design/2026-07-02-plk-memory-design.md) |
-| 敵対的レビューの記録（7 視点 52 指摘） | [`docs/design/2026-07-02-plk-memory-adversarial-review-log.md`](docs/design/2026-07-02-plk-memory-adversarial-review-log.md) |
-| コードの使い方・セットアップ・縮退動作・常駐運用 | [`docs/OPERATIONS.md`](docs/OPERATIONS.md) |
-| 組織展開 への移行手順・差分表・不変条件 | [`docs/MIGRATION.md`](docs/MIGRATION.md) |
-| 実測バグ・数値・設計変更履歴・認証換装工数 | [`docs/LESSONS.md`](docs/LESSONS.md) |
-| 検索精度・ingest・ベースライン対照の一次データ | [`../agent-organization/reports/phase1-eval-report.md`](../agent-organization/reports/phase1-eval-report.md) |
-| 書き込み規約の完全版（バリデータ強制ルール） | [`../agent-organization/knowledge/CONVENTIONS.md`](../agent-organization/knowledge/CONVENTIONS.md) |
-| クライアント接続テンプレート・検索動線 | [`clients/`](clients/) |
-| 各 Phase の完了記録 | `docs/history/progress-phase{1,2,3}.md` |
-| 実装計画書群 | [`docs/history/plans/`](docs/history/plans/) |
+| PostgreSQL-primaryの設計判断とproduction gate | [Architecture](docs/design/2026-07-10-postgres-primary-architecture.md) |
+| セットアップ、起動、運用、縮退動作 | [Operations](docs/OPERATIONS.md) |
+| GitからPostgreSQLへの移行手順 | [Migration](docs/MIGRATION.md) |
+| 実測結果、既知の制約、設計変更履歴 | [Lessons](docs/LESSONS.md) |
+| クライアント接続設定 | [Clients](clients/) |
+| 過去のPhase記録と実装計画 | [History](docs/history/) |
