@@ -28,53 +28,74 @@ Byteflare のエージェント群（Claude Code / Codex / Hermes / 自作 Agent
 | `postgres` | PostgreSQL/Aurora | 複数API replica | 組織運用・SQUEEZE逆輸入 |
 
 PostgreSQL版ではAPIとindex workerを別credential・別processで動かす。検索indexは候補IDだけを返し、
-最終結果は必ずRLS配下のDB current revisionから再構成する。下記の従来図はGit backendの構成を示す。
+最終結果は必ずRLS配下のDB current revisionから再構成する。Git backendはローカル互換経路として残す。
 
 ## 2. アーキテクチャ全体図
 
 Mermaid はテキストなので、この図はエージェントもそのまま構造として読める。ノード名は実装の実体名。
 
 ```mermaid
-flowchart TD
-    subgraph clients["クライアント（ローカル・Mac）"]
+flowchart LR
+    subgraph clients["利用者・サービス"]
         CC["Claude Code"]
         CX["Codex"]
         HM["Hermes"]
-        SDK["Agent SDK（自作エージェント）"]
+        SDK["Agent SDK / 他サービス"]
+        HUMAN["人間の reviewer / admin"]
     end
 
-    clients -->|"MCP Streamable HTTP / REST ＋ Bearer"| API
+    clients -->|"MCP / HTTP + JWT・Bearer"| LB["Load Balancer / service endpoint"]
 
-    subgraph API["plk-memory-api（FastAPI・launchd 常駐・127.0.0.1:8735・単一レプリカ必須）"]
-        VAL["規約バリデーション / シークレットスキャン / 利用ログ"]
-        WS["WriteSerializer（asyncio.Lock ＋ flock）"]
-        PRM["PromotionRequest 状態機械（proposed / approved / rejected / applied）"]
+    subgraph api["API plane（NOBYPASSRLS credential・複数replica可）"]
+        API1["plk-memory-api replica 1"]
+        API2["plk-memory-api replica N"]
+        AUTH["JWT claims → ActorContext<br/>organization_id / roles / actor_type"]
+        APP["PostgresAppServices<br/>validation / policy / idempotency / optimistic revision"]
+        REHYDRATE["候補IDをDB current revisionで再hydrate<br/>tenant・status・namespaceを再検証"]
     end
 
-    API -->|"plk_add / plk_invalidate"| GS
-    API -->|"plk_search（ハイブリッド検索）"| GI
+    LB --> API1
+    LB --> API2
+    API1 --> AUTH
+    API2 --> AUTH
+    AUTH --> APP
 
-    subgraph store["永続層"]
-        GS["GitStore（サーバー専用 clone ~/.plk/data-repo）"]
-        GI["GraphIndex（graphiti-core + FalkorDB）"]
-        OL["Ollama（gpt-oss:20b = 取り込み用 LLM / bge-m3 = 埋め込みモデル）"]
+    subgraph db["PostgreSQL / Aurora（更新可能な正本）"]
+        FACTS[("knowledge_facts<br/>immutable revisions / current head")]
+        AUDIT[("audit events / relations<br/>approval requests / decisions")]
+        OUTBOX[("transactional outbox")]
+        PROJECTION[("search_projection_state")]
     end
 
-    GS -->|"fetch → rebase → push"| GH["GitHub: agent-organization/knowledge（= SoT / リモート main）"]
-    GI -->|"取り込み時のみ LLM・埋め込み"| OL
-    GH -->|"level-triggered 同期（起動時＋10 分毎＋書込直後）"| GI
+    APP -->|"plk_add / invalidate<br/>1 transaction + RLS"| FACTS
+    APP --> AUDIT
+    APP --> OUTBOX
+    HUMAN -->|"revision固定 approve / reject"| APP
 
-    PRM -->|"plk_propose_promotion"| PR["GitHub PR（domains/* → shared/* rename）"]
-    HUMAN["人間（GitHub / Obsidian / Web UI）"] -->|"直接編集も PR 経由"| GH
-    PR -->|"人間が review & merge"| GH
-    GH -->|"poller が merged_at を検知"| APPLIED["applied → shared/ を取り込み"]
-    APPLIED --> GI
+    subgraph worker["Projection plane（専用worker credential）"]
+        IW["plk-index-worker<br/>claim 1件 + lease heartbeat<br/>retry / dead-letter"]
+        ADAPTER["PostgresGraphSearchIndex<br/>org × namespace partition"]
+    end
+
+    OUTBOX -->|"SKIP LOCKED + lease fencing"| IW
+    IW -->|"DB current headを再取得"| FACTS
+    IW --> ADAPTER
+    ADAPTER --> GRAPH[("Graphiti + FalkorDB<br/>再構築可能な派生索引")]
+    ADAPTER --> PROJECTION
+    ADAPTER -->|"embedding / entity extraction"| MODEL["Ollama / configured LLM・embedder"]
+
+    APP -->|"plk_search"| GRAPH
+    GRAPH -->|"候補 fact_id + score"| REHYDRATE
+    REHYDRATE -->|"RLS query"| FACTS
+    REHYDRATE -->|"権限確認済み results"| LB
+
+    GIT["Git compatibility backend<br/>1 fact = 1 Markdown"] -.->|"shadow import / snapshot export"| FACTS
 ```
 
-**フローの要点**: 書き込みは `plk_add` → バリデーション → シークレットスキャン → WriteSerializer で専用 clone に
-commit → `fetch→rebase→push` で SoT（リモート main）へ。索引は SoT の差分を level-triggered で追随（宣言型ジョブ）。
-昇格は `plk_propose_promotion` が PR を作り、人間が merge、poller が検知して `shared/` を ingest。
-検索 `plk_search` は GraphIndex に対するハイブリッド検索（グラフ停止時は `degraded: true` で縮退）。
+**フローの要点**: 書き込みは検証済みactorとtenantを境界に、fact revision・監査・outboxを同一DB transactionで確定する。
+workerはoutboxをat-least-onceで処理し、イベントのpayloadを正本扱いせずDB current headを再取得してtenant別Graphへ投影する。
+検索時のGraphは候補生成だけを担い、最終結果は必ずRLS配下のcurrent revisionから再構成する。Graph停止時もDB writeは継続し、
+検索だけ `degraded: true` で縮退する。昇格は提案時のrevisionを固定し、人間の承認時に内容が変わっていればstaleとして拒否する。
 
 書き込み候補は「新しい確定事実」だけでは足りない。将来価値・耐久性・確実性・SoT非重複・
 適用範囲・P/L/K分類・原子性の7条件を全て満たしたものだけを正規化し、提案前に `plk_search` で
@@ -86,45 +107,46 @@ commit → `fetch→rebase→push` で SoT（リモート main）へ。索引は
 上の構成図がコンポーネント視点なのに対し、こちらは**使う側（エージェント・人間）から見た動線**。
 初見で気になる 5 つの疑問 — Q1 どこから読み書きする？ / Q2 どういう仕組みで蓄積される？ /
 Q3 どういうデータがどこにある？ / Q4 どうやって検索できる？ / Q5 どういう判断で更新される？ —
-に図のブロックがそのまま対応する。補足: Q1 の入口は `plk-memory-api`（`127.0.0.1:8735`・Bearer 認証）、
-Q3 の SoT は GitHub `agent-organization/knowledge/`（kind = philosophy / logic / knowhow の 3 分類、§4 参照）。
+に図のブロックがそのまま対応する。補足: PostgreSQL modeのQ3はtenant RLS配下のDBが正本で、
+GitHub `agent-organization/knowledge/` はGit互換modeの正本およびsnapshot/export先となる。
 
 ```mermaid
 flowchart TD
     AGENT["エージェント<br/>（Claude Code / Codex / Hermes / Agent SDK）"]
-    HUMAN["人間<br/>（GitHub / Obsidian で編集・Web UI で閲覧）"]
+    HUMAN["人間の reviewer / admin<br/>（MCP・APIでdecision、Web UIで閲覧）"]
 
     subgraph entry["Q1. どこから読み書きする？ — MCP ツールが唯一の入口"]
         SEARCH["読む: plk_search<br/>自然文クエリ＋ namespace /<br/>kind / 期間で絞り込み"]
         ADD["書く: plk_add<br/>1 ファクト＝ statement /<br/>why / how_to_apply / source"]
-        MAINT["直す: plk_invalidate ・<br/>plk_propose_promotion ・<br/>plk_history"]
+        MAINT["直す・共有する: plk_invalidate ・<br/>plk_propose_promotion ・ plk_decide_promotion ・<br/>plk_history"]
     end
 
     subgraph update["Q5. どういう判断で更新される？"]
         SUP["内容が古い・誤りと判明<br/>→ plk_add の supersedes で旧 id を指定して置換<br/>／ plk_invalidate で無効化（理由必須）"]
-        PROM["ドメインを超えて使えると判断<br/>→ plk_propose_promotion が PR 生成<br/>→ 人間が review & merge<br/>→ poller が検知し shared/ へ"]
+        PROM["ドメインを超えて使えると判断<br/>→ source revision固定でproposal<br/>→ reviewerがapprove / reject<br/>→ 変更済みならstale、未変更ならshared revision作成"]
     end
 
-    subgraph write["Q2. Git backendではどう蓄積される？ — 1 fact 1 fileをcommit"]
-        CHK{"規約バリデーション<br/>＋ シークレットスキャン"}
+    subgraph write["Q2. PostgreSQL modeではどう蓄積される？ — 1操作を1 transactionで確定"]
+        CHK{"actor role・規約・secret<br/>idempotency・expected revision"}
         REJ["違反は書き込み自体を拒否"]
-        GITW["markdown ファイルを 1 枚 commit ＝ DB でいう INSERT<br/>（WriteSerializer が同時書き込みを 1 件ずつに直列化）<br/>→ GitHub へ push して確定（履歴・レビュー・CI が効く）"]
+        TX["fact immutable revision ＋ current head<br/>＋ audit ＋ outboxを同時commit"]
     end
 
-    subgraph sot["Q3. どういうデータがどこに蓄積される？ — 正本（SoT）は GitHub リポジトリ agent-organization/knowledge/"]
-        SHARED[("shared/<br/>昇格済みの全ドメイン共通知見<br/>（直接書き込み禁止・PR 昇格のみ）")]
-        DOM[("domains/{tax, legal, shaho,<br/>dev, backoffice, biz}/<br/>ドメイン別の知見（日常の書き込み先）")]
-        QUAR[("quarantine/<br/>外部由来の未検証情報<br/>（検索デフォルト除外）")]
+    subgraph sot["Q3. 何が正本？ — tenant RLS配下のPostgreSQL current revision"]
+        DB[("knowledge facts / revisions<br/>domain・shared・quarantine namespace<br/>履歴と無効化を物理削除せず保持")]
+        APPROVAL[("approval requests / decisions<br/>監査可能な昇格履歴")]
+        OUTBOX2[("transactional outbox<br/>正本変更と取りこぼしなく連動")]
     end
 
-    subgraph index["Q4. どうやって検索できる？ — 検索用の索引は SoT から自動生成（AI が絡むのはここだけ）"]
-        SYNC["同期ジョブ（起動時＋10 分毎＋書込直後）<br/>GitHub 上の新規・変更ファクトを検知"]
+    subgraph index["Q4. どう検索する？ — Graphは候補生成、DBが最終判定"]
+        WORKER["独立worker<br/>outbox → DB current head再取得<br/>→ tenant別partitionへ投影"]
         FALKOR[("FalkorDB（グラフ DB）<br/>蓄積物: 埋め込みベクトル＋知識グラフ<br/>SoT からいつでも再構築可能な派生データ<br/>（停止時は検索のみ degraded で縮退）")]
+        FILTER["候補fact_idをDBで再hydrate<br/>RLS・current revision・statusを確認"]
     end
 
-    subgraph ai["AI の仕事場（Q4 の内側）— すべてローカル LLM（Ollama・外部 API 不使用）"]
-        LLM["gpt-oss:20b（LLM）<br/>取り込み時: ファクト文から<br/>エンティティ・関係を抽出"]
-        EMB["bge-m3（埋め込みモデル）<br/>取り込み時: ファクト文をベクトル化<br/>検索時: クエリをベクトル化"]
+    subgraph ai["モデル境界（Q4 の内側）— 設定したLLM・embedderへ交換可能"]
+        LLM["LLM（既定: Ollama gpt-oss:20b）<br/>取り込み時: ファクト文から<br/>エンティティ・関係を抽出"]
+        EMB["embedder（既定: Ollama bge-m3）<br/>取り込み時: ファクト文をベクトル化<br/>検索時: クエリをベクトル化"]
     end
 
     AGENT -->|"判断の前に一度検索"| SEARCH
@@ -133,25 +155,26 @@ flowchart TD
 
     ADD --> CHK
     CHK -->|"違反"| REJ
-    CHK -->|"合格"| GITW
-    GITW -->|"通常"| DOM
-    GITW -.->|"source_type: external-untrusted"| QUAR
-    HUMAN -->|"直接編集も PR 経由<br/>（CI が同一規約＋ gitleaks を強制）"| DOM
+    CHK -->|"合格"| TX
+    TX --> DB
+    TX --> OUTBOX2
 
     MAINT --> SUP
     MAINT --> PROM
-    SUP -->|"新旧を同一 commit で"| CHK
-    PROM --> SHARED
+    SUP -->|"新revisionと旧fact無効化を同一transactionで"| CHK
+    PROM --> APPROVAL
+    HUMAN -->|"revision固定decision"| APPROVAL
+    APPROVAL -->|"approved"| TX
 
-    SHARED --> SYNC
-    DOM --> SYNC
-    QUAR --> SYNC
-    SYNC -->|"新規ファクトを取り込み"| LLM
-    SYNC -->|"新規ファクトを取り込み"| EMB
+    OUTBOX2 --> WORKER
+    WORKER -->|"active current fact"| LLM
+    WORKER -->|"active current fact"| EMB
     LLM -->|"グラフを書き込み"| FALKOR
     EMB -->|"ベクトルを書き込み"| FALKOR
     SEARCH -->|"クエリを渡す"| EMB
-    FALKOR -.->|"ベクトル類似＋グラフのハイブリッド検索<br/>ヒット（created_at 付き）を返し判断に反映"| AGENT
+    FALKOR -->|"候補ID + score"| FILTER
+    FILTER -->|"RLS query"| DB
+    FILTER -.->|"権限・鮮度確認済みhitを返す"| AGENT
 ```
 
 ## 3. 2 リポジトリの役割とランタイム配置
@@ -159,11 +182,11 @@ flowchart TD
 | リポジトリ | 役割 | 中身 | 公開 |
 |---|---|---|---|
 | **plk-memory** | **コード + 設計資料**（この基盤の実装と SoT ドキュメント） | FastAPI + MCP サーバー、GitStore / GraphIndex / 昇格 / 認証、`clients/`・`docs/`（本書・設計書・Phase 記録）・`scripts/` | GitHub `cutsome/plk-memory` |
-| **agent-organization** | **データ + バリデータ** | `knowledge/`（1 ファクト 1 markdown = SoT）、`tools/validator`（規約 CI）、`reports/`（評価） | GitHub `cutsome/agent-organization` |
+| **agent-organization** | **Git互換データ + バリデータ** | `knowledge/`（Git backendのSoT・PostgreSQLのsnapshot/export先）、`tools/validator`（規約 CI）、`reports/`（評価） | GitHub `cutsome/agent-organization` |
 
 旧 `agent-memory` リポジトリ（設計資料）は本リポジトリに統合済み（`README.md`・`docs/design/`・`docs/history/`）。
 
-**ランタイム配置（Mac 常駐期）**:
+**Git backendのランタイム配置（Mac 常駐期）**:
 
 - `plk-memory-api`: FastAPI 単一プロセス。本番エントリ `plk_memory.app:create_prod_app`、`127.0.0.1:8735` bind、`workers=1` 固定。
 - サーバー専用 clone: `~/.plk/data-repo`（人間の編集ディレクトリと物理分離。人間の編集は必ず GitHub 経由で取り込む）。
