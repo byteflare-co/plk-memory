@@ -4,19 +4,14 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import suppress
-from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from random import random
-from typing import Any, Protocol
+from typing import Any
 
 from sqlalchemy import func, or_, select
 
-from plk_memory.domain import (
-    ClaimedChange,
-    FactRecord,
-    IndexEntry,
-    QueryScope,
-)
+from plk_memory.domain import ClaimedChange, QueryScope
+from plk_memory.ports import ChangeFeed, FactReader, IndexStateRepository, ProjectionIndex
 from plk_memory.postgres.database import PostgresDatabase
 from plk_memory.postgres.schema import (
     knowledge_facts,
@@ -26,40 +21,6 @@ from plk_memory.postgres.schema import (
 from plk_memory.settings import Settings
 
 
-class FactReader(Protocol):
-    async def get(self, scope: QueryScope, fact_id: str) -> FactRecord: ...
-
-
-class WorkerChangeFeed(Protocol):
-    async def claim(
-        self,
-        *,
-        consumer: str,
-        limit: int,
-        lease_until: datetime,
-    ) -> Sequence[ClaimedChange]: ...
-
-    async def ack(self, claims: Sequence[ClaimedChange]) -> None: ...
-
-    async def renew(self, claim: ClaimedChange, *, lease_until: datetime) -> None: ...
-
-    async def fail(
-        self, claim: ClaimedChange, *, error: str, retry_at: datetime
-    ) -> None: ...
-
-
-class ProjectionState(Protocol):
-    async def get(self, organization_id: str, fact_id: str) -> IndexEntry | None: ...
-
-    async def put_if_newer(self, entry: IndexEntry) -> bool: ...
-
-
-class ProjectionIndex(Protocol):
-    async def upsert(
-        self, fact: FactRecord, old: IndexEntry | None = None
-    ) -> IndexEntry: ...
-
-
 class PostgresIndexWorker:
     """Project current DB heads; outbox revisions are only wake-up signals."""
 
@@ -67,8 +28,8 @@ class PostgresIndexWorker:
         self,
         *,
         repository: FactReader,
-        change_feed: WorkerChangeFeed,
-        index_state: ProjectionState,
+        change_feed: ChangeFeed,
+        index_state: IndexStateRepository,
         search_index: ProjectionIndex,
         settings: Settings,
     ) -> None:

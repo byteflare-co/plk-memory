@@ -22,7 +22,7 @@ from plk_memory.settings import Settings
 from plk_memory.state import FactIndexEntry
 
 
-class LegacyGraphIndex(Protocol):
+class GraphIndexLike(Protocol):
     @property
     def ready(self) -> bool: ...
 
@@ -79,7 +79,7 @@ class PostgresGraphSearchIndex:
     def __init__(
         self,
         *,
-        graph: LegacyGraphIndex,
+        graph: GraphIndexLike,
         api_database: PostgresDatabase,
         worker_database: PostgresDatabase | None,
         settings: Settings,
