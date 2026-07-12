@@ -43,27 +43,27 @@ def test_resolve_maps_by_edge_uuid_for_triplet_mode():
     assert [h.fact_id for h in hits] == ["F1", "F2"]
 
 
-def make_settings(**kw) -> Settings:
+def make_graph_settings(**kw) -> Settings:
     base = dict(tokens={"t1": "claude-code"}, admin_token="adm", _env_file=None)
     base.update(kw)
     return Settings(**base)  # pyright: ignore[reportArgumentType]
 
 
 def test_build_llm_client_unknown_provider_raises():
-    settings = make_settings(llm_provider="unknown")
+    settings = make_graph_settings(llm_provider="unknown")
     with pytest.raises(ValueError, match="unknown"):
         _build_llm_client(settings)
 
 
 def test_build_llm_client_anthropic_selects_anthropic_client():
-    settings = make_settings(llm_provider="anthropic", anthropic_model="claude-haiku-4-5-latest")
+    settings = make_graph_settings(llm_provider="anthropic", anthropic_model="claude-haiku-4-5-latest")
     client = _build_llm_client(settings)
     assert isinstance(client, AnthropicClient)
     assert client.model == "claude-haiku-4-5-latest"
 
 
 def test_build_llm_client_openai_compatible_selects_openai_generic_client():
-    settings = make_settings(
+    settings = make_graph_settings(
         llm_provider="openai-compatible",
         llm_model="gpt-oss:20b",
         llm_base_url="http://localhost:11434/v1",
@@ -116,7 +116,7 @@ async def test_search_route_is_atomic_under_concurrency():
     """
     import asyncio
 
-    settings = make_settings()
+    settings = make_graph_settings()
     from plk_memory.graphindex import GraphIndex
 
     g = GraphIndex(settings)
@@ -140,7 +140,7 @@ async def test_triplet_upsert_bypasses_graphiti_llm_dedupe(monkeypatch):
     from plk_memory import graphindex
     from plk_memory.graphindex import GraphIndex
 
-    settings = make_settings(ingest_mode="triplet")
+    settings = make_graph_settings(ingest_mode="triplet")
     g = GraphIndex(settings)
     driver = _FakeDriver()
 

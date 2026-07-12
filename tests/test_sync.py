@@ -5,15 +5,15 @@ import pytest
 from plk_memory.facts import FactService
 from plk_memory.state import StateStore
 from plk_memory.sync import SyncEngine
-from tests.conftest import (
+from tests.conftest import make_store
+from tests.fakes import FakeGraphIndex
+from tests.gitsync_helpers import (
     delete_file,
-    make_store,
     modify_statement,
     push,
     rename_with_namespace,
     set_invalidated,
 )
-from tests.fakes import FakeGraphIndex
 
 
 @pytest.fixture

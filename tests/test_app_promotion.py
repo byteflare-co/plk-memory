@@ -1,13 +1,14 @@
 import pytest
 
+from plk_memory.app import create_app
+from plk_memory.auth import current_client
+from tests.conftest import make_settings
+from tests.fakes import FakeGraphIndex, FakePromotionBackend
+
 
 @pytest.fixture
 async def pctx(remote, tmp_path):
     origin, seed = remote
-    from tests.conftest import make_settings
-    from plk_memory.app import create_app
-    from plk_memory.auth import current_client
-    from tests.fakes import FakeGraphIndex, FakePromotionBackend
     settings = make_settings(tmp_path, origin, tokens={"tok-cc": "claude-code"}, admin_token="tok-admin")
     backend = FakePromotionBackend()
     app = create_app(settings=settings, graph=FakeGraphIndex(), promotion_backend=backend)
