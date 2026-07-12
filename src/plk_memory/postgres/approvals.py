@@ -22,12 +22,8 @@ from plk_memory.ports import (
     PolicyViolation,
     RevisionConflict,
 )
+from plk_memory.postgres import mappers, write_ops
 from plk_memory.postgres.database import PostgresDatabase
-from plk_memory.postgres.repository import (
-    PostgresFactRepository,
-    _canonical_hash,
-    _revision_values,
-)
 from plk_memory.postgres.schema import (
     approval_decisions,
     approval_requests,
@@ -51,7 +47,7 @@ class PostgresApprovalRepository:
     ) -> PromotionRequestRecord:
         if len(reason.strip()) < 5:
             raise ValueError("promotion reason must be at least 5 characters")
-        request_hash = _canonical_hash(
+        request_hash = mappers.canonical_hash(
             {
                 "operation": "promotion.propose",
                 "actor_id": actor.actor_id,
@@ -121,7 +117,7 @@ class PostgresApprovalRepository:
                     updated_at=now,
                 )
             )
-            await PostgresFactRepository._audit(
+            await write_ops.record_audit(
                 session, actor, "promotion.proposed", fact_id, now
             )
             await self._finish_idempotent(
@@ -150,7 +146,7 @@ class PostgresApprovalRepository:
         if len(rationale.strip()) < 5:
             raise ValueError("rationale must be at least 5 characters")
         request_uuid = UUID(request_id)
-        request_hash = _canonical_hash(
+        request_hash = mappers.canonical_hash(
             {
                 "operation": "promotion.decide",
                 "actor_id": actor.actor_id,
@@ -265,7 +261,7 @@ class PostgresApprovalRepository:
                 event_id = uuid4()
                 await session.execute(
                     insert(knowledge_fact_revisions).values(
-                        **_revision_values(
+                        **mappers.revision_values(
                             organization_id=actor.organization_id,
                             revision_id=revision_id,
                             fact_id=fact_id,
@@ -294,7 +290,7 @@ class PostgresApprovalRepository:
                         updated_at=now,
                     )
                 )
-                await PostgresFactRepository._emit(
+                await write_ops.emit_event(
                     session,
                     actor.organization_id,
                     event_id,
@@ -312,7 +308,7 @@ class PostgresApprovalRepository:
                 )
                 .values(status=final_status, updated_at=now)
             )
-            await PostgresFactRepository._audit(
+            await write_ops.record_audit(
                 session, actor, f"promotion.{decision}", fact_id, now
             )
             decided = self._request(
