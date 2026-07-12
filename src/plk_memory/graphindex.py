@@ -402,6 +402,24 @@ class GraphIndex:
                 )
         return _resolve_hits(edges, uuid_to_fact, limit)
 
+    async def edge_counts(self, group_ids: list[str]) -> dict[str, int]:
+        """group ごとのグラフ上のエッジ実数を返す（索引台帳と実体の乖離検知用）。
+
+        state.facts（indexed_facts）は台帳であってグラフ実体ではないため、
+        グラフ側だけが空になる障害は index_stale では検知できない。
+        """
+        graphiti = self._graph()
+        counts: dict[str, int] = {}
+        # route→count を原子化する（_op_lock の理由は __init__ のコメント参照）
+        async with self._op_lock:
+            for gid in group_ids:
+                self._route_group(gid)
+                records, _, _ = await graphiti.driver.execute_query(
+                    "MATCH ()-[r]->() RETURN count(r) AS c"
+                )
+                counts[gid] = int(records[0]["c"]) if records else 0
+        return counts
+
     async def clear(self, group_ids: list[str]) -> None:
         graphiti = self._graph()
         # route→clear を原子化する（_op_lock の理由は __init__ のコメント参照）

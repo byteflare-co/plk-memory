@@ -57,6 +57,13 @@ class FakeGraphIndex:
         ]
         return hits[:limit]
 
+    async def edge_counts(self, group_ids):
+        counts = {gid: 0 for gid in group_ids}
+        for d in self.docs.values():
+            if d["group_id"] in counts:
+                counts[d["group_id"]] += 1
+        return counts
+
     async def clear(self, group_ids):
         self.docs.clear()
 

@@ -19,9 +19,16 @@ services:
 
   falkordb:
     image: falkordb/falkordb:latest
+    environment:
+      # RDB スナップショット（既定 save 3600 1 / 300 100 / 60 10000）に加えて AOF を
+      # 有効化し、非正常終了時のデータ損失窓を最大1時間→約1秒に縮める。
+      # appendonlydir は redis の --dir (= /var/lib/falkordb/data) 配下に作られ、
+      # 下の named volume に永続化される（run.sh が ${REDIS_ARGS} を展開する）。
+      REDIS_ARGS: "--appendonly yes"
     ports:
       - "127.0.0.1:6379:6379"
     volumes:
+      # /var/lib/falkordb/data はイメージの FALKORDB_DATA_PATH（redis --dir）と一致
       - falkordb-data:/var/lib/falkordb/data
     restart: unless-stopped
 

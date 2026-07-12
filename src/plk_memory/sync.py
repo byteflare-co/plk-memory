@@ -171,11 +171,11 @@ class SyncEngine:
         finally:
             self.end_reindex()
 
-    def status(self) -> dict:
+    async def status(self) -> dict:
         state = self.state_store.load()
         head = self.store.head()
         unpushed = self.store.git("rev-list", "--count", "origin/main..HEAD").strip()
-        return {
+        result = {
             "head": head,
             "last_ingested_commit": state.last_ingested_commit,
             "index_stale": state.last_ingested_commit != head,
@@ -185,3 +185,18 @@ class SyncEngine:
             "maintenance": self.maintenance,
             "degraded": self.degraded,
         }
+        # 台帳（state.facts）とグラフ実体の乖離チェック。indexed_facts > 0 なのに
+        # グラフのエッジ総数が 0 なら、RDB 消失・誤ルーティング等で検索が全クエリ
+        # 0 ヒットになる状態（index_stale では検知不能）。復旧は /admin/reindex。
+        graph_edges: dict[str, int] | None = None
+        graph_empty_mismatch: bool | None = None
+        if self.graph.ready:
+            try:
+                counts = await self.graph.edge_counts(self.settings.all_groups())
+                graph_edges = counts
+                graph_empty_mismatch = bool(state.facts) and sum(counts.values()) == 0
+            except Exception as e:
+                result["graph_count_error"] = str(e)
+        result["graph_edges"] = graph_edges
+        result["graph_empty_mismatch"] = graph_empty_mismatch
+        return result
