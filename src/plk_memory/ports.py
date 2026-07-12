@@ -90,6 +90,12 @@ class FactRepository(Protocol):
     async def history(self, scope: QueryScope, fact_id: str) -> FactHistory: ...
 
 
+class FactReader(Protocol):
+    """FactRepository のうち get のみを要求するサブセット。"""
+
+    async def get(self, scope: QueryScope, fact_id: str) -> FactRecord: ...
+
+
 class ApprovalRepository(Protocol):
     async def propose(
         self,
@@ -123,6 +129,8 @@ class ChangeFeed(Protocol):
 
     async def ack(self, claims: Sequence[ClaimedChange]) -> None: ...
 
+    async def renew(self, claim: ClaimedChange, *, lease_until: datetime) -> None: ...
+
     async def fail(
         self, claim: ClaimedChange, *, error: str, retry_at: datetime
     ) -> None: ...
@@ -132,8 +140,6 @@ class IndexStateRepository(Protocol):
     async def get(self, organization_id: str, fact_id: str) -> IndexEntry | None: ...
 
     async def put_if_newer(self, entry: IndexEntry) -> bool: ...
-
-    async def mark_failed(self, event_id: str, error: str) -> None: ...
 
 
 class SearchIndex(Protocol):
@@ -156,3 +162,11 @@ class SearchIndex(Protocol):
     async def search(self, query: SearchQuery) -> Sequence[IndexCandidate]: ...
 
     async def clear(self, organization_id: str) -> None: ...
+
+
+class ProjectionIndex(Protocol):
+    """SearchIndex のうち upsert のみを要求するサブセット。"""
+
+    async def upsert(
+        self, fact: FactRecord, old: IndexEntry | None = None
+    ) -> IndexEntry: ...
