@@ -11,10 +11,7 @@ from typing import TYPE_CHECKING
 from fastmcp import FastMCP
 
 if TYPE_CHECKING:
-    from plk_memory.app import AppServices
-    from plk_memory.postgres.application import PostgresAppServices
-
-    ServiceFacade = AppServices | PostgresAppServices
+    from plk_memory.facade import ServiceFacade
 
 PLK_SEARCH_DESCRIPTION = """Search PLK facts before making decisions about tax,
 social insurance, legal, accounting, company know-how, or prior decisions. Use
