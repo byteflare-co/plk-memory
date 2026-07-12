@@ -14,10 +14,7 @@ import nh3
 from fastapi import APIRouter, HTTPException, Request, Response
 
 if TYPE_CHECKING:
-    from plk_memory.app import AppServices
-    from plk_memory.postgres.application import PostgresAppServices
-
-    ServiceFacade = AppServices | PostgresAppServices
+    from plk_memory.facade import ServiceFacade
 
 _ALLOWED_TAGS = {
     "h1", "h2", "h3", "h4", "p", "ul", "ol", "li", "strong", "em", "code",
