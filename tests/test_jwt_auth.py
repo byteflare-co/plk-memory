@@ -7,7 +7,7 @@ from fastmcp.server.auth.providers.jwt import RSAKeyPair
 from plk_memory.app import create_app
 from plk_memory.auth import actor_from_claims, build_jwt_verifier, client_from_jwt
 from plk_memory.settings import Settings
-from tests.conftest import make_settings as make_app_settings
+from tests.conftest import make_settings
 from tests.fakes import FakeGraphIndex
 
 ISSUER = "https://plk-memory.local/"
@@ -19,7 +19,7 @@ def keypair():
     return RSAKeyPair.generate()
 
 
-def make_settings(keypair) -> Settings:
+def make_jwt_settings(keypair) -> Settings:
     return Settings(
         auth_mode="jwt", jwt_issuer=ISSUER, jwt_audience=AUDIENCE,
         jwt_public_key=keypair.public_key,
@@ -28,26 +28,26 @@ def make_settings(keypair) -> Settings:
 
 
 async def test_valid_token_is_accepted(keypair):
-    verifier = build_jwt_verifier(make_settings(keypair))
+    verifier = build_jwt_verifier(make_jwt_settings(keypair))
     token = keypair.create_token(subject="claude-code", issuer=ISSUER, audience=AUDIENCE)
     access = await verifier.verify_token(token)
     assert access is not None
 
 
 async def test_wrong_issuer_is_rejected(keypair):
-    verifier = build_jwt_verifier(make_settings(keypair))
+    verifier = build_jwt_verifier(make_jwt_settings(keypair))
     token = keypair.create_token(subject="claude-code", issuer="https://evil.example/", audience=AUDIENCE)
     assert await verifier.verify_token(token) is None
 
 
 async def test_wrong_audience_is_rejected(keypair):
-    verifier = build_jwt_verifier(make_settings(keypair))
+    verifier = build_jwt_verifier(make_jwt_settings(keypair))
     token = keypair.create_token(subject="claude-code", issuer=ISSUER, audience="other-service")
     assert await verifier.verify_token(token) is None
 
 
 async def test_expired_token_is_rejected(keypair):
-    verifier = build_jwt_verifier(make_settings(keypair))
+    verifier = build_jwt_verifier(make_jwt_settings(keypair))
     token = keypair.create_token(
         subject="claude-code", issuer=ISSUER, audience=AUDIENCE, expires_in_seconds=-10,
     )
@@ -60,7 +60,7 @@ def test_client_from_jwt_extracts_sub(keypair):
 
 
 def test_actor_from_verified_claims_requires_organization(keypair):
-    settings = make_settings(keypair)
+    settings = make_jwt_settings(keypair)
     actor = actor_from_claims(
         settings,
         {
@@ -94,7 +94,7 @@ VALID_ARGS = dict(
 @pytest.fixture
 async def jwt_ctx(remote, tmp_path, keypair):
     origin, _seed = remote
-    settings = make_app_settings(
+    settings = make_settings(
         tmp_path, origin, tokens={},
         auth_mode="jwt", jwt_issuer=ISSUER, jwt_audience=AUDIENCE,
         jwt_public_key=keypair.public_key,

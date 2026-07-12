@@ -150,11 +150,8 @@ async def test_tool_add_write_conflict_returns_retryable_error(ctx, monkeypatch)
 
 async def test_disallowed_host_rejected_when_allowlist_set(remote, tmp_path):
     origin, seed = remote
-    from tests.conftest import make_settings
     settings = make_settings(tmp_path, origin, tokens={"tok-cc": "claude-code"},
                              admin_token="tok-admin", allowed_hosts=["plk.example.com"])
-    from plk_memory.app import create_app
-    from tests.fakes import FakeGraphIndex
     app = create_app(settings=settings, graph=FakeGraphIndex())
     import httpx
     transport = httpx.ASGITransport(app=app)

@@ -1,3 +1,9 @@
+"""fake（in-memory）実装ベースのため実 DB 不要。
+
+``-m postgres`` marker の付く実 DB 統合テストは test_postgres_repository.py /
+test_postgres_runtime.py を参照。
+"""
+
 from __future__ import annotations
 
 from datetime import UTC, datetime

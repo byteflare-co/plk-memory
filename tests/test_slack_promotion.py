@@ -1,11 +1,15 @@
 import pytest
 
+from plk_memory.app import create_app
+from plk_memory.auth import current_client
 from plk_memory.promotions import PromotionState, new_promotion
 from plk_memory.slack_promotion import (
     SlackPromotionBackend,
     build_approval_blocks,
     parse_action_callback,
 )
+from tests.conftest import make_settings
+from tests.fakes import FakeGraphIndex
 
 
 def make_pr():
@@ -95,10 +99,6 @@ async def test_backend_state_lifecycle():
 @pytest.fixture
 async def sctx(remote, tmp_path):
     origin, seed = remote
-    from plk_memory.app import create_app
-    from plk_memory.auth import current_client
-    from tests.conftest import make_settings
-    from tests.fakes import FakeGraphIndex
     settings = make_settings(tmp_path, origin, tokens={"tok-cc": "claude-code"}, admin_token="tok-admin")
     backend = SlackPromotionBackend()
     app = create_app(settings=settings, graph=FakeGraphIndex(), promotion_backend=backend)

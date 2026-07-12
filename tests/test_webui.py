@@ -1,7 +1,11 @@
 import httpx
 import pytest
 
+from plk_memory.app import create_app
 from plk_memory.webui import sanitize_markdown
+from tests.conftest import make_settings
+from tests.fakes import FakeGraphIndex
+from tests.gitsync_helpers import push
 
 
 def test_sanitize_strips_script_keeps_markup():
@@ -13,9 +17,6 @@ def test_sanitize_strips_script_keeps_markup():
 @pytest.fixture
 async def uiclient(remote, tmp_path, write_valid_fact):
     origin, seed = remote
-    from tests.conftest import make_settings, push
-    from plk_memory.app import create_app
-    from tests.fakes import FakeGraphIndex
     write_valid_fact(seed, "knowledge/domains/tax/x.md")
     push(seed)
     settings = make_settings(tmp_path, origin, tokens={"tok-cc": "cc"},
