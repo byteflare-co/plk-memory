@@ -9,7 +9,8 @@ from plk_memory.gitstore import (
     WriteConflict,
     rewrite_namespace_line,
 )
-from tests.conftest import make_store, sh
+from tests.conftest import make_settings, make_store, sh
+from tests.gitsync_helpers import push
 
 
 def test_rewrite_namespace_line_changes_only_that_line():
@@ -123,7 +124,6 @@ def test_history_rewrite_detected_not_reset(remote, tmp_path):
 
 def test_ensure_repo_uses_configured_identity(remote, tmp_path):
     origin, _ = remote
-    from tests.conftest import make_settings
     s = make_settings(tmp_path, origin, git_author_name="alice", git_author_email="alice@example.com")
     store = GitStore(s)
     store.ensure_repo()
@@ -133,7 +133,6 @@ def test_ensure_repo_uses_configured_identity(remote, tmp_path):
 
 async def test_build_promotion_branch_pushes_and_keeps_main(remote, tmp_path, write_valid_fact):
     origin, seed = remote
-    from tests.conftest import make_store, push
     store = make_store(tmp_path, origin)
     # seed に昇格対象ファクトを置いて main に反映
     write_valid_fact(seed, "knowledge/domains/tax/x.md")
@@ -149,7 +148,6 @@ async def test_build_promotion_branch_pushes_and_keeps_main(remote, tmp_path, wr
     # メイン作業ツリーの HEAD は不変（read と競合しない）
     assert store.head() == main_before
     # origin にブランチが push されている
-    from tests.conftest import sh
     assert "promote/x" in sh(seed, "ls-remote", "--heads", str(origin))
     # git が rename として検出し、内容差分は namespace 行 1 行のみ（CI check_promotion の要件）
     sh(seed, "fetch", "origin", "promote/x")
