@@ -9,8 +9,9 @@ const NS_META = {
   'plk.shared': { label: 'shared', var: '--ns-shared' },
 };
 
-const state = { ns: '', kind: '', status: 'active', q: '', sortDir: 'desc' };
+const state = { ns: '', kind: '', status: 'active', q: '', sortDir: 'desc', csrf: null };
 let currentFacts = [];
+let currentDetailId = null;
 
 function formatDate(iso) {
   if (!iso) return '—';
@@ -32,6 +33,8 @@ async function login() {
     body: JSON.stringify({ password: document.getElementById('pw').value }),
   });
   if (r.ok) {
+    const data = await r.json();
+    state.csrf = data.csrf || null;
     enterMain();
     load();
   } else {
@@ -225,6 +228,7 @@ function openDetailPanel() {
   });
 }
 function closeDetailPanel() {
+  currentDetailId = null;
   const panel = document.getElementById('detail');
   panel.classList.remove('open');
   setTimeout(() => { panel.style.display = 'none'; }, 200);
@@ -237,6 +241,7 @@ async function detail(id) {
   const r = await fetch('/ui/api/facts/' + encodeURIComponent(id));
   if (!r.ok) return;
   const data = await r.json();
+  currentDetailId = id;
   const meta = data.meta || {};
   const el = document.getElementById('detail');
   el.innerHTML = '';
@@ -363,7 +368,189 @@ async function detail(id) {
     el.appendChild(ul);
   }
 
+  await renderOperations(el, id, meta);
+
   openDetailPanel();
+}
+
+async function apiPost(url, payload) {
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-plk-csrf': state.csrf || '',
+    },
+    body: JSON.stringify(payload || {}),
+  });
+  let data = {};
+  try { data = await r.json(); } catch (_) {}
+  if (!r.ok) throw new Error(data.detail || `HTTP ${r.status}`);
+  return data;
+}
+
+function proposalField(container, label, before, after) {
+  if (String(before || '') === String(after || '')) return;
+  const wrap = document.createElement('div');
+  wrap.className = 'proposal-field';
+  const l = document.createElement('div');
+  l.className = 'label';
+  l.textContent = label;
+  const b = document.createElement('div');
+  b.className = 'before';
+  b.textContent = Array.isArray(before) ? before.join(', ') : (before || '（空）');
+  const a = document.createElement('div');
+  a.className = 'after';
+  a.textContent = Array.isArray(after) ? after.join(', ') : (after || '（空）');
+  wrap.append(l, b, a);
+  container.appendChild(wrap);
+}
+
+async function renderOperations(el, factId, meta) {
+  if (!state.csrf || meta.status !== 'active') return;
+  const heading = document.createElement('h3');
+  heading.className = 'section';
+  heading.textContent = '操作';
+  el.appendChild(heading);
+
+  const form = document.createElement('div');
+  form.className = 'feedback-form';
+  const textarea = document.createElement('textarea');
+  textarea.placeholder = '例: この主張は条件が曖昧なので、適用条件と例外を明確にして';
+  textarea.setAttribute('aria-label', 'AIへの改善フィードバック');
+  const actions = document.createElement('div');
+  actions.className = 'fact-actions';
+  const submit = document.createElement('button');
+  submit.className = 'action-btn primary';
+  submit.textContent = 'AIに改善案を作らせる';
+  const invalidate = document.createElement('button');
+  invalidate.className = 'action-btn danger';
+  invalidate.textContent = '無効化';
+  const error = document.createElement('div');
+  error.className = 'operation-error';
+
+  submit.addEventListener('click', async () => {
+    error.textContent = '';
+    submit.disabled = true;
+    try {
+      await apiPost(`/ui/api/facts/${encodeURIComponent(factId)}/feedback`, {
+        feedback: textarea.value,
+      });
+      textarea.value = '';
+      await renderFeedbackJobs(el, factId, meta);
+    } catch (e) {
+      error.textContent = e.message;
+    } finally {
+      submit.disabled = false;
+    }
+  });
+  invalidate.addEventListener('click', async () => {
+    const reason = window.prompt('無効化する理由（5文字以上）');
+    if (!reason) return;
+    if (!window.confirm('このfactを無効化します。履歴は保持されます。実行しますか？')) return;
+    error.textContent = '';
+    invalidate.disabled = true;
+    try {
+      await apiPost(`/ui/api/facts/${encodeURIComponent(factId)}/invalidate`, {
+        reason,
+        expected_hash: meta._content_hash || '',
+      });
+      closeDetailPanel();
+      await load();
+    } catch (e) {
+      error.textContent = e.message;
+      invalidate.disabled = false;
+    }
+  });
+  actions.append(submit, invalidate);
+  form.append(textarea, actions, error);
+  el.appendChild(form);
+
+  const jobs = document.createElement('div');
+  jobs.id = 'feedbackJobs';
+  el.appendChild(jobs);
+  await renderFeedbackJobs(el, factId, meta);
+}
+
+async function renderFeedbackJobs(el, factId, meta) {
+  if (currentDetailId !== factId) return;
+  const host = el.querySelector('#feedbackJobs');
+  if (!host) return;
+  const r = await fetch(`/ui/api/facts/${encodeURIComponent(factId)}/feedback`);
+  if (!r.ok) return;
+  const data = await r.json();
+  host.innerHTML = '';
+  const requests = data.requests || [];
+  requests.forEach(job => {
+    const wrap = document.createElement('div');
+    wrap.className = 'feedback-job';
+    const metaLine = document.createElement('div');
+    metaLine.className = 'job-meta';
+    metaLine.textContent = `${formatDate(job.created_at)} · `;
+    const stateEl = document.createElement('span');
+    stateEl.className = 'job-state';
+    stateEl.textContent = job.state;
+    metaLine.appendChild(stateEl);
+    wrap.appendChild(metaLine);
+
+    const feedback = document.createElement('div');
+    feedback.textContent = job.feedback;
+    wrap.appendChild(feedback);
+
+    if (job.error) {
+      const err = document.createElement('div');
+      err.className = 'operation-error';
+      err.textContent = job.error;
+      wrap.appendChild(err);
+    }
+    if (job.state === 'proposed' && job.proposal) {
+      proposalField(wrap, 'statement', meta.statement, job.proposal.statement);
+      proposalField(wrap, 'why', meta.why, job.proposal.why);
+      proposalField(wrap, 'how to apply', meta.how_to_apply, job.proposal.how_to_apply);
+      proposalField(wrap, 'tags', meta.tags || [], job.proposal.tags || []);
+      proposalField(wrap, 'body', (job.original || {}).body || '', job.proposal.body || '');
+      const rationale = document.createElement('div');
+      rationale.className = 'proposal-field';
+      rationale.textContent = `AIの変更理由: ${job.proposal.rationale}`;
+      wrap.appendChild(rationale);
+      const buttons = document.createElement('div');
+      buttons.className = 'fact-actions';
+      const apply = document.createElement('button');
+      apply.className = 'action-btn primary';
+      apply.textContent = 'この差分を反映';
+      const reject = document.createElement('button');
+      reject.className = 'action-btn';
+      reject.textContent = '却下';
+      apply.addEventListener('click', async () => {
+        if (!window.confirm('表示された差分を新しいfactとして反映し、現在のfactを無効化しますか？')) return;
+        apply.disabled = true;
+        try {
+          const result = await apiPost(`/ui/api/feedback/${encodeURIComponent(job.id)}/apply`, {});
+          closeDetailPanel();
+          await load();
+          if (result.fact_id) await detail(result.fact_id);
+        } catch (e) {
+          window.alert(e.message);
+          apply.disabled = false;
+        }
+      });
+      reject.addEventListener('click', async () => {
+        reject.disabled = true;
+        try {
+          await apiPost(`/ui/api/feedback/${encodeURIComponent(job.id)}/reject`, {});
+          await renderFeedbackJobs(el, factId, meta);
+        } catch (e) {
+          window.alert(e.message);
+          reject.disabled = false;
+        }
+      });
+      buttons.append(apply, reject);
+      wrap.appendChild(buttons);
+    }
+    host.appendChild(wrap);
+  });
+  if (requests.some(job => ['queued', 'running', 'applying'].includes(job.state))) {
+    setTimeout(() => renderFeedbackJobs(el, factId, meta), 2000);
+  }
 }
 
 function updateSortArrow() {
@@ -390,6 +577,11 @@ async function init() {
   });
 
   // 既存の HttpOnly cookie セッションが有効なら、ログイン画面を出さず一覧を直接表示する
+  const session = await fetch('/ui/session');
+  if (session.ok) {
+    const sessionData = await session.json();
+    state.csrf = sessionData.csrf || null;
+  }
   const r = await fetch('/ui/api/facts?status=active');
   if (r.ok) {
     const data = await r.json();

@@ -44,10 +44,10 @@ class SyncEngine:
 
     async def _sync_locked(self) -> dict:
         try:
-            self.store.fetch_and_ff()
-            # git 由来の degraded 解除。graph 未 ready であれば直後で上書きされる
-            # （「git は正常・graph が原因」という状態を正しく表すための順序）。
-            self.degraded = None
+            # Keep the dedicated clone on one immutable HEAD while graph/state
+            # projection reads it. This shares the same lock as add/invalidate.
+            async with self.store.write_lock():
+                return await self._sync_store_locked()
         except HistoryRewritten as e:
             self.degraded = str(e)
             return {
@@ -55,6 +55,10 @@ class SyncEngine:
                 "head": self.store.head(), "degraded": self.degraded,
             }
 
+    async def _sync_store_locked(self) -> dict:
+        # git 由来の degraded 解除。graph 未 ready であれば直後で上書きされる
+        # （「git は正常・graph が原因」という状態を正しく表すための順序）。
+        self.degraded = None
         if not self.graph.ready:
             self.degraded = "graph index not ready"
             return {

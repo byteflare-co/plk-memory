@@ -139,12 +139,26 @@ Mac 上で `plk-memory-api` を launchd 常駐化する運用手順（`deploy/co
    PAT（contents:write）と PR 用資格情報の 2 分離・実ホスト名 bind 時の DNS リバインディング allowlist
    （`PLK_ALLOWED_HOSTS`）は本 Phase では未実施。Mac 常駐期は 127.0.0.1 bind＋既存 ssh/gh 認証で運用する。
 
-   **UI auth の EC2 前必須強化（P2 最終レビューの standing condition・本 Phase では実装しない注記のみ）**:
-   read 専用 Web UI は現在 localhost 前提で、`PLK_UI_PASSWORD` が空なら認証なしで直接表示する。
-   パスワードを設定した場合も、(a) cookie/パスワード比較が非定数時間、(b) cookie トークンが静的、
-   (c) ログインのレート制限なし、という弱点がある。127.0.0.1 bind の間は許容だが、
-   **EC2/Tailscale 公開前に**定数時間比較・per-session の cookie トークン・ログインのレート制限を
-   実装することを必須条件とする。
+   **UI auth の境界**: UIはlocalhost前提。writeは`PLK_UI_WRITES_ENABLED=true`、Git backend、
+   実クライアントIPとHostがloopbackの場合だけ有効で、per-session cookieとCSRF headerを要求する。
+   `PLK_UI_PASSWORD`設定時は定数時間password比較も要求する。passwordless writeはローカル専用で、
+   cookieはHTTP localhost向けに
+   `Secure=False`のため、**EC2/Tailscale公開前に**HTTPS、Secure cookie、ログインrate limit、
+   user/role identityへ換装する。
+
+8. **AI feedback runner**: `codex exec`をproposal生成専用で起動する。ローカルのChatGPTサブスク認証を
+   使い、API keyは渡さない。起動前に次を確認する。
+
+   ```bash
+   codex login status
+   codex --version
+   ```
+
+   runnerは`--ephemeral --sandbox read-only --output-schema`を固定し、promptをstdinで渡す。launchdの
+   PATH上に`codex`が無い場合は`mise exec -- codex`へ自動fallbackする。明示する場合は
+   `PLK_CODEX_BIN`、timeoutは`PLK_CODEX_FEEDBACK_TIMEOUT_SECONDS`で設定する。job状態は
+   `PLK_FEEDBACK_PATH`（既定`~/.plk/feedback.json`）へ原子的に保存し、restart時にqueued/runningを
+   再開する。AIのproposalは自動反映しない。
 
 ## ⑨トラブルシューティング
 

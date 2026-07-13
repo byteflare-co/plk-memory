@@ -72,6 +72,7 @@ def create_app(settings: Settings | None = None, graph=None, promotion_backend=N
                 await postgres_services.close()
             return
         git_services.store.ensure_repo()
+        await git_services.feedback.resume_pending()
         try:
             await git_services.graph.start()
         except Exception as e:  # noqa: BLE001 - degraded 記録して起動は続行（brief 動作規則）
@@ -113,6 +114,7 @@ def create_app(settings: Settings | None = None, graph=None, promotion_backend=N
                 t.cancel()
             if git_services._bg_tasks:
                 await asyncio.gather(*git_services._bg_tasks, return_exceptions=True)
+            await git_services.feedback.close()
 
     app = FastAPI(lifespan=_combine_lifespans(app_lifespan, mcp_app.lifespan))
     app.state.services = services

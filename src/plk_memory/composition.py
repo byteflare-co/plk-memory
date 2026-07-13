@@ -8,6 +8,7 @@ from uuid import UUID
 from plk_memory.auth import current_actor
 from plk_memory.domain import ActorContext, QueryScope
 from plk_memory.facts import FactService
+from plk_memory.feedback import CodexFeedbackRunner, FeedbackCoordinator, FeedbackStore
 from plk_memory.git_services import AppServices
 from plk_memory.gitstore import GitStore
 from plk_memory.graphindex import GraphIndex
@@ -34,6 +35,14 @@ def build_services(settings: Settings, graph, promotion_backend=None,
     sync = SyncEngine(store, facts, graph, state_store, settings)
     usage = UsageLog(settings.usage_log_path)
     promotion_store = PromotionStore(settings.state_path.with_name("promotions.json"))
+    feedback = FeedbackCoordinator(
+        FeedbackStore(settings.feedback_path),
+        CodexFeedbackRunner(
+            working_dir=settings.data_repo_path,
+            codex_bin=settings.codex_bin,
+            timeout_seconds=settings.codex_feedback_timeout_seconds,
+        ),
+    )
     if promotion_backend is None and enable_github_promotion:
         from plk_memory.github_promotion import GitHubPromotionBackend
         promotion_backend = GitHubPromotionBackend(store, settings)
@@ -41,6 +50,7 @@ def build_services(settings: Settings, graph, promotion_backend=None,
         settings=settings, store=store, facts=facts, graph=graph,
         sync=sync, state_store=state_store, usage=usage,
         promotion_store=promotion_store, promotion_backend=promotion_backend,
+        feedback=feedback,
     )
 
 

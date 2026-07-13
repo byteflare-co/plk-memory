@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from datetime import datetime, timezone
 from typing import Any
@@ -100,6 +101,8 @@ class FactService:
         how_to_apply: str, source: str, tags: list[str] | None = None, body: str = "",
         slug: str | None = None, source_type: str = "agent",
         supersedes: list[str] | None = None,
+        expected_superseded_hashes: dict[str, str] | None = None,
+        change_ref: str | None = None,
     ) -> str:
         if source_type == "user":
             raise FactError("API 経由では source_type: user を指定できない（人間の PR 直編集のみ）")
@@ -111,74 +114,100 @@ class FactService:
             raise FactError("external-untrusted は plk.quarantine（quarantine/）のみ")
 
         fact_id = str(ULID())
-        now = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
-        meta = {
-            "id": fact_id, "kind": kind, "statement": statement, "why": why,
-            "how_to_apply": how_to_apply, "source": source, "source_type": source_type,
-            "namespace": namespace, "status": "active", "invalidation_reason": None,
-            "written_by": client, "created_at": now, "invalidated_at": None,
-            "superseded_by": None, "tags": tags or [],
-        }
-        try:
-            Fact(**meta)
-        except ValidationError as e:
-            raise FactError(f"規約違反: {e}") from e
-        if len(body) > 2000:
-            raise FactError("本文が 2,000 字を超過")
-
-        name = slug if slug and SLUG_RE.fullmatch(slug) else fact_id.lower()
-        rel = f"{self.settings.path_for_namespace(namespace)}/{name}.md"
-        path = self.settings.data_repo_path / rel
-        if path.exists():
-            raise FactError(f"既に存在: {rel}")
-        rendered = frontmatter.dumps(frontmatter.Post(body, **meta))
-        findings = scan_text(rendered)
-        if findings:
-            raise FactError(f"シークレット検知のため拒否: {findings}")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(rendered, encoding="utf-8")
-        file_findings = scan_file(path)
-        if file_findings:
-            path.unlink()
-            raise FactError(f"シークレット検知のため拒否: {file_findings}")
-
-        # 書き換えループに入る前に全 supersedes 対象を解決する（部分書き換えを防ぐ）
-        targets: list[tuple[frontmatter.Post, str]] = []
-        for old_id in supersedes or []:
+        async with self.store.write_lock():
+            now = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+            meta = {
+                "id": fact_id, "kind": kind, "statement": statement, "why": why,
+                "how_to_apply": how_to_apply, "source": source, "source_type": source_type,
+                "namespace": namespace, "status": "active", "invalidation_reason": None,
+                "written_by": client, "created_at": now, "invalidated_at": None,
+                "superseded_by": None, "tags": tags or [],
+            }
             try:
-                targets.append(self.get(old_id))
-            except FactNotFound:
+                Fact(**meta)
+            except ValidationError as e:
+                raise FactError(f"規約違反: {e}") from e
+            if len(body) > 2000:
+                raise FactError("本文が 2,000 字を超過")
+
+            name = slug if slug and SLUG_RE.fullmatch(slug) else fact_id.lower()
+            rel = f"{self.settings.path_for_namespace(namespace)}/{name}.md"
+            path = self.settings.data_repo_path / rel
+            if path.exists():
+                raise FactError(f"既に存在: {rel}")
+            rendered = frontmatter.dumps(frontmatter.Post(body, **meta))
+            findings = scan_text(rendered)
+            if findings:
+                raise FactError(f"シークレット検知のため拒否: {findings}")
+
+            # 変更前に全 supersedes 対象を解決し、部分書き換えを防ぐ。
+            targets: list[tuple[frontmatter.Post, str]] = []
+            for old_id in supersedes or []:
+                try:
+                    target = self.get(old_id)
+                except FactNotFound:
+                    raise FactError(f"supersedes 対象が存在しない: {old_id}") from None
+                if expected_superseded_hashes and old_id in expected_superseded_hashes:
+                    target_path = self.settings.data_repo_path / target[1]
+                    actual_hash = hashlib.sha256(target_path.read_bytes()).hexdigest()
+                    if actual_hash != expected_superseded_hashes[old_id]:
+                        raise FactError(f"supersedes 対象が変更されています: {old_id}")
+                targets.append(target)
+
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(rendered, encoding="utf-8")
+            file_findings = scan_file(path)
+            if file_findings:
                 path.unlink()
-                raise FactError(f"supersedes 対象が存在しない: {old_id}") from None
+                raise FactError(f"シークレット検知のため拒否: {file_findings}")
 
-        # 不変条件: ここから commit_and_push までの間に await を挟まないこと
-        # （挟むと作業ディレクトリの競合が再発する）
-        changed = [rel]
-        for old_post, old_rel in targets:
-            old_post["status"] = "invalidated"
-            old_post["invalidation_reason"] = f"後継ファクト {fact_id} により置換"
-            old_post["superseded_by"] = fact_id
-            old_post["invalidated_at"] = now
-            (self.settings.data_repo_path / old_rel).write_text(
-                frontmatter.dumps(old_post), encoding="utf-8"
-            )
-            changed.append(old_rel)
+            changed = [rel]
+            for old_post, old_rel in targets:
+                old_post["status"] = "invalidated"
+                old_post["invalidation_reason"] = f"後継ファクト {fact_id} により置換"
+                old_post["superseded_by"] = fact_id
+                old_post["invalidated_at"] = now
+                (self.settings.data_repo_path / old_rel).write_text(
+                    frontmatter.dumps(old_post), encoding="utf-8"
+                )
+                changed.append(old_rel)
 
-        await self.store.commit_and_push(changed, f"plk_add: {statement[:40]} ({client})")
-        return fact_id
+            message = f"plk_add: {statement[:40]} ({client})"
+            if change_ref:
+                message += f"\n\nPLK-Change-Ref: {change_ref}"
+            await self.store.commit_and_push_locked(changed, message)
+            return fact_id
 
-    async def invalidate(self, fact_id: str, reason: str, *, client: str) -> None:
+    async def invalidate(
+        self,
+        fact_id: str,
+        reason: str,
+        *,
+        client: str,
+        expected_hash: str | None = None,
+    ) -> None:
         if not reason or len(reason.strip()) < 5:
             raise FactError("invalidation_reason は必須（5 字以上）")
-        post, rel = self.get(fact_id)
-        now = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
-        # 不変条件: ファイル書き込みから commit_and_push までの間に await を挟まないこと
-        # （挟むと作業ディレクトリの競合が再発する）
-        post["status"] = "invalidated"
-        post["invalidation_reason"] = reason
-        post["invalidated_at"] = now
-        (self.settings.data_repo_path / rel).write_text(frontmatter.dumps(post), encoding="utf-8")
-        await self.store.commit_and_push([rel], f"plk_invalidate: {fact_id} ({client})")
+        async with self.store.write_lock():
+            post, rel = self.get(fact_id)
+            if post.get("status") != "active":
+                raise FactError(f"active ではないfactは無効化できません: {fact_id}")
+            if expected_hash:
+                actual_hash = hashlib.sha256(
+                    (self.settings.data_repo_path / rel).read_bytes()
+                ).hexdigest()
+                if actual_hash != expected_hash:
+                    raise FactError(f"無効化対象が変更されています: {fact_id}")
+            now = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+            post["status"] = "invalidated"
+            post["invalidation_reason"] = reason
+            post["invalidated_at"] = now
+            (self.settings.data_repo_path / rel).write_text(
+                frontmatter.dumps(post), encoding="utf-8"
+            )
+            await self.store.commit_and_push_locked(
+                [rel], f"plk_invalidate: {fact_id} ({client})"
+            )
 
     # --- 履歴 ---
 

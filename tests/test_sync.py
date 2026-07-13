@@ -114,6 +114,34 @@ async def test_concurrent_sync_calls_are_serialized(engine, write_valid_fact):
     assert r1["upserted"] + r2["upserted"] == 1
 
 
+async def test_sync_and_fact_write_share_git_lock(engine, write_valid_fact):
+    eng, seed, graph = engine
+    write_valid_fact(seed, "knowledge/domains/tax/f1.md")
+    push(seed)
+    graph.upsert_delay = 0.1
+    sync_task = asyncio.create_task(eng.sync())
+    for _ in range(100):
+        if graph.upsert_calls:
+            break
+        await asyncio.sleep(0.005)
+    write_task = asyncio.create_task(
+        eng.facts.add(
+            client="codex",
+            namespace="plk.domain.dev",
+            kind="logic",
+            statement="同期中のGit cloneへ並行書き込みせず完了後に直列化する",
+            why="graph投影が未commit内容を読む競合を防ぐため",
+            how_to_apply="syncとfact writeを同じGitStore lockで囲う",
+            source="https://example.com/session/test",
+        )
+    )
+    await asyncio.sleep(0.02)
+    assert not write_task.done()
+    await sync_task
+    fact_id = await write_task
+    assert eng.facts.get(fact_id)[0]["status"] == "active"
+
+
 async def test_degraded_when_graph_not_ready(engine, write_valid_fact):
     eng, seed, graph = engine
     write_valid_fact(seed, "knowledge/domains/tax/f1.md")

@@ -45,6 +45,12 @@ class Settings(BaseSettings):
     state_path: Path = Path.home() / ".plk" / "state.json"
     usage_log_path: Path = Path.home() / ".plk" / "usage.jsonl"
     lock_path: Path = Path.home() / ".plk" / "writer.lock"
+    feedback_path: Path = Path.home() / ".plk" / "feedback.json"
+
+    # AI feedback proposal runner. codex_bin が空なら PATH 上の codex、続いて
+    # ``mise exec -- codex`` を探索する。Codex の既存ログインを利用する。
+    codex_bin: str = ""
+    codex_feedback_timeout_seconds: float = Field(default=180, ge=10, le=1800)
 
     # 認証（token -> client 名）
     tokens: dict[str, str] = {}
@@ -105,10 +111,11 @@ class Settings(BaseSettings):
     # 将来の実ホスト名 bind 時の DNS リバインディング保護（EC2/組織展開 期。ローカルは既定のまま）
     allowed_hosts: list[str] = ["*"]
 
-    # Web UI（read 専用）
+    # Web UI。writeは明示gate + loopback + session/CSRFを要求する。
     ui_password: str = ""          # 空なら認証なし。設定時のみログインを要求
     ui_cookie_name: str = "plk_ui"
     ui_organization_id: str = ""
+    ui_writes_enabled: bool = False
 
     @property
     def repo_slug(self) -> str:

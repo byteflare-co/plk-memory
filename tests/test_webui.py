@@ -1,11 +1,26 @@
+import asyncio
+
 import httpx
 import pytest
 
 from plk_memory.app import create_app
+from plk_memory.feedback import FeedbackProposal
 from plk_memory.webui import sanitize_markdown
 from tests.conftest import make_settings
 from tests.fakes import FakeGraphIndex
 from tests.gitsync_helpers import push
+
+
+class StaticFeedbackRunner:
+    async def propose(self, *, original: dict, feedback: str) -> FeedbackProposal:
+        return FeedbackProposal(
+            statement=str(original["statement"]) + "（改善）",
+            why=str(original["why"]),
+            how_to_apply=str(original["how_to_apply"]),
+            tags=list(original["tags"]),
+            body=str(original["body"]),
+            rationale=feedback,
+        )
 
 
 def test_sanitize_strips_script_keeps_markup():
@@ -20,12 +35,16 @@ async def uiclient(remote, tmp_path, write_valid_fact):
     write_valid_fact(seed, "knowledge/domains/tax/x.md")
     push(seed)
     settings = make_settings(tmp_path, origin, tokens={"tok-cc": "cc"},
-                             admin_token="adm", ui_password="s3cret")
+                             admin_token="adm", ui_password="s3cret",
+                             ui_writes_enabled=True)
     app = create_app(settings=settings, graph=FakeGraphIndex())
     app.state.services.store.ensure_repo()
     app.state.services.store.fetch_and_ff()
+    app.state.services.feedback.runner = StaticFeedbackRunner()
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://plk") as c:
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://127.0.0.1"
+    ) as c:
         yield c
 
 
@@ -35,7 +54,8 @@ async def open_uiclient(remote, tmp_path, write_valid_fact):
     write_valid_fact(seed, "knowledge/domains/tax/x.md")
     push(seed)
     settings = make_settings(tmp_path, origin, tokens={"tok-cc": "cc"},
-                             admin_token="adm", ui_password="")
+                             admin_token="adm", ui_password="",
+                             ui_writes_enabled=False)
     app = create_app(settings=settings, graph=FakeGraphIndex())
     app.state.services.store.ensure_repo()
     app.state.services.store.fetch_and_ff()
@@ -100,6 +120,11 @@ async def test_ui_page_has_kind_filter(uiclient):
     assert 'data-v="knowhow"' in r.text
 
 
+async def test_ui_proposal_preview_includes_body(uiclient):
+    r = await uiclient.get("/static/app.js")
+    assert "proposalField(wrap, 'body'" in r.text
+
+
 async def test_ui_login_wrong_password(uiclient):
     r = await uiclient.post("/ui/login", json={"password": "nope"})
     assert r.status_code == 401
@@ -119,3 +144,119 @@ async def test_ui_detail_has_sanitized_body_and_history(uiclient):
     body = r.json()
     assert "body_html" in body and "history" in body
     assert "<script" not in body["body_html"].lower()
+
+
+async def test_ui_write_requires_csrf(uiclient):
+    await uiclient.post("/ui/login", json={"password": "s3cret"})
+    facts = (await uiclient.get("/ui/api/facts")).json()["facts"]
+    fid = facts[0]["fact_id"]
+    r = await uiclient.post(
+        f"/ui/api/facts/{fid}/feedback", json={"feedback": "条件を明確にして"}
+    )
+    assert r.status_code == 403
+
+
+async def test_passwordless_loopback_write_session_is_explicitly_gated(
+    remote, tmp_path, write_valid_fact
+):
+    origin, seed = remote
+    write_valid_fact(seed, "knowledge/domains/tax/x.md")
+    push(seed)
+    settings = make_settings(
+        tmp_path,
+        origin,
+        ui_password="",
+        ui_writes_enabled=True,
+    )
+    app = create_app(settings=settings, graph=FakeGraphIndex())
+    app.state.services.store.ensure_repo()
+    app.state.services.store.fetch_and_ff()
+    app.state.services.feedback.runner = StaticFeedbackRunner()
+    transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 12345))
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://127.0.0.1"
+    ) as client:
+        session = await client.get("/ui/session")
+        assert session.status_code == 200
+        csrf = session.json()["csrf"]
+        assert csrf
+        facts = (await client.get("/ui/api/facts")).json()["facts"]
+        fid = facts[0]["fact_id"]
+        accepted = await client.post(
+            f"/ui/api/facts/{fid}/feedback",
+            json={"feedback": "条件を明確にしてください"},
+            headers={"x-plk-csrf": csrf},
+        )
+        assert accepted.status_code == 202
+        await app.state.services.feedback.close()
+
+
+async def test_passwordless_write_session_rejects_remote_client(
+    remote, tmp_path
+):
+    origin, _ = remote
+    settings = make_settings(
+        tmp_path,
+        origin,
+        ui_password="",
+        ui_writes_enabled=True,
+    )
+    app = create_app(settings=settings, graph=FakeGraphIndex())
+    transport = httpx.ASGITransport(app=app, client=("203.0.113.10", 12345))
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://127.0.0.1"
+    ) as client:
+        session = await client.get("/ui/session")
+        assert session.status_code == 403
+
+
+async def test_ui_feedback_proposal_and_explicit_apply(uiclient):
+    login = await uiclient.post("/ui/login", json={"password": "s3cret"})
+    csrf = login.json()["csrf"]
+    headers = {"x-plk-csrf": csrf}
+    facts = (await uiclient.get("/ui/api/facts")).json()["facts"]
+    fid = facts[0]["fact_id"]
+
+    submitted = await uiclient.post(
+        f"/ui/api/facts/{fid}/feedback",
+        json={"feedback": "条件を明確にして"},
+        headers=headers,
+    )
+    assert submitted.status_code == 202
+    request_id = submitted.json()["id"]
+
+    request = None
+    for _ in range(100):
+        rows = (
+            await uiclient.get(f"/ui/api/facts/{fid}/feedback")
+        ).json()["requests"]
+        request = next(row for row in rows if row["id"] == request_id)
+        if request["state"] == "proposed":
+            break
+        await asyncio.sleep(0.01)
+    assert request is not None and request["state"] == "proposed"
+
+    applied = await uiclient.post(
+        f"/ui/api/feedback/{request_id}/apply", json={}, headers=headers
+    )
+    assert applied.status_code == 200
+    replacement = applied.json()["fact_id"]
+    assert replacement != fid
+    old = await uiclient.get(f"/ui/api/facts/{fid}")
+    new = await uiclient.get(f"/ui/api/facts/{replacement}")
+    assert old.json()["meta"]["status"] == "invalidated"
+    assert new.json()["meta"]["statement"].endswith("（改善）")
+
+
+async def test_ui_invalidate_requires_reason(uiclient):
+    login = await uiclient.post("/ui/login", json={"password": "s3cret"})
+    csrf = login.json()["csrf"]
+    facts = (await uiclient.get("/ui/api/facts")).json()["facts"]
+    fid = facts[0]["fact_id"]
+    detail = (await uiclient.get(f"/ui/api/facts/{fid}")).json()
+    r = await uiclient.post(
+        f"/ui/api/facts/{fid}/invalidate",
+        json={"reason": "短い", "expected_hash": detail["meta"]["_content_hash"]},
+        headers={"x-plk-csrf": csrf},
+    )
+    assert r.status_code == 400

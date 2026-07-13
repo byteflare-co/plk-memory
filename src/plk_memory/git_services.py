@@ -7,11 +7,13 @@ REST/MCP 双方から呼ばれる実体関数を `AppServices` にまとめて�
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import posixpath
 import time
 
 from plk_memory.auth import current_client
 from plk_memory.facts import FactError, FactNotFound, FactService
+from plk_memory.feedback import FeedbackCoordinator, FeedbackState
 from plk_memory.gitstore import GitStore, WriteConflict
 from plk_memory.promotions import PromotionState, PromotionStore, new_promotion, transition
 from plk_memory.settings import Settings
@@ -34,6 +36,7 @@ class AppServices:
         state_store: StateStore,
         usage: UsageLog,
         promotion_store: PromotionStore,
+        feedback: FeedbackCoordinator,
         promotion_backend=None,
     ):
         self.settings = settings
@@ -44,6 +47,7 @@ class AppServices:
         self.state_store = state_store
         self.usage = usage
         self.promotion_store = promotion_store
+        self.feedback = feedback
         self.promotion_backend = promotion_backend
         self._bg_tasks: set[asyncio.Task] = set()
 
@@ -256,10 +260,167 @@ class AppServices:
         return {
             "fact_id": fact_id,
             "path": rel,
-            "meta": dict(post.metadata),
+            "meta": {
+                **dict(post.metadata),
+                "_content_hash": self._fact_content_hash(rel),
+            },
             "body": post.content,
             "history": self.facts.history(fact_id),
         }
+
+    def _fact_content_hash(self, rel: str) -> str:
+        return hashlib.sha256(
+            (self.settings.data_repo_path / rel).read_bytes()
+        ).hexdigest()
+
+    async def ui_submit_feedback(self, fact_id: str, feedback: str) -> dict:
+        async with self.store.write_lock():
+            try:
+                post, rel = self.facts.get(fact_id)
+            except FactNotFound:
+                return {"error": f"fact が存在しない: {fact_id}"}
+            if post.get("status") != "active":
+                return {"error": "active な fact のみ改善できます"}
+            base_content_hash = self._fact_content_hash(rel)
+            original = {
+                "statement": post.get("statement", ""),
+                "why": post.get("why", ""),
+                "how_to_apply": post.get("how_to_apply", ""),
+                "tags": post.get("tags", []),
+                "body": post.content,
+                "namespace": post.get("namespace", ""),
+                "kind": post.get("kind", ""),
+                "source": post.get("source", ""),
+            }
+        try:
+            request = await self.feedback.submit(
+                fact_id=fact_id,
+                base_content_hash=base_content_hash,
+                namespace=str(post.get("namespace", "")),
+                kind=str(post.get("kind", "")),
+                source=str(post.get("source", "")),
+                original=original,
+                feedback=feedback,
+            )
+        except ValueError as error:
+            return {"error": str(error)}
+        return request.model_dump(mode="json")
+
+    async def ui_feedback_requests(self, fact_id: str) -> list[dict]:
+        return [
+            item.model_dump(mode="json") for item in self.feedback.store.by_fact(fact_id)
+        ]
+
+    async def ui_apply_feedback(self, request_id: str) -> dict:
+        try:
+            request = await self.feedback.claim_apply(request_id)
+        except KeyError:
+            return {"error": f"feedback request が存在しない: {request_id}"}
+        except ValueError as error:
+            return {"error": str(error)}
+        if request.proposal is None:  # claim_apply guarantees this; narrows the type.
+            return {"error": "proposal がありません"}
+        try:
+            post, rel = self.facts.get(request.fact_id)
+        except FactNotFound:
+            await self.feedback.transition(
+                request_id, FeedbackState.stale, error="元factが存在しません"
+            )
+            return {"error": "元factが存在しないためstaleになりました", "stale": True}
+        marker = f"PLK-Change-Ref: feedback/{request_id}"
+        applied_commit = self.store.git(
+            "log", "-1", "--format=%H", f"--grep={marker}"
+        ).strip()
+        if applied_commit and post.get("superseded_by"):
+            replacement_id = str(post.get("superseded_by"))
+            await self.feedback.transition(
+                request_id,
+                FeedbackState.applied,
+                replacement_fact_id=replacement_id,
+            )
+            return {"fact_id": replacement_id, "state": FeedbackState.applied.value}
+        if (
+            post.get("status") != "active"
+            or self._fact_content_hash(rel) != request.base_content_hash
+        ):
+            await self.feedback.transition(
+                request_id, FeedbackState.stale, error="元factが依頼後に変更されました"
+            )
+            return {"error": "元factが変更されたためstaleになりました", "stale": True}
+        proposal = request.proposal
+        try:
+            replacement_id = await self.facts.add(
+                client="plk-web-ui",
+                namespace=request.namespace,
+                kind=request.kind,
+                statement=proposal.statement,
+                why=proposal.why,
+                how_to_apply=proposal.how_to_apply,
+                source=request.source,
+                tags=proposal.tags,
+                body=proposal.body,
+                source_type="agent",
+                supersedes=[request.fact_id],
+                expected_superseded_hashes={
+                    request.fact_id: request.base_content_hash
+                },
+                change_ref=f"feedback/{request_id}",
+            )
+        except FactError as error:
+            if "変更されています" in str(error):
+                await self.feedback.transition(
+                    request_id, FeedbackState.stale, error=str(error)
+                )
+                return {"error": str(error), "stale": True}
+            await self.feedback.transition(
+                request_id, FeedbackState.proposed, error=str(error)
+            )
+            return {"error": str(error)}
+        except FactNotFound as error:
+            await self.feedback.transition(
+                request_id, FeedbackState.proposed, error=str(error)
+            )
+            return {"error": str(error)}
+        except WriteConflict as error:
+            await self.feedback.transition(
+                request_id, FeedbackState.proposed, error=str(error)
+            )
+            return {"error": str(error), "retry": True}
+        await self.feedback.transition(
+            request_id,
+            FeedbackState.applied,
+            replacement_fact_id=replacement_id,
+        )
+        self._spawn_sync()
+        return {"fact_id": replacement_id, "state": FeedbackState.applied.value}
+
+    async def ui_reject_feedback(self, request_id: str) -> dict:
+        try:
+            updated = await self.feedback.reject(request_id)
+        except KeyError:
+            return {"error": f"feedback request が存在しない: {request_id}"}
+        except ValueError as error:
+            return {"error": str(error)}
+        return updated.model_dump(mode="json")
+
+    async def ui_invalidate_fact(
+        self, fact_id: str, reason: str, expected_hash: str
+    ) -> dict:
+        if self.sync.maintenance:
+            return {"error": "maintenance 中（reindex 実行中）", "retry": True}
+        try:
+            await self.facts.invalidate(
+                fact_id,
+                reason,
+                client="plk-web-ui",
+                expected_hash=expected_hash,
+            )
+        except (FactError, FactNotFound) as error:
+            return {"error": str(error)}
+        except WriteConflict as error:
+            return {"error": str(error), "retry": True}
+        self._spawn_sync()
+        return {"fact_id": fact_id, "status": "invalidated"}
 
     async def tool_propose_promotion(
         self,

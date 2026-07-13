@@ -53,7 +53,7 @@
   }
   ::selection { background: var(--accent); color: var(--accent-fg); }
   :focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; border-radius: var(--radius-sm); }
-  button, input { font-family: inherit; color: inherit; }
+  button, input, textarea { font-family: inherit; color: inherit; }
 
   header {
     display: flex; align-items: center; gap: 12px;
@@ -225,6 +225,29 @@
   .timeline .s { font-size: 12.5px; margin-top: 2px; }
   .timeline .sha { font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); }
 
+  .fact-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
+  .action-btn {
+    border: 1px solid var(--border-strong); background: var(--surface-2); color: var(--text);
+    border-radius: var(--radius-sm); padding: 7px 11px; font-size: 12.5px; cursor: pointer;
+  }
+  .action-btn:hover { border-color: var(--accent); }
+  .action-btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+  .action-btn.danger { color: var(--danger); }
+  .action-btn:disabled { opacity: .55; cursor: wait; }
+  .feedback-form { margin-top: 10px; }
+  .feedback-form textarea {
+    width: 100%; min-height: 88px; resize: vertical; padding: 9px 10px;
+    background: var(--surface-2); border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm); font-size: 13px; line-height: 1.55;
+  }
+  .feedback-job { border-top: 1px solid var(--border); padding: 12px 0; }
+  .feedback-job .job-meta { color: var(--text-faint); font-size: 11px; margin-bottom: 7px; }
+  .feedback-job .job-state { color: var(--accent); font-weight: 600; }
+  .proposal-field { margin: 8px 0; }
+  .proposal-field .before { color: var(--text-faint); text-decoration: line-through; white-space: pre-wrap; }
+  .proposal-field .after { color: var(--text); white-space: pre-wrap; margin-top: 3px; }
+  .operation-error { color: var(--danger); font-size: 12px; margin-top: 8px; white-space: pre-wrap; }
+
   @media (max-width: 720px) {
     #detail { width: 100vw; }
     .ns-cell, .kind-cell, .created-cell { display: none; }
@@ -239,7 +262,7 @@
     <span class="name">plk-memory</span>
     <span class="kicker">knowledge ledger</span>
   </div>
-  <div class="ro-badge"><span class="dot"></span>read-only</div>
+  <div class="ro-badge"><span class="dot"></span>reviewed writes</div>
 </header>
 
 <div id="login">

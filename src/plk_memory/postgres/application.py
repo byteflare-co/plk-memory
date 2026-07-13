@@ -435,6 +435,30 @@ class PostgresAppServices:
             "history": history.model_dump(mode="json"),
         }
 
+    # The first AI-feedback slice intentionally targets the live Git backend.
+    # These explicit facade methods keep routing storage-neutral and fail closed.
+    async def ui_submit_feedback(self, fact_id: str, feedback: str) -> dict[str, Any]:
+        del fact_id, feedback
+        return {"error": "AI feedback is not implemented for PostgreSQL backend"}
+
+    async def ui_feedback_requests(self, fact_id: str) -> list[dict[str, Any]]:
+        del fact_id
+        return []
+
+    async def ui_apply_feedback(self, request_id: str) -> dict[str, Any]:
+        del request_id
+        return {"error": "AI feedback is not implemented for PostgreSQL backend"}
+
+    async def ui_reject_feedback(self, request_id: str) -> dict[str, Any]:
+        del request_id
+        return {"error": "AI feedback is not implemented for PostgreSQL backend"}
+
+    async def ui_invalidate_fact(
+        self, fact_id: str, reason: str, expected_hash: str
+    ) -> dict[str, Any]:
+        del fact_id, reason, expected_hash
+        return {"error": "UI writes are not implemented for PostgreSQL backend"}
+
     async def admin_sync(self) -> dict[str, Any]:
         return {
             "error": "PostgreSQL-primaryでは手動Git syncは未対応。outbox workerを使用する"

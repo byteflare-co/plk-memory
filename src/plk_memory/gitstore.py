@@ -13,6 +13,8 @@ import fcntl
 import re
 import shutil
 import subprocess
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from plk_memory.settings import Settings
 
@@ -112,6 +114,31 @@ class GitStore:
     async def commit_and_push(self, rel_paths: list[str], message: str) -> str:
         async with self._lock:
             return await asyncio.to_thread(self._commit_and_push_sync, rel_paths, message)
+
+    @asynccontextmanager
+    async def write_lock(self) -> AsyncIterator[None]:
+        """Cover fetch/read/modify/commit as one single-writer critical section."""
+
+        async with self._lock:
+            await asyncio.to_thread(self.fetch_and_ff)
+            try:
+                yield
+            except Exception:
+                # The server clone is a dedicated write workspace. Never leave a
+                # partially rendered fact behind after validation/commit failure.
+                await asyncio.to_thread(self.git, "reset", "--hard", "origin/main")
+                raise
+
+    async def commit_and_push_locked(self, rel_paths: list[str], message: str) -> str:
+        """Commit while ``write_lock`` is held by the caller."""
+
+        try:
+            return await asyncio.to_thread(
+                self._commit_and_push_sync, rel_paths, message
+            )
+        except subprocess.CalledProcessError as error:
+            await asyncio.to_thread(self.git, "reset", "--hard", "origin/main")
+            raise WriteConflict(f"commit に失敗したため書き込みを破棄: {message}") from error
 
     def _commit_and_push_sync(self, rel_paths: list[str], message: str) -> str:
         self.git("add", "--", *rel_paths)

@@ -1,3 +1,5 @@
+import hashlib
+
 import pytest
 
 from plk_memory.facts import FactError, FactNotFound, FactService
@@ -93,12 +95,43 @@ async def test_supersedes_missing_second_target_leaves_tree_clean(svc):
     assert old_post["status"] == "active"  # 巻き添え書き換えなし
 
 
+async def test_supersedes_rejects_changed_expected_hash(svc):
+    old_id = await svc.add(client="claude-code", **VALID)
+    _, rel = svc.get(old_id)
+    old_hash = hashlib.sha256(
+        (svc.settings.data_repo_path / rel).read_bytes()
+    ).hexdigest()
+    await svc.invalidate(old_id, "依頼後に前提が変わったため無効化", client="codex")
+    args = {**VALID, "statement": "古い提案を誤って反映しないための後継ファクトである"}
+    with pytest.raises(FactError, match="変更されています"):
+        await svc.add(
+            client="plk-web-ui",
+            supersedes=[old_id],
+            expected_superseded_hashes={old_id: old_hash},
+            **args,
+        )
+
+
 async def test_invalidate_writes_reason(svc):
     fact_id = await svc.add(client="claude-code", **VALID)
     await svc.invalidate(fact_id, "制度改正で前提が変わった", client="codex")
     post, _ = svc.get(fact_id)
     assert post["status"] == "invalidated"
     assert post["invalidation_reason"] == "制度改正で前提が変わった"
+
+
+async def test_invalidate_rejects_stale_hash_and_already_invalidated(svc):
+    fact_id = await svc.add(client="claude-code", **VALID)
+    with pytest.raises(FactError, match="変更されています"):
+        await svc.invalidate(
+            fact_id,
+            "古い画面からの無効化を拒否する",
+            client="plk-web-ui",
+            expected_hash="0" * 64,
+        )
+    await svc.invalidate(fact_id, "制度改正で前提が変わった", client="codex")
+    with pytest.raises(FactError, match="active ではない"):
+        await svc.invalidate(fact_id, "二重無効化を拒否する", client="codex")
 
 
 async def test_history_returns_commits_and_chain(svc):
