@@ -9,7 +9,7 @@ const NS_META = {
   'plk.shared': { label: 'shared', var: '--ns-shared' },
 };
 
-const state = { ns: '', status: 'active', q: '', sortDir: 'desc' };
+const state = { ns: '', kind: '', status: 'active', q: '', sortDir: 'desc' };
 let currentFacts = [];
 
 function formatDate(iso) {
@@ -77,6 +77,17 @@ function initStatusToggle() {
   [...wrap.children].forEach(btn => {
     btn.addEventListener('click', () => {
       state.status = btn.dataset.v;
+      [...wrap.children].forEach(b => b.setAttribute('aria-pressed', String(b === btn)));
+      load();
+    });
+  });
+}
+
+function initKindToggle() {
+  const wrap = document.getElementById('kindToggle');
+  [...wrap.children].forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.kind = btn.dataset.v;
       [...wrap.children].forEach(b => b.setAttribute('aria-pressed', String(b === btn)));
       load();
     });
@@ -180,6 +191,7 @@ async function load() {
   const p = new URLSearchParams();
   if (q) p.set('q', q);
   if (state.ns) p.set('namespace', state.ns);
+  if (state.kind) p.set('kind', state.kind);
   if (state.status) p.set('status', state.status);
 
   const banner = document.getElementById('banner');
@@ -197,7 +209,8 @@ async function load() {
 
   currentFacts = data.facts || [];
   const nsText = state.ns ? nsLabel(state.ns) : 'すべて';
-  metaRow.textContent = `${currentFacts.length} 件 · ${nsText} · ${state.status === 'active' ? '有効' : '無効化'}`;
+  const kindText = state.kind || 'すべてのkind';
+  metaRow.textContent = `${currentFacts.length} 件 · ${nsText} · ${kindText} · ${state.status === 'active' ? '有効' : '無効化'}`;
   renderList();
 }
 
@@ -361,6 +374,7 @@ function updateSortArrow() {
 async function init() {
   initNsBar();
   initStatusToggle();
+  initKindToggle();
 
   document.getElementById('loginBtn').addEventListener('click', login);
   document.getElementById('pw').addEventListener('keydown', e => { if (e.key === 'Enter') login(); });
@@ -381,7 +395,7 @@ async function init() {
     const data = await r.json();
     enterMain();
     currentFacts = data.facts || [];
-    document.getElementById('metaRow').textContent = `${currentFacts.length} 件 · すべて · 有効`;
+    document.getElementById('metaRow').textContent = `${currentFacts.length} 件 · すべて · すべてのkind · 有効`;
     renderList();
   }
 }

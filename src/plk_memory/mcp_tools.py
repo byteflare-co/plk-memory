@@ -26,7 +26,15 @@ rubric. First apply realistic recurrence: name a concrete situation that is like
 to recur in Masahiro Nishikawa's or Byteflare's actual work, life, or operations.
 Theoretical reuse by another company, a hypothetical new corporation, or some other
 user does not qualify. Then apply counterfactual usefulness: explain how retrieval
-changes a decision or action in that recurring situation. If either gate cannot be
+changes a decision or action in that recurring situation. For a descriptive fact or
+procedure, also apply a search-substitutability gate: if a competent agent can obtain
+the same answer cheaply at decision time from one obvious authoritative source or an
+ordinary web search, reject it. PLK is not a cache of general facts, laws, deadlines,
+official procedures, or product documentation. The fact that retrieval would change
+an action is not enough when live lookup is easy and safer. Knowhow qualifies only
+when live lookup is materially insufficient, such as a non-obvious reproducible
+failure mode, a stable cross-source synthesis with substantial rediscovery cost, or
+a verified procedure whose useful result is not stated by the obvious source. If any gate cannot be
 stated concretely, do not propose or add it. One-time incorporation filings,
 one-off grant applications, and completed migrations do not qualify merely because
 the knowledge is generally useful. A past organizational
@@ -41,14 +49,18 @@ or knowhow (verifiable fact/procedure), and is one independently invalidatable
 claim. Do not call this tool for transient dates/prices/status, conversation or work
 summaries, single-customer reactions, current architecture/configuration that code
 or design docs already describe, or decisions with no concrete future application.
-Stable facts/procedures from official docs, code, or runbooks may be distilled as
-minimal knowhow only when retrieving them changes a future decision or action and
-they point to the source; do not copy the source itself. Before asking
+Do not distill readily discoverable material from official docs, code, or runbooks
+into knowhow merely because it is stable and actionable; consult the live source
+instead. A conditional Byteflare behavior derived from it may qualify independently
+as logic if it passes the other gates and does not merely restate the external rule.
+Before asking
 the user for approval, normalize the candidate and use
 plk_search to check duplicates and updates. Do not ask a generic "save to PLK?"
 question: show the proposed statement, kind, namespace, whether it is new or an
 update, the realistic recurring situation for Masahiro Nishikawa or Byteflare, and the decision or action that changes
-compared with not retrieving it. Choose an existing namespace from plk.domain.tax/legal/shaho/dev/backoffice/
+compared with not retrieving it. For knowhow, also show why ordinary live search
+is materially insufficient and which allowed exception applies; do not relabel a
+public descriptive fact as logic to bypass this gate. Choose an existing namespace from plk.domain.tax/legal/shaho/dev/backoffice/
 biz/agent (or plk.quarantine for external-untrusted data); never invent one. When an
 observed result motivates a future behavior, store the conditional behavior as
 logic and put the observation in why/source; create a separate knowhow fact only if

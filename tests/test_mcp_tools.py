@@ -53,11 +53,21 @@ async def test_plk_add_description_explains_semantic_admission_rubric():
     assert "One-time incorporation filings" in normalized
     assert "counterfactual usefulness" in normalized
     assert "changes a decision or action" in normalized
+    assert "search-substitutability gate" in normalized
+    assert "one obvious authoritative source" in normalized
+    assert "ordinary web search" in normalized
+    assert "PLK is not a cache of general facts" in normalized
+    assert "live lookup is easy and safer" in normalized
+    assert "non-obvious reproducible failure mode" in normalized
+    assert "stable cross-source synthesis" in normalized
+    assert "consult the live source instead" in normalized
+    assert "may qualify independently as logic" in normalized
+    assert "why ordinary live search is materially insufficient" in normalized
+    assert "do not relabel a public descriptive fact as logic" in normalized
     assert "organizational decision is not exempt" in normalized
     assert "current architecture/configuration" in normalized
     assert "decisions with no concrete future application" in normalized
     assert "source of truth" in normalized
-    assert "Stable facts/procedures" in normalized
     assert "plk.quarantine" in normalized
     assert "one independently invalidatable claim" in normalized
     assert "single-customer reactions" in normalized

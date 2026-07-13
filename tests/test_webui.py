@@ -44,6 +44,28 @@ async def test_ui_login_sets_httponly_cookie_and_lists(uiclient):
     assert any(f["namespace"] == "plk.domain.tax" for f in r2.json()["facts"])
 
 
+async def test_ui_api_filters_by_kind(uiclient):
+    await uiclient.post("/ui/login", json={"password": "s3cret"})
+
+    knowhow = await uiclient.get("/ui/api/facts", params={"kind": "knowhow"})
+    assert knowhow.status_code == 200
+    assert knowhow.json()["facts"]
+    assert all(f["kind"] == "knowhow" for f in knowhow.json()["facts"])
+
+    logic = await uiclient.get("/ui/api/facts", params={"kind": "logic"})
+    assert logic.status_code == 200
+    assert logic.json()["facts"] == []
+
+
+async def test_ui_page_has_kind_filter(uiclient):
+    r = await uiclient.get("/")
+    assert r.status_code == 200
+    assert 'id="kindToggle"' in r.text
+    assert 'data-v="philosophy"' in r.text
+    assert 'data-v="logic"' in r.text
+    assert 'data-v="knowhow"' in r.text
+
+
 async def test_ui_login_wrong_password(uiclient):
     r = await uiclient.post("/ui/login", json={"password": "nope"})
     assert r.status_code == 401
