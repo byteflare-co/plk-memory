@@ -153,3 +153,27 @@ async def test_reindex_rejects_double_start(engine, write_valid_fact):
     with pytest.raises(ReindexInProgress):
         await eng.reindex()
     eng.maintenance = False
+
+
+async def test_status_detects_graph_empty_mismatch(engine, write_valid_fact):
+    eng, seed, graph = engine
+    write_valid_fact(seed, "knowledge/domains/tax/f1.md")
+    push(seed)
+    await eng.sync()
+    st = await eng.status()
+    assert st["graph_empty_mismatch"] is False
+    assert sum(st["graph_edges"].values()) == 1
+    # 台帳（state.facts）は残したままグラフ実体だけが消えた状態
+    # （RDB 消失・誤ルーティング等）を再現する。
+    graph.docs.clear()
+    st = await eng.status()
+    assert st["indexed_facts"] == 1
+    assert st["graph_empty_mismatch"] is True
+
+
+async def test_status_graph_counts_skipped_when_not_ready(engine):
+    eng, _, graph = engine
+    graph.ready = False
+    st = await eng.status()
+    assert st["graph_edges"] is None
+    assert st["graph_empty_mismatch"] is None

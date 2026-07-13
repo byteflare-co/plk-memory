@@ -144,3 +144,65 @@ Mac 上で `plk-memory-api` を launchd 常駐化する運用手順（`deploy/co
    非定数時間、(b) cookie トークンが静的、(c) ログインのレート制限なし。127.0.0.1 bind の間は許容だが、
    **EC2/Tailscale 公開前に**定数時間比較・per-session の cookie トークン・ログインのレート制限を
    実装することを必須条件とする。
+
+## ⑨トラブルシューティング
+
+### 検索が 0 ヒットを返し続ける場合
+
+`plk_search` が全クエリで 0 ヒットになる障害は、「正本（Git/state.json）は健全なのに
+グラフ索引だけが空・不整合」というパターンが典型（2026-07-10〜12 に実際に発生。
+`plk_status` の `index_stale` は state.json の台帳と Git HEAD の比較でしかなく、
+グラフ実体の消失・不整合は検知できなかった）。診断は上流から順に:
+
+1. **plk_status を見る** — `graph_empty_mismatch: true` なら「台帳にはファクトがあるのに
+   グラフが空」で確定。手順 4 の reindex へ。`degraded` が非 null なら FalkorDB / Ollama の
+   死活をまず確認する。`graph_edges` で group ごとのエッジ実数も確認できる。
+
+2. **グラフ実体をノード数で直接確認する** —
+
+   ```bash
+   docker exec plk-memory-falkordb-1 redis-cli GRAPH.LIST
+   docker exec plk-memory-falkordb-1 redis-cli GRAPH.QUERY plk-main "MATCH (n) RETURN count(n)"
+   docker exec plk-memory-falkordb-1 redis-cli GRAPH.QUERY plk-quarantine "MATCH (n) RETURN count(n)"
+   ```
+
+   - **count が 0 / グラフが無い** → グラフ実体の消失。RDB 永続化を確認（手順 3）した上で
+     reindex で復旧（手順 4）。
+   - **count > 0 なのに 0 ヒット** → データはある。疑うのは (a) state.json の episode_uuids と
+     グラフ側 uuid の不整合（検索は当たっているが fact_id への帰属で全部捨てられる —
+     サーバーログの `skipped N edges with no fact attribution` が証拠）、
+     (b) ドライバの group ルーティング不良（`default_db` にノードが入っていないかも確認）。
+     いずれも reindex（手順 4）で台帳とグラフが同時に再構築され解消する。
+
+3. **FalkorDB の永続化を確認する** —
+
+   ```bash
+   docker exec plk-memory-falkordb-1 redis-cli CONFIG GET dir      # => /var/lib/falkordb/data
+   docker exec plk-memory-falkordb-1 redis-cli INFO persistence | grep -E 'rdb_last_bgsave_status|aof_enabled'
+   docker exec plk-memory-falkordb-1 ls -la /var/lib/falkordb/data  # dump.rdb / appendonlydir
+   docker logs plk-memory-falkordb-1 2>&1 | grep -E 'Loading RDB|Done loading'
+   ```
+
+   マウント先はイメージの `FALKORDB_DATA_PATH`（= redis `--dir`）と同じ
+   `/var/lib/falkordb/data` であること。起動ログに `Done loading RDB` と各グラフの
+   ノード数が出ていれば、再起動でのデータ消失は起きていない。
+
+4. **reindex で復旧する** —
+
+   ```bash
+   curl -s -X POST localhost:8735/admin/reindex -H "Authorization: Bearer $PLK_ADMIN_TOKEN"
+   ```
+
+   グラフ全 group の clear → state.json リセット → Git 正本から全件再 ingest が走る
+   （バックグラウンド実行。実行中は `plk_add` 等が maintenance 応答を返す）。
+   完了後に `plk_status` で `indexed_facts` と `graph_edges` が復元されたことを確認する。
+
+### 2026-07-10 事故の記録（教訓）
+
+コンテナ再起動後に `plk_search` が 2 日間全クエリ 0 ヒットになった。当初は「グラフデータ
+全消失」と見えたが、コンテナログでは再起動時に RDB から plk-main 372 ノードが正常ロード
+されており、**FalkorDB の永続化は機能していた**（マウント先も正しかった）。真因はグラフより
+上のアプリ層（当時進行中だった大規模リファクタ期間中の台帳とグラフの不整合）で、
+`/admin/reindex` により解消。この事故を受けて (a) `plk_status` に `graph_edges` /
+`graph_empty_mismatch`（台帳とグラフ実体の乖離検知）を追加、(b) AOF を有効化
+（`docker-compose.yml` の `REDIS_ARGS: "--appendonly yes"`）した。

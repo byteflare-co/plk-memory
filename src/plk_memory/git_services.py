@@ -209,7 +209,7 @@ class AppServices:
             return {"error": f"fact が存在しない: {fact_id}"}
 
     async def tool_status(self) -> dict:
-        status = self.sync.status()
+        status = await self.sync.status()
         pending = self.promotion_store.by_state(PromotionState.proposed) + \
             self.promotion_store.by_state(PromotionState.approved)
         status["pending_promotions"] = [
