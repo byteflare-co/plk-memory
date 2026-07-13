@@ -22,9 +22,14 @@ result has degraded=true, treat it as an index failure and answer with caveats o
 fallback evidence."""
 
 PLK_ADD_DESCRIPTION = """Add a candidate only after it passes the PLK admission
-rubric. The top-level gate is counterfactual usefulness: name the future situation
-in which retrieving this fact changes a decision or action, and how it changes it.
-If that cannot be stated concretely, do not propose or add it. A past organizational
+rubric. First apply realistic recurrence: name a concrete situation that is likely
+to recur in Masahiro Nishikawa's or Byteflare's actual work, life, or operations.
+Theoretical reuse by another company, a hypothetical new corporation, or some other
+user does not qualify. Then apply counterfactual usefulness: explain how retrieval
+changes a decision or action in that recurring situation. If either gate cannot be
+stated concretely, do not propose or add it. One-time incorporation filings,
+one-off grant applications, and completed migrations do not qualify merely because
+the knowledge is generally useful. A past organizational
 decision is not exempt merely because it was important; architecture state, ADRs,
 task history, and implementation choices belong in their existing source of truth
 unless their rationale will change a likely future decision. The candidate must
@@ -42,7 +47,7 @@ they point to the source; do not copy the source itself. Before asking
 the user for approval, normalize the candidate and use
 plk_search to check duplicates and updates. Do not ask a generic "save to PLK?"
 question: show the proposed statement, kind, namespace, whether it is new or an
-update, the future retrieval situation, and the decision or action that changes
+update, the realistic recurring situation for Masahiro Nishikawa or Byteflare, and the decision or action that changes
 compared with not retrieving it. Choose an existing namespace from plk.domain.tax/legal/shaho/dev/backoffice/
 biz/agent (or plk.quarantine for external-untrusted data); never invent one. When an
 observed result motivates a future behavior, store the conditional behavior as

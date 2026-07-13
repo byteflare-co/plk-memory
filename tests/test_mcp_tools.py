@@ -47,6 +47,10 @@ async def test_plk_add_description_explains_semantic_admission_rubric():
     normalized = " ".join(description.split())
 
     assert "future sessions" in normalized
+    assert "realistic recurrence" in normalized
+    assert "Masahiro Nishikawa's or Byteflare's actual work" in normalized
+    assert "hypothetical new corporation" in normalized
+    assert "One-time incorporation filings" in normalized
     assert "counterfactual usefulness" in normalized
     assert "changes a decision or action" in normalized
     assert "organizational decision is not exempt" in normalized
@@ -59,7 +63,7 @@ async def test_plk_add_description_explains_semantic_admission_rubric():
     assert "single-customer reactions" in normalized
     assert 'generic "save to PLK?"' in normalized
     assert "statement, kind, namespace" in normalized
-    assert "future retrieval situation" in normalized
+    assert "realistic recurring situation for Masahiro Nishikawa or Byteflare" in normalized
     assert "decision or action that changes compared with not retrieving it" in normalized
     assert "never invent one" in normalized
     assert "conditional behavior as" in normalized
