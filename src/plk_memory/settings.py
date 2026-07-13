@@ -106,7 +106,7 @@ class Settings(BaseSettings):
     allowed_hosts: list[str] = ["*"]
 
     # Web UI（read 専用）
-    ui_password: str = ""          # 空なら UI ログイン不可（本番のみ設定）
+    ui_password: str = ""          # 空なら認証なし。設定時のみログインを要求
     ui_cookie_name: str = "plk_ui"
     ui_organization_id: str = ""
 

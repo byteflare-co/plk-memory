@@ -397,6 +397,8 @@ async function init() {
     currentFacts = data.facts || [];
     document.getElementById('metaRow').textContent = `${currentFacts.length} 件 · すべて · すべてのkind · 有効`;
     renderList();
+  } else if (r.status === 401) {
+    document.getElementById('login').style.display = 'block';
   }
 }
 

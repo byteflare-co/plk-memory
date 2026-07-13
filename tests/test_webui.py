@@ -29,9 +29,43 @@ async def uiclient(remote, tmp_path, write_valid_fact):
         yield c
 
 
+@pytest.fixture
+async def open_uiclient(remote, tmp_path, write_valid_fact):
+    origin, seed = remote
+    write_valid_fact(seed, "knowledge/domains/tax/x.md")
+    push(seed)
+    settings = make_settings(tmp_path, origin, tokens={"tok-cc": "cc"},
+                             admin_token="adm", ui_password="")
+    app = create_app(settings=settings, graph=FakeGraphIndex())
+    app.state.services.store.ensure_repo()
+    app.state.services.store.fetch_and_ff()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://plk") as c:
+        yield c
+
+
 async def test_ui_api_requires_cookie(uiclient):
     r = await uiclient.get("/ui/api/facts")
     assert r.status_code == 401
+
+
+async def test_ui_without_password_allows_direct_read(open_uiclient):
+    r = await open_uiclient.get("/ui/api/facts")
+    assert r.status_code == 200
+    assert r.json()["facts"]
+
+
+async def test_ui_without_password_login_is_noop(open_uiclient):
+    r = await open_uiclient.post("/ui/login", json={})
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+    assert "set-cookie" not in r.headers
+
+
+async def test_login_form_is_hidden_until_auth_is_required(uiclient):
+    r = await uiclient.get("/")
+    assert r.status_code == 200
+    assert "display: none; max-width: 340px" in r.text
 
 
 async def test_ui_login_sets_httponly_cookie_and_lists(uiclient):

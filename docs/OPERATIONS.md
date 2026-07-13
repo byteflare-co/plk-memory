@@ -140,8 +140,9 @@ Mac 上で `plk-memory-api` を launchd 常駐化する運用手順（`deploy/co
    （`PLK_ALLOWED_HOSTS`）は本 Phase では未実施。Mac 常駐期は 127.0.0.1 bind＋既存 ssh/gh 認証で運用する。
 
    **UI auth の EC2 前必須強化（P2 最終レビューの standing condition・本 Phase では実装しない注記のみ）**:
-   read 専用 Web UI は現在 localhost 前提で許容している弱点がある — (a) cookie/パスワード比較が
-   非定数時間、(b) cookie トークンが静的、(c) ログインのレート制限なし。127.0.0.1 bind の間は許容だが、
+   read 専用 Web UI は現在 localhost 前提で、`PLK_UI_PASSWORD` が空なら認証なしで直接表示する。
+   パスワードを設定した場合も、(a) cookie/パスワード比較が非定数時間、(b) cookie トークンが静的、
+   (c) ログインのレート制限なし、という弱点がある。127.0.0.1 bind の間は許容だが、
    **EC2/Tailscale 公開前に**定数時間比較・per-session の cookie トークン・ログインのレート制限を
    実装することを必須条件とする。
 

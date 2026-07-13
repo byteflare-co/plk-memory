@@ -39,13 +39,15 @@ def build_ui_router(services: "ServiceFacade") -> APIRouter:
 
     def _require_cookie(request: Request) -> None:
         if expected is None:
-            raise HTTPException(status_code=401, detail="UI is disabled")
+            return
         if request.cookies.get(settings.ui_cookie_name) != expected:
             raise HTTPException(status_code=401, detail="login required")
 
     @router.post("/ui/login")
     async def ui_login(payload: dict, response: Response) -> dict:
-        if not settings.ui_password or payload.get("password") != settings.ui_password:
+        if not settings.ui_password:
+            return {"ok": True}
+        if payload.get("password") != settings.ui_password:
             raise HTTPException(status_code=401, detail="invalid password")
         response.set_cookie(
             settings.ui_cookie_name, _cookie_value(settings.ui_password),
