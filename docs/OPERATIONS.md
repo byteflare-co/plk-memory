@@ -206,3 +206,26 @@ Mac 上で `plk-memory-api` を launchd 常駐化する運用手順（`deploy/co
 `/admin/reindex` により解消。この事故を受けて (a) `plk_status` に `graph_edges` /
 `graph_empty_mismatch`（台帳とグラフ実体の乖離検知）を追加、(b) AOF を有効化
 （`docker-compose.yml` の `REDIS_ARGS: "--appendonly yes"`）した。
+
+### AOF 有効化の落とし穴（2026-07-13 適用時に実際に踏んだ）
+
+`appendonly yes` で起動した Redis は **dump.rdb を無視して AOF からロードする**。
+既存の RDB データがある状態でいきなり AOF 有効のコンテナを再作成すると、空の
+appendonlydir が新規作成され、起動直後のインスタンスは空になる（dump.rdb 自体は
+volume に残るが、放置すると空データの BGSAVE で上書きされ得る）。正しい移行手順:
+
+```bash
+docker exec plk-memory-falkordb-1 redis-cli CONFIG SET save ""   # 空データの上書き保存を止める
+docker cp plk-memory-falkordb-1:/var/lib/falkordb/data/dump.rdb ./dump.rdb.backup
+docker compose stop falkordb
+# AOF 無効の一時コンテナで dump.rdb をロード → 実データから AOF を再生成
+docker run --rm -d --name falkordb-restore \
+  -v plk-memory_falkordb-data:/var/lib/falkordb/data -e BROWSER=0 falkordb/falkordb:latest
+docker exec falkordb-restore redis-cli CONFIG SET appendonly yes  # BGREWRITEAOF が走る
+docker exec falkordb-restore redis-cli INFO persistence | grep aof_last_bgrewrite_status  # ok を確認
+docker exec falkordb-restore redis-cli SAVE
+docker stop falkordb-restore
+docker compose up -d falkordb   # 以後は実データ入りの AOF からロードされる
+```
+
+万一空のまま書き込みが走ってしまっても、Git が SoT なので `/admin/reindex` で全量復元できる。
