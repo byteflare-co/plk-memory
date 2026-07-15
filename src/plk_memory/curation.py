@@ -6,35 +6,12 @@
 
 from __future__ import annotations
 
-import json
 from collections import Counter
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
-
-def _parse_ts(value) -> datetime | None:
-    if not isinstance(value, str):
-        return None
-    try:
-        ts = datetime.fromisoformat(value)
-    except ValueError:
-        return None
-    return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
-
-
-def read_usage(path: Path) -> list[dict]:
-    if not path.exists():
-        return []
-    out: list[dict] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            out.append(json.loads(line))
-        except json.JSONDecodeError:
-            continue
-    return out
+from plk_memory.usage_records import parse_ts as _parse_ts
+from plk_memory.usage_records import read_usage as read_usage
+from plk_memory.usage_records import referenced_fact_ids
 
 
 def aggregate(posts, usage, *, corpus_conflict_threshold: int = 100) -> dict:
@@ -55,9 +32,7 @@ def aggregate(posts, usage, *, corpus_conflict_threshold: int = 100) -> dict:
 
     # 「参照済み」= 利用ログに現れた fact_id（history/invalidate 等の明示対象）
     # ＋ plk_search のヒット結果として返された fact_ids
-    referenced = {u.get("fact_id") for u in usage if u.get("fact_id")}
-    for u in usage:
-        referenced.update(u.get("fact_ids") or [])
+    referenced = referenced_fact_ids(usage)
     unreferenced = [
         {"id": p.get("id"), "namespace": p.get("namespace"), "statement": p.get("statement")}
         for p, _ in active

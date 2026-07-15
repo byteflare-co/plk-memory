@@ -420,6 +420,10 @@ class PostgresAppServices:
         )
         return [self._search_hit(record, None) for record in records]
 
+    async def ui_metrics_posts(self) -> tuple[list[dict], int]:
+        """Corpus metrics are not available until PostgreSQL usage is recorded."""
+        return [], 0
+
     async def ui_fact_detail(self, fact_id: str) -> dict[str, Any] | None:
         scope = self._scope()
         try:

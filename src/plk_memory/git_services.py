@@ -11,9 +11,12 @@ import hashlib
 import posixpath
 import time
 
+import frontmatter
+from ulid import ULID
+
 from plk_memory.auth import current_client
 from plk_memory.admission import CodexAdmissionRunner
-from plk_memory.facts import FactError, FactNotFound, FactService
+from plk_memory.facts import SKIP_NAMES, FactError, FactNotFound, FactService
 from plk_memory.feedback import FeedbackCoordinator, FeedbackState
 from plk_memory.gitstore import GitStore, WriteConflict
 from plk_memory.promotions import PromotionState, PromotionStore, new_promotion, transition
@@ -96,62 +99,85 @@ class AppServices:
     ) -> dict:
         client = current_client.get()
         start = time.monotonic()
+        search_id = str(ULID())
         allow_quarantine = bool(namespaces and "plk.quarantine" in namespaces)
 
-        if not self.graph.ready:
-            self.usage.log(client, "plk_search", query=query, hits=0, reason=reason)
-            return {"degraded": True, "message": "graph index が未接続（degraded モード）", "hits": []}
-
-        group_ids = self._group_ids_for(namespaces)
-        state = self.state_store.load()
-        uuid_to_fact = {
-            uuid: fact_id for fact_id, entry in state.facts.items() for uuid in entry.episode_uuids
-        }
-
-        pool = max(limit * 5, 50)
-        try:
-            raw_hits = await self.graph.search(query, group_ids, uuid_to_fact, limit=pool)
-        except Exception as e:  # noqa: BLE001 - graph 障害は degraded として返す（設計書 §8）
-            self.usage.log(client, "plk_search", query=query, hits=0, reason=reason)
-            return {"degraded": True, "message": f"search 失敗: {e}", "hits": []}
-
-        results = []
-        for hit in raw_hits:
-            try:
-                post, rel = self.facts.get(hit.fact_id)
-            except FactNotFound:
-                continue
-            ns = post.get("namespace")
-            if ns == "plk.quarantine" and not allow_quarantine:
-                continue
-            if kind is not None and post.get("kind") != kind:
-                continue
-            if status is not None and post.get("status") != status:
-                continue
-            if namespaces and ns not in namespaces:
-                continue
-            results.append(
-                {
-                    "fact_id": hit.fact_id,
-                    "statement": post.get("statement"),
-                    "namespace": ns,
-                    "kind": post.get("kind"),
-                    "status": post.get("status"),
-                    "path": rel,
-                    "fact_text": hit.fact_text,
-                    "created_at": post.get("created_at"),
-                }
+        def log_search(outcome: str, results: list[dict]) -> int:
+            latency_ms = int((time.monotonic() - start) * 1000)
+            self.usage.log(
+                client, "plk_search", query=query, hits=len(results),
+                latency_ms=latency_ms, reason=reason,
+                fact_ids=[str(result["fact_id"]) for result in results],
+                search_id=search_id, outcome=outcome,
             )
-            if len(results) >= limit:
-                break
+            return latency_ms
 
-        latency_ms = int((time.monotonic() - start) * 1000)
-        self.usage.log(
-            client, "plk_search", query=query, hits=len(results),
-            latency_ms=latency_ms, reason=reason,
-            fact_ids=[r["fact_id"] for r in results],
-        )
-        return {"hits": results, "degraded": False}
+        if not self.graph.ready:
+            latency_ms = log_search("degraded", [])
+            return {
+                "degraded": True,
+                "message": "graph index が未接続（degraded モード）",
+                "hits": [],
+                "search_id": search_id,
+                "latency_ms": latency_ms,
+            }
+
+        try:
+            group_ids = self._group_ids_for(namespaces)
+            state = self.state_store.load()
+            uuid_to_fact = {
+                uuid: fact_id
+                for fact_id, entry in state.facts.items()
+                for uuid in entry.episode_uuids
+            }
+            pool = max(limit * 5, 50)
+            raw_hits = await self.graph.search(query, group_ids, uuid_to_fact, limit=pool)
+            results = []
+            for hit in raw_hits:
+                try:
+                    post, rel = self.facts.get(hit.fact_id)
+                except FactNotFound:
+                    continue
+                ns = post.get("namespace")
+                if ns == "plk.quarantine" and not allow_quarantine:
+                    continue
+                if kind is not None and post.get("kind") != kind:
+                    continue
+                if status is not None and post.get("status") != status:
+                    continue
+                if namespaces and ns not in namespaces:
+                    continue
+                results.append(
+                    {
+                        "fact_id": hit.fact_id,
+                        "statement": post.get("statement"),
+                        "namespace": ns,
+                        "kind": post.get("kind"),
+                        "status": post.get("status"),
+                        "path": rel,
+                        "fact_text": hit.fact_text,
+                        "created_at": post.get("created_at"),
+                    }
+                )
+                if len(results) >= limit:
+                    break
+        except Exception as error:  # noqa: BLE001 - search failures remain degraded reads
+            latency_ms = log_search("error", [])
+            return {
+                "degraded": True,
+                "message": f"search 失敗: {error}",
+                "hits": [],
+                "search_id": search_id,
+                "latency_ms": latency_ms,
+            }
+
+        latency_ms = log_search("ok", results)
+        return {
+            "hits": results,
+            "degraded": False,
+            "search_id": search_id,
+            "latency_ms": latency_ms,
+        }
 
     async def tool_add(
         self,
@@ -254,6 +280,20 @@ class AppServices:
                 }
             )
         return facts
+
+    async def ui_metrics_posts(self) -> tuple[list[dict], int]:
+        posts: list[dict] = []
+        skipped = 0
+        for path in sorted(self.settings.knowledge_dir.rglob("*.md")):
+            if path.name in SKIP_NAMES:
+                continue
+            try:
+                post = frontmatter.load(path)
+            except Exception:  # noqa: BLE001 - one malformed fact must not hide healthy metrics
+                skipped += 1
+                continue
+            posts.append(dict(post.metadata))
+        return posts, skipped
 
     async def ui_fact_detail(self, fact_id: str) -> dict | None:
         try:

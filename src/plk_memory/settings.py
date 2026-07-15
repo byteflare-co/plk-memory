@@ -44,6 +44,8 @@ class Settings(BaseSettings):
     # ローカル状態
     state_path: Path = Path.home() / ".plk" / "state.json"
     usage_log_path: Path = Path.home() / ".plk" / "usage.jsonl"
+    eval_history_path: Path = Path.home() / ".plk" / "eval-history.jsonl"
+    metrics_timezone: str = "Asia/Tokyo"
     lock_path: Path = Path.home() / ".plk" / "writer.lock"
     feedback_path: Path = Path.home() / ".plk" / "feedback.json"
 

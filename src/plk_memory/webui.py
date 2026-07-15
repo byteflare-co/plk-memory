@@ -10,11 +10,16 @@ import ipaddress
 import secrets
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo
 
 import markdown as md
 import nh3
 from fastapi import APIRouter, HTTPException, Request, Response, status
+
+from plk_memory.metrics import build_metrics
+from plk_memory.usage_records import read_eval_history, read_usage
 
 if TYPE_CHECKING:
     from plk_memory.facade import ServiceFacade
@@ -169,6 +174,21 @@ def build_ui_router(services: "ServiceFacade") -> APIRouter:
                 namespace=namespace, kind=kind, status=status
             )
         }
+
+    @router.get("/ui/api/metrics")
+    async def ui_metrics(request: Request) -> dict:
+        _require_cookie(request)
+        posts, skipped = await services.ui_metrics_posts()
+        result = build_metrics(
+            read_usage(settings.usage_log_path),
+            posts,
+            read_eval_history(settings.eval_history_path),
+            now=datetime.now(timezone.utc),
+            tz=ZoneInfo(settings.metrics_timezone),
+        )
+        result["corpus"]["available"] = settings.storage_backend == "git"
+        result["corpus"]["skipped_files"] = skipped
+        return result
 
     @router.get("/ui/api/facts/{fact_id}")
     async def ui_fact_detail(request: Request, fact_id: str) -> dict:
