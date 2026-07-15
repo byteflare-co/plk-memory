@@ -26,15 +26,20 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
+import json
 import math
 import re
 import shutil
 import subprocess
+import sys
+from datetime import datetime
 from pathlib import Path
 
 import frontmatter
 import httpx
 import yaml
+from ulid import ULID
 
 from plk_memory.rendering import render_episode
 from plk_memory.settings import Settings
@@ -95,6 +100,32 @@ def rank_of_first_expected(ranked_ids: list[str], expected: list[str]) -> int | 
 
 def reciprocal_rank(rank: int | None) -> float:
     return (1.0 / rank) if rank else 0.0
+
+
+def compute_summary(
+    queries: list[dict],
+    runner_results: dict[str, dict[str, list[str]]],
+) -> dict[str, dict[str, int | float]]:
+    """ランナーごとの hit@5 数・率・平均 MRR を返す。"""
+    summary: dict[str, dict[str, int | float]] = {}
+    n = len(queries)
+    for runner, results in runner_results.items():
+        hits = 0
+        rr = 0.0
+        for item in queries:
+            rank = rank_of_first_expected(
+                results.get(item["query"], []),
+                item["expected"],
+            )
+            if rank is not None:
+                hits += 1
+                rr += reciprocal_rank(rank)
+        summary[runner] = {
+            "hit5": hits,
+            "hit5_rate": hits / n if n else 0.0,
+            "mrr": rr / n if n else 0.0,
+        }
+    return summary
 
 
 # --------------------------------------------------------------------------
@@ -233,7 +264,6 @@ def render_markdown(
     lines.append(header)
     lines.append(sep)
 
-    agg: dict[str, dict[str, float]] = {r: {"hits": 0.0, "rr": 0.0} for r in runners}
     for i, q in enumerate(queries, start=1):
         query = q["query"]
         expected = q["expected"]
@@ -242,8 +272,6 @@ def render_markdown(
             ranked = runner_results[r].get(query, [])
             rank = rank_of_first_expected(ranked, expected)
             if rank is not None:
-                agg[r]["hits"] += 1
-                agg[r]["rr"] += reciprocal_rank(rank)
                 cells.append(f"hit@{rank}")
             else:
                 cells.append("miss")
@@ -258,13 +286,90 @@ def render_markdown(
     lines.append("")
     lines.append("| ランナー | hit@5 | hit@5 率 | 平均MRR |")
     lines.append("|---|---|---|---|")
+    summary = compute_summary(queries, runner_results)
     for r in runners:
-        hits = int(agg[r]["hits"])
-        rate = hits / n if n else 0.0
-        mrr = agg[r]["rr"] / n if n else 0.0
+        hits = int(summary[r]["hit5"])
+        rate = float(summary[r]["hit5_rate"])
+        mrr = float(summary[r]["mrr"])
         lines.append(f"| {r} | {hits}/{n} | {rate:.2f} | {mrr:.3f} |")
     lines.append("")
     return "\n".join(lines)
+
+
+def queries_hash(queries: list[dict]) -> str:
+    """YAML の表記揺れに依存しないクエリセットの sha256。"""
+    canonical = json.dumps(
+        queries,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return f"sha256:{hashlib.sha256(canonical).hexdigest()}"
+
+
+def corpus_revision(data_repo_path: Path) -> str:
+    """評価対象データリポジトリの短縮 Git revision を返す。"""
+    proc = subprocess.run(
+        ["git", "-C", str(data_repo_path), "rev-parse", "--short", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    revision = proc.stdout.strip()
+    if not revision:
+        raise RuntimeError("git rev-parse が空の revision を返しました")
+    return revision
+
+
+def build_history_records(
+    *,
+    settings: Settings,
+    queries: list[dict],
+    facts: list[Fact],
+    runner_results: dict[str, dict[str, list[str]]],
+) -> list[dict]:
+    """1 回の評価結果を、ランナーごとの provenance 付き履歴へ変換する。"""
+    summary = compute_summary(queries, runner_results)
+    if not summary:
+        return []
+    timestamp = datetime.now().astimezone().isoformat()
+    run_id = str(ULID())
+    query_set_hash = queries_hash(queries)
+    revision = corpus_revision(settings.data_repo_path)
+    active = sum(1 for fact in facts if fact.status == "active")
+    records: list[dict] = []
+    for runner, values in summary.items():
+        is_embed = runner == "embed"
+        is_graph = runner.startswith("graph(")
+        graph_mode = runner.removeprefix("graph(").removesuffix(")") if is_graph else None
+        records.append({
+            "ts": timestamp,
+            "run_id": run_id,
+            "runner": runner,
+            "queries": len(queries),
+            "queries_hash": query_set_hash,
+            "hit5": values["hit5"],
+            "hit5_rate": values["hit5_rate"],
+            "mrr": values["mrr"],
+            "corpus_active": active,
+            "corpus_total": len(facts),
+            "corpus_revision": revision,
+            "corpus_scope": "domains",
+            "embed_model": settings.embedder_model if is_embed else None,
+            "llm_model": settings.llm_model if is_graph else None,
+            "graph_mode": graph_mode,
+        })
+    return records
+
+
+def append_history(path: Path, records: list[dict]) -> None:
+    """履歴を JSON Lines として追記する。"""
+    if not records:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fp:
+        for record in records:
+            fp.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
 
 
 # --------------------------------------------------------------------------
@@ -280,6 +385,8 @@ def main() -> None:
     parser.add_argument("--graph-mode", choices=["episode", "triplet"], default=None,
                         help="graph ランナー使用時の ingest_mode（reindex 済みのモードと一致させる）")
     parser.add_argument("--out", type=Path, default=None)
+    parser.add_argument("--no-history", action="store_true",
+                        help="eval-history.jsonl への追記を無効にする")
     args = parser.parse_args()
 
     settings = Settings()
@@ -322,6 +429,18 @@ def main() -> None:
     print(text)
     if args.out:
         args.out.write_text(text + "\n", encoding="utf-8")
+
+    if not args.no_history:
+        try:
+            records = build_history_records(
+                settings=settings,
+                queries=queries,
+                facts=facts,
+                runner_results=runner_results,
+            )
+            append_history(settings.eval_history_path, records)
+        except Exception as exc:
+            print(f"warning: eval-history の追記に失敗しました: {exc}", file=sys.stderr)
 
 
 if __name__ == "__main__":
