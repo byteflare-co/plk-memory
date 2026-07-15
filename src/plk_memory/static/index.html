@@ -67,6 +67,15 @@
   .brand { display: flex; flex-direction: column; }
   .brand .name { font-weight: 600; font-size: 14.5px; letter-spacing: -.01em; }
   .brand .kicker { font-size: 11px; color: var(--text-faint); }
+  .view-tabs {
+    display: none; align-items: center; gap: 3px; margin-left: 18px; padding: 3px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  }
+  .view-tabs button {
+    border: 0; border-radius: 4px; background: transparent; color: var(--text-muted);
+    padding: 5px 13px; font-size: 12px; font-weight: 600; cursor: pointer;
+  }
+  .view-tabs button[aria-selected="true"] { background: var(--accent); color: var(--accent-fg); }
   .ro-badge {
     margin-left: auto; font-size: 10.5px; color: var(--text-muted); border: 1px solid var(--border-strong);
     border-radius: 999px; padding: 3px 10px; display: flex; align-items: center; gap: 5px;
@@ -248,10 +257,55 @@
   .proposal-field .after { color: var(--text); white-space: pre-wrap; margin-top: 3px; }
   .operation-error { color: var(--danger); font-size: 12px; margin-top: 8px; white-space: pre-wrap; }
 
+  #metricsView { display: none; }
+  .metrics-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+  .metrics-heading h1 { margin: 0; font-size: 20px; line-height: 1.35; }
+  .metrics-heading p { margin: 3px 0 0; color: var(--text-muted); font-size: 12.5px; }
+  .metrics-refresh {
+    flex: none; border: 1px solid var(--border-strong); background: var(--surface); color: var(--text);
+    border-radius: var(--radius-sm); padding: 7px 12px; font-size: 12.5px; cursor: pointer;
+  }
+  .metrics-refresh:hover { border-color: var(--accent); }
+  .metrics-refresh:disabled { opacity: .55; cursor: wait; }
+  .metrics-status { min-height: 22px; color: var(--text-faint); font-size: 12px; margin-bottom: 8px; }
+  .metrics-status.error { color: var(--danger); }
+  .stat-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
+  .stat-tile { min-height: 94px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; }
+  .stat-label { color: var(--text-faint); font-size: 11px; font-weight: 600; letter-spacing: .03em; text-transform: uppercase; }
+  .stat-value { margin-top: 8px; font-size: 24px; font-weight: 650; letter-spacing: -.025em; }
+  .stat-note { margin-top: 3px; color: var(--text-muted); font-size: 11px; }
+  .stat-value.ok { color: var(--success); }
+  .stat-value.warn { color: var(--warning); }
+  .stat-value.bad { color: var(--danger); }
+  .metrics-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  .metric-card { min-width: 0; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 15px; }
+  .metric-card.wide { grid-column: 1 / -1; }
+  .metric-card h2 { margin: 0; font-size: 14px; font-weight: 600; }
+  .metric-card .subhead { margin: 2px 0 11px; color: var(--text-faint); font-size: 11.5px; }
+  .chart { min-height: 210px; overflow-x: auto; }
+  .chart svg { display: block; width: 100%; min-width: 480px; height: 210px; overflow: visible; }
+  .chart-empty { display: flex; min-height: 180px; align-items: center; justify-content: center; color: var(--text-faint); font-size: 12.5px; text-align: center; padding: 20px; }
+  .chart-legend { display: flex; flex-wrap: wrap; gap: 8px 14px; margin-top: 8px; color: var(--text-muted); font-size: 11px; }
+  .legend-item { display: inline-flex; align-items: center; gap: 5px; }
+  .legend-swatch { width: 9px; height: 9px; border-radius: 2px; flex: none; }
+  .metrics-table { min-width: 620px; }
+  .metrics-table tbody tr { cursor: default; }
+  .metrics-table td:first-child { max-width: 520px; white-space: normal; overflow-wrap: anywhere; }
+  .metrics-table .mono { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); }
+  .metrics-note { margin-top: 10px; padding: 9px 11px; border-radius: var(--radius-sm); background: var(--warning-bg); color: var(--warning); font-size: 11.5px; }
+  .metrics-kill { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .metrics-kill .status-pill { font-size: 12px; }
+
   @media (max-width: 720px) {
     #detail { width: 100vw; }
     .ns-cell, .kind-cell, .created-cell { display: none; }
     td.statement-cell { width: auto; }
+    header { padding-inline: 14px; }
+    .view-tabs { margin-left: auto; }
+    .ro-badge { display: none; }
+    #main { padding-inline: 14px; }
+    .stat-grid, .metrics-grid { grid-template-columns: 1fr; }
+    .metric-card.wide { grid-column: auto; }
   }
 </style>
 </head>
@@ -262,6 +316,10 @@
     <span class="name">plk-memory</span>
     <span class="kicker">knowledge ledger</span>
   </div>
+  <nav class="view-tabs" id="viewTabs" aria-label="ビュー切替">
+    <button id="factsTab" type="button" role="tab" aria-selected="true" aria-controls="factsView">Facts</button>
+    <button id="metricsTab" type="button" role="tab" aria-selected="false" aria-controls="metricsView">Metrics</button>
+  </nav>
   <div class="ro-badge"><span class="dot"></span>reviewed writes</div>
 </header>
 
@@ -275,7 +333,8 @@
 </div>
 
 <div id="main">
-  <div class="toolbar">
+  <section id="factsView" role="tabpanel" aria-labelledby="factsTab">
+    <div class="toolbar">
     <div class="search-wrap">
       <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
         <circle cx="7" cy="7" r="5.2" stroke="currentColor" stroke-width="1.5"/>
@@ -294,24 +353,44 @@
       <button data-v="logic" aria-pressed="false">logic</button>
       <button data-v="knowhow" aria-pressed="false">knowhow</button>
     </div>
-  </div>
-  <div class="chipbar" id="nsBar" role="group" aria-label="namespace"></div>
-  <div class="meta-row" id="metaRow"></div>
-  <div id="banner" role="status"></div>
-  <div class="table-wrap">
-    <table>
-      <thead>
-        <tr>
-          <th>記憶</th>
-          <th>namespace</th>
-          <th>kind</th>
-          <th>状態</th>
-          <th class="sortable" id="sortByCreated">作成日<span class="arrow">▾</span></th>
-        </tr>
-      </thead>
-      <tbody id="list"></tbody>
-    </table>
-  </div>
+    </div>
+    <div class="chipbar" id="nsBar" role="group" aria-label="namespace"></div>
+    <div class="meta-row" id="metaRow"></div>
+    <div id="banner" role="status"></div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>記憶</th>
+            <th>namespace</th>
+            <th>kind</th>
+            <th>状態</th>
+            <th class="sortable" id="sortByCreated">作成日<span class="arrow">▾</span></th>
+          </tr>
+        </thead>
+        <tbody id="list"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="metricsView" role="tabpanel" aria-labelledby="metricsTab" hidden>
+    <div class="metrics-heading">
+      <div><h1>Metrics</h1><p>利用実態・コーパス健全性・検索品質</p></div>
+      <button class="metrics-refresh" id="metricsRefresh" type="button">再取得</button>
+    </div>
+    <div class="metrics-status" id="metricsStatus" role="status" aria-live="polite"></div>
+    <div class="stat-grid" id="metricsStats"></div>
+    <div class="metrics-grid">
+      <section class="metric-card wide"><h2>週別検索数</h2><p class="subhead">auto / manual の積み上げ</p><div class="chart" id="weeklySearchChart"></div></section>
+      <section class="metric-card"><h2>週別結果返却率</h2><p class="subhead">正常検索のうち結果が 1 件以上返った割合</p><div class="chart" id="returnRateChart"></div></section>
+      <section class="metric-card"><h2>検索品質</h2><p class="subhead">hit@5 / MRR（runner × queries hash）</p><div class="chart" id="evalChart"></div></section>
+      <section class="metric-card"><h2>namespace 別 active ファクト</h2><p class="subhead">件数降順</p><div class="chart" id="namespaceChart"></div></section>
+      <section class="metric-card"><h2>クライアント別検索数</h2><p class="subhead">全期間 top 10</p><div class="chart" id="clientChart"></div></section>
+      <section class="metric-card wide"><h2>キル基準との距離</h2><p class="subhead">直近 4 完了週の auto 結果返却検索（proxy）</p><div id="killCriteria"></div></section>
+      <section class="metric-card wide"><h2>ゼロヒットクエリ</h2><p class="subhead">正常検索のみ・直近発生順</p><div class="table-wrap"><table class="metrics-table"><thead><tr><th>query</th><th>回数</th><th>最終発生</th><th>clients</th></tr></thead><tbody id="zeroHitRows"></tbody></table></div><div class="metrics-note">outcome がない旧レコードは正常扱いのため、障害由来の記録が含まれる場合があります。</div></section>
+      <section class="metric-card wide"><h2>未返却ファクト</h2><p class="subhead">検索結果に一度も含まれていない active ファクト（最大 30 件）</p><div class="table-wrap"><table class="metrics-table"><thead><tr><th>statement</th><th>namespace</th><th>fact id</th></tr></thead><tbody id="unreturnedRows"></tbody></table></div></section>
+    </div>
+  </section>
 </div>
 
 <div id="scrim"></div>

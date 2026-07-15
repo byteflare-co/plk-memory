@@ -9,9 +9,10 @@ const NS_META = {
   'plk.shared': { label: 'shared', var: '--ns-shared' },
 };
 
-const state = { ns: '', kind: '', status: 'active', q: '', sortDir: 'desc', csrf: null };
+const state = { ns: '', kind: '', status: 'active', q: '', sortDir: 'desc', csrf: null, view: 'facts' };
 let currentFacts = [];
 let currentDetailId = null;
+let metricsLoaded = false;
 
 function formatDate(iso) {
   if (!iso) return '—';
@@ -23,6 +24,8 @@ function formatDate(iso) {
 
 function nsColorVar(ns) { return (NS_META[ns] && NS_META[ns].var) ? `var(${NS_META[ns].var})` : 'var(--text-faint)'; }
 function nsLabel(ns) { return (NS_META[ns] && NS_META[ns].label) || ns || '—'; }
+
+function clearElement(el) { el.replaceChildren(); }
 
 async function login() {
   const errEl = document.getElementById('loginErr');
@@ -45,11 +48,12 @@ async function login() {
 function enterMain() {
   document.getElementById('login').style.display = 'none';
   document.getElementById('main').style.display = 'block';
+  document.getElementById('viewTabs').style.display = 'flex';
 }
 
 function initNsBar() {
   const bar = document.getElementById('nsBar');
-  bar.innerHTML = '';
+  clearElement(bar);
   const makeChip = (value, label, cssVar) => {
     const b = document.createElement('button');
     b.className = 'chip';
@@ -111,7 +115,7 @@ function sortedFacts() {
 
 function renderList() {
   const tbody = document.getElementById('list');
-  tbody.innerHTML = '';
+  clearElement(tbody);
   const facts = sortedFacts();
 
   if (facts.length === 0) {
@@ -244,7 +248,7 @@ async function detail(id) {
   currentDetailId = id;
   const meta = data.meta || {};
   const el = document.getElementById('detail');
-  el.innerHTML = '';
+  clearElement(el);
 
   const closeBtn = document.createElement('button');
   closeBtn.className = 'closeBtn';
@@ -478,7 +482,7 @@ async function renderFeedbackJobs(el, factId, meta) {
   const r = await fetch(`/ui/api/facts/${encodeURIComponent(factId)}/feedback`);
   if (!r.ok) return;
   const data = await r.json();
-  host.innerHTML = '';
+  clearElement(host);
   const requests = data.requests || [];
   requests.forEach(job => {
     const wrap = document.createElement('div');
@@ -553,6 +557,472 @@ async function renderFeedbackJobs(el, factId, meta) {
   }
 }
 
+const SVG_NS = 'http://www.w3.org/2000/svg';
+const CHART_COLORS = ['#3b82f6', '#22c55e', '#f59e0b', '#a78bfa', '#ec4899', '#06b6d4', '#f87171', '#84cc16'];
+
+function svgElement(tag, attrs = {}) {
+  const el = document.createElementNS(SVG_NS, tag);
+  Object.entries(attrs).forEach(([key, value]) => el.setAttribute(key, String(value)));
+  return el;
+}
+
+function svgText(parent, value, attrs = {}) {
+  const textEl = svgElement('text', attrs);
+  textEl.textContent = String(value);
+  parent.appendChild(textEl);
+  return textEl;
+}
+
+function makeChart(host, label, width = 760, height = 210) {
+  clearElement(host);
+  const svg = svgElement('svg', { viewBox: `0 0 ${width} ${height}`, role: 'img', 'aria-label': label });
+  host.appendChild(svg);
+  return svg;
+}
+
+function renderChartEmpty(host, message) {
+  clearElement(host);
+  const empty = document.createElement('div');
+  empty.className = 'chart-empty';
+  empty.textContent = message;
+  host.appendChild(empty);
+}
+
+function numberOrNull(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function percent(value) {
+  const n = numberOrNull(value);
+  return n === null ? '—' : `${Math.round(n * 100)}%`;
+}
+
+function compactWeek(value) {
+  const text = String(value || '');
+  return text.length >= 10 ? text.slice(5, 10).replace('-', '/') : text;
+}
+
+function formatDateTime(value) {
+  if (!value) return '—';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return String(value);
+  return d.toLocaleString('ja-JP', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+
+function appendLegend(host, items) {
+  const legend = document.createElement('div');
+  legend.className = 'chart-legend';
+  items.forEach(item => {
+    const row = document.createElement('span');
+    row.className = 'legend-item';
+    const swatch = document.createElement('span');
+    swatch.className = 'legend-swatch';
+    swatch.style.background = item.color;
+    const label = document.createElement('span');
+    label.textContent = item.label;
+    row.append(swatch, label);
+    legend.appendChild(row);
+  });
+  host.appendChild(legend);
+  return legend;
+}
+
+function drawGrid(svg, { left, top, width, height, ticks = 4, maxValue = 1, formatter = String }) {
+  for (let i = 0; i <= ticks; i += 1) {
+    const y = top + (height * i / ticks);
+    svg.appendChild(svgElement('line', { x1: left, y1: y, x2: left + width, y2: y, stroke: 'var(--border)', 'stroke-width': 1 }));
+    svgText(svg, formatter(maxValue * (ticks - i) / ticks), {
+      x: left - 8, y: y + 4, fill: 'var(--text-faint)', 'font-size': 10, 'text-anchor': 'end',
+    });
+  }
+}
+
+function renderWeeklySearch(weekly) {
+  const host = document.getElementById('weeklySearchChart');
+  const observed = weekly.some(row => (
+    (numberOrNull(row.auto) || 0) + (numberOrNull(row.manual) || 0) + (numberOrNull(row.failures) || 0)
+  ) > 0);
+  if (!weekly.length || !observed) {
+    renderChartEmpty(host, '週次集計できる検索ログがありません。plk_search の利用後に表示されます。');
+    return;
+  }
+  const svg = makeChart(host, '週別検索数の積み上げ棒グラフ');
+  const left = 42; const top = 12; const width = 700; const height = 158;
+  const maxValue = Math.max(1, ...weekly.map(row => (numberOrNull(row.auto) || 0) + (numberOrNull(row.manual) || 0)));
+  drawGrid(svg, { left, top, width, height, maxValue, formatter: value => String(Math.round(value)) });
+  const slot = width / weekly.length;
+  const barWidth = Math.max(8, Math.min(38, slot * .58));
+  weekly.forEach((row, index) => {
+    const auto = Math.max(0, numberOrNull(row.auto) || 0);
+    const manual = Math.max(0, numberOrNull(row.manual) || 0);
+    const autoHeight = height * auto / maxValue;
+    const manualHeight = height * manual / maxValue;
+    const x = left + slot * index + (slot - barWidth) / 2;
+    const autoRect = svgElement('rect', { x, y: top + height - autoHeight, width: barWidth, height: autoHeight, rx: 2, fill: CHART_COLORS[0] });
+    const autoTitle = svgElement('title');
+    autoTitle.textContent = `${String(row.week || '')}: auto ${auto}`;
+    autoRect.appendChild(autoTitle);
+    svg.appendChild(autoRect);
+    const manualRect = svgElement('rect', { x, y: top + height - autoHeight - manualHeight, width: barWidth, height: manualHeight, rx: 2, fill: CHART_COLORS[2] });
+    const manualTitle = svgElement('title');
+    manualTitle.textContent = `${String(row.week || '')}: manual ${manual}`;
+    manualRect.appendChild(manualTitle);
+    svg.appendChild(manualRect);
+    svgText(svg, compactWeek(row.week) + (row.in_progress ? '*' : ''), {
+      x: x + barWidth / 2, y: 190, fill: 'var(--text-faint)', 'font-size': 9, 'text-anchor': 'middle',
+    });
+  });
+  let failurePath = '';
+  weekly.forEach((row, index) => {
+    const failures = Math.max(0, numberOrNull(row.failures) || 0);
+    const x = left + slot * index + slot / 2;
+    const y = top + height * (1 - failures / maxValue);
+    failurePath += `${failurePath ? ' L' : 'M'} ${x} ${y}`;
+    const marker = svgElement('circle', { cx: x, cy: y, r: 3, fill: CHART_COLORS[6] });
+    const title = svgElement('title');
+    title.textContent = `${String(row.week || '')}: failures ${failures}`;
+    marker.appendChild(title);
+    svg.appendChild(marker);
+  });
+  const firstMarker = svg.querySelector('circle');
+  if (failurePath && firstMarker) {
+    svg.insertBefore(svgElement('path', {
+      d: failurePath, fill: 'none', stroke: CHART_COLORS[6], 'stroke-width': 2,
+    }), firstMarker);
+  }
+  const legend = appendLegend(host, [
+    { label: 'auto', color: CHART_COLORS[0] },
+    { label: 'manual', color: CHART_COLORS[2] },
+    { label: 'failures', color: CHART_COLORS[6] },
+  ]);
+  const progressNote = document.createElement('span');
+  progressNote.textContent = '* 進行中の週';
+  legend.appendChild(progressNote);
+}
+
+function renderReturnRate(weekly) {
+  const host = document.getElementById('returnRateChart');
+  const points = weekly.map(row => ({
+    week: row.week,
+    inProgress: Boolean(row.in_progress),
+    rate: numberOrNull(row.ok_total) > 0 ? Number(row.returned || 0) / Number(row.ok_total) : null,
+  }));
+  if (!points.some(point => point.rate !== null)) {
+    renderChartEmpty(host, '正常検索の観測がまだありません。');
+    return;
+  }
+  const svg = makeChart(host, '週別結果返却率の折れ線グラフ', 600, 210);
+  const left = 42; const top = 12; const width = 540; const height = 158;
+  drawGrid(svg, { left, top, width, height, maxValue: 1, formatter: value => `${Math.round(value * 100)}%` });
+  const step = points.length > 1 ? width / (points.length - 1) : 0;
+  const paths = [];
+  let path = '';
+  points.forEach((point, index) => {
+    if (point.rate === null) {
+      if (path) paths.push(path);
+      path = '';
+      return;
+    }
+    const x = points.length > 1 ? left + step * index : left + width / 2;
+    const y = top + height * (1 - Math.max(0, Math.min(1, point.rate)));
+    path += `${path ? ' L' : 'M'} ${x} ${y}`;
+    const circle = svgElement('circle', { cx: x, cy: y, r: 3.5, fill: CHART_COLORS[1] });
+    const title = svgElement('title');
+    title.textContent = `${String(point.week || '')}: ${percent(point.rate)}`;
+    circle.appendChild(title);
+    svg.appendChild(circle);
+    svgText(svg, compactWeek(point.week) + (point.inProgress ? '*' : ''), {
+      x, y: 190, fill: 'var(--text-faint)', 'font-size': 9, 'text-anchor': 'middle',
+    });
+  });
+  if (path) paths.push(path);
+  const firstPoint = svg.querySelector('circle');
+  paths.forEach(segment => svg.insertBefore(
+    svgElement('path', { d: segment, fill: 'none', stroke: CHART_COLORS[1], 'stroke-width': 2 }),
+    firstPoint,
+  ));
+  const legend = appendLegend(host, [{ label: '結果返却率', color: CHART_COLORS[1] }]);
+  const progressNote = document.createElement('span');
+  progressNote.textContent = '* 進行中の週';
+  legend.appendChild(progressNote);
+}
+
+function renderHorizontalBars(hostId, rows, valueKey, labelKey, emptyMessage) {
+  const host = document.getElementById(hostId);
+  if (!rows.length) {
+    renderChartEmpty(host, emptyMessage);
+    return;
+  }
+  const shown = rows.slice(0, 10);
+  const height = Math.max(210, shown.length * 28 + 24);
+  const svg = makeChart(host, `${hostId} 横棒グラフ`, 600, height);
+  svg.style.height = `${height}px`;
+  const left = 150; const width = 410;
+  const maxValue = Math.max(1, ...shown.map(row => numberOrNull(row[valueKey]) || 0));
+  shown.forEach((row, index) => {
+    const value = Math.max(0, numberOrNull(row[valueKey]) || 0);
+    const y = 12 + index * 28;
+    svgText(svg, row[labelKey] || '—', { x: left - 9, y: y + 14, fill: 'var(--text-muted)', 'font-size': 10.5, 'text-anchor': 'end' });
+    svg.appendChild(svgElement('rect', { x: left, y, width: width * value / maxValue, height: 18, rx: 3, fill: CHART_COLORS[index % CHART_COLORS.length] }));
+    svgText(svg, value, { x: left + width * value / maxValue + 6, y: y + 14, fill: 'var(--text)', 'font-size': 10.5 });
+  });
+}
+
+function evalSeries(evalData) {
+  const series = [];
+  Object.entries(evalData || {}).forEach(([runner, rows]) => {
+    const grouped = new Map();
+    (Array.isArray(rows) ? rows : []).forEach(row => {
+      const hash = String(row.queries_hash || 'unknown');
+      if (!grouped.has(hash)) grouped.set(hash, []);
+      grouped.get(hash).push(row);
+    });
+    grouped.forEach((points, hash) => {
+      points.sort((a, b) => String(a.ts || '').localeCompare(String(b.ts || '')));
+      series.push({ runner, hash, points });
+    });
+  });
+  return series;
+}
+
+function renderEval(evalData) {
+  const host = document.getElementById('evalChart');
+  const series = evalSeries(evalData);
+  if (!series.length) {
+    renderChartEmpty(host, '評価は未実行です。uv run python scripts/eval/run_eval.py で計測できます。');
+    return;
+  }
+  const svg = makeChart(host, '検索品質 hit at 5 と MRR の折れ線グラフ', 600, 210);
+  const left = 42; const top = 12; const width = 540; const height = 158;
+  drawGrid(svg, { left, top, width, height, maxValue: 1, formatter: value => `${Math.round(value * 100)}%` });
+  const timestamps = [...new Set(series.flatMap(item => item.points.map(point => String(point.ts || ''))))].sort();
+  const xFor = ts => timestamps.length > 1 ? left + width * timestamps.indexOf(String(ts || '')) / (timestamps.length - 1) : left + width / 2;
+  const legend = [];
+  series.forEach((item, seriesIndex) => {
+    const baseColor = CHART_COLORS[seriesIndex % CHART_COLORS.length];
+    [['hit5_rate', false], ['mrr', true]].forEach(([field, dashed]) => {
+      let path = '';
+      item.points.forEach(point => {
+        const value = numberOrNull(point[field]);
+        if (value === null) return;
+        const x = xFor(point.ts);
+        const y = top + height * (1 - Math.max(0, Math.min(1, value)));
+        path += `${path ? ' L' : 'M'} ${x} ${y}`;
+        const circle = svgElement('circle', { cx: x, cy: y, r: 2.8, fill: baseColor });
+        const title = svgElement('title');
+        title.textContent = `${item.runner} / ${item.hash} / ${field}: ${percent(value)}`;
+        circle.appendChild(title);
+        svg.appendChild(circle);
+      });
+      if (path) {
+        const attrs = { d: path, fill: 'none', stroke: baseColor, 'stroke-width': dashed ? 1.5 : 2.4 };
+        if (dashed) attrs['stroke-dasharray'] = '5 4';
+        svg.insertBefore(svgElement('path', attrs), svg.querySelector('circle'));
+      }
+      legend.push({ label: `${item.runner} · ${item.hash} · ${field === 'hit5_rate' ? 'hit@5' : 'MRR'}`, color: baseColor });
+    });
+  });
+  const labels = timestamps.length > 5 ? timestamps.filter((_, index) => index % Math.ceil(timestamps.length / 5) === 0) : timestamps;
+  labels.forEach(ts => svgText(svg, formatDate(ts), { x: xFor(ts), y: 190, fill: 'var(--text-faint)', 'font-size': 9, 'text-anchor': 'middle' }));
+  appendLegend(host, legend);
+}
+
+function addStatTile(host, label, value, note, valueClass = '') {
+  const tile = document.createElement('div');
+  tile.className = 'stat-tile';
+  const labelEl = document.createElement('div');
+  labelEl.className = 'stat-label';
+  labelEl.textContent = label;
+  const valueEl = document.createElement('div');
+  valueEl.className = `stat-value ${valueClass}`.trim();
+  valueEl.textContent = value;
+  const noteEl = document.createElement('div');
+  noteEl.className = 'stat-note';
+  noteEl.textContent = note;
+  tile.append(labelEl, valueEl, noteEl);
+  host.appendChild(tile);
+}
+
+function last7dReturnRate(search) {
+  const direct = numberOrNull(search.last7d_return_rate);
+  if (direct !== null) return direct;
+  const bucket = search.last7d || {};
+  const bucketRate = numberOrNull(bucket.return_rate);
+  if (bucketRate !== null) return bucketRate;
+  const okTotal = numberOrNull(bucket.ok_total);
+  return okTotal > 0 ? Number(bucket.returned || 0) / okTotal : null;
+}
+
+function renderStats(data) {
+  const host = document.getElementById('metricsStats');
+  clearElement(host);
+  const search = data.search || {};
+  const clients = Array.isArray(search.clients) ? search.clients : [];
+  const weekly = Array.isArray(search.weekly) ? search.weekly : [];
+  const total = numberOrNull(search.total) ?? clients.reduce((sum, row) => sum + (numberOrNull(row.count) || 0), 0);
+  const failures = weekly.reduce((sum, row) => sum + (numberOrNull(row.failures) || 0), 0);
+  const latency = search.latency || {};
+  const last7dLatency = latency.last7d || {};
+  addStatTile(host, '総検索数', String(total), `直近 12 週の障害 ${failures} 件`);
+  addStatTile(host, '直近 7 日結果返却率', percent(last7dReturnRate(search)), `latency p50 ${numberOrNull(last7dLatency.p50) ?? '—'} ms`);
+  const corpus = data.corpus || {};
+  const active = corpus.available === false ? '—' : String(numberOrNull((corpus.status || {}).active) ?? 0);
+  addStatTile(host, 'active ファクト', active, corpus.available === false ? 'backend 未対応' : `読み込み skip ${numberOrNull(corpus.skipped_files) || 0} 件`);
+  const verdict = String((data.kill_criteria || {}).verdict || 'inconclusive');
+  const verdictMeta = {
+    proxy_ok: ['proxy OK', 'ok'], proxy_breached: ['proxy breached', 'bad'], inconclusive: ['判定不能', 'warn'],
+  }[verdict] || [verdict, 'warn'];
+  addStatTile(host, 'キル基準 proxy', verdictMeta[0], '正式判定は Phase 2 以降', verdictMeta[1]);
+}
+
+function emptyTableRow(tbody, columns, message) {
+  const tr = document.createElement('tr');
+  tr.className = 'empty-row';
+  const td = document.createElement('td');
+  td.colSpan = columns;
+  td.textContent = message;
+  tr.appendChild(td);
+  tbody.appendChild(tr);
+}
+
+function renderZeroHits(rows) {
+  const tbody = document.getElementById('zeroHitRows');
+  clearElement(tbody);
+  if (!rows.length) {
+    emptyTableRow(tbody, 4, 'ゼロヒットクエリはありません。');
+    return;
+  }
+  rows.forEach(row => {
+    const tr = document.createElement('tr');
+    const query = document.createElement('td');
+    query.textContent = row.query || '（空のクエリ）';
+    const count = document.createElement('td');
+    count.textContent = String(numberOrNull(row.count) || 0);
+    const last = document.createElement('td');
+    last.className = 'mono';
+    last.textContent = formatDateTime(row.last_ts);
+    const clients = document.createElement('td');
+    clients.textContent = Array.isArray(row.clients) ? row.clients.join(', ') : '—';
+    tr.append(query, count, last, clients);
+    tbody.appendChild(tr);
+  });
+}
+
+function renderUnreturned(unreturned, corpusAvailable) {
+  const tbody = document.getElementById('unreturnedRows');
+  clearElement(tbody);
+  if (corpusAvailable === false) {
+    emptyTableRow(tbody, 3, 'この backend ではコーパス指標を利用できません。');
+    return;
+  }
+  const rows = Array.isArray(unreturned.items) ? unreturned.items : [];
+  if (!rows.length) {
+    emptyTableRow(tbody, 3, '未返却の active ファクトはありません。');
+    return;
+  }
+  rows.forEach(row => {
+    const tr = document.createElement('tr');
+    const statement = document.createElement('td');
+    statement.textContent = row.statement || '（statement なし）';
+    const namespace = document.createElement('td');
+    namespace.textContent = row.namespace || '—';
+    const id = document.createElement('td');
+    id.className = 'mono';
+    id.textContent = row.id || row.fact_id || '—';
+    tr.append(statement, namespace, id);
+    tbody.appendChild(tr);
+  });
+}
+
+function renderKillCriteria(criteria) {
+  const host = document.getElementById('killCriteria');
+  clearElement(host);
+  const verdict = String(criteria.verdict || 'inconclusive');
+  const labels = { proxy_ok: 'proxy OK', proxy_breached: 'proxy breached', inconclusive: '判定不能' };
+  const row = document.createElement('div');
+  row.className = 'metrics-kill';
+  const pill = document.createElement('span');
+  const statusClass = verdict === 'proxy_ok' ? 'active' : 'invalidated';
+  pill.className = `status-pill ${statusClass}`;
+  const dot = document.createElement('span');
+  dot.className = 'dot';
+  pill.append(dot, document.createTextNode(labels[verdict] || verdict));
+  const threshold = document.createElement('span');
+  threshold.textContent = `閾値: 週 ${numberOrNull(criteria.threshold_weekly_hits) ?? '—'} 回`;
+  row.append(pill, threshold);
+  host.appendChild(row);
+  const weeks = Array.isArray(criteria.weeks) ? criteria.weeks : [];
+  if (weeks.length) {
+    const chart = document.createElement('div');
+    chart.className = 'chart';
+    chart.id = 'killWeeksChart';
+    host.appendChild(chart);
+    renderHorizontalBars('killWeeksChart', weeks, 'auto_returned_searches', 'week', '完了週の観測がありません。');
+  }
+  const note = document.createElement('div');
+  note.className = 'metrics-note';
+  note.textContent = '正式判定は Phase 2（引用計測）以降です。保守時間は本ダッシュボードの対象外です。';
+  host.appendChild(note);
+}
+
+function renderMetrics(data) {
+  const search = data.search || {};
+  const weekly = Array.isArray(search.weekly) ? search.weekly : [];
+  const corpus = data.corpus || {};
+  renderStats(data);
+  renderWeeklySearch(weekly);
+  renderReturnRate(weekly);
+  renderEval(data.eval || {});
+  renderHorizontalBars('namespaceChart', Array.isArray(corpus.namespaces) ? corpus.namespaces : [], 'count', 'namespace', corpus.available === false ? 'この backend ではコーパス指標を利用できません。' : 'active ファクトがありません。');
+  renderHorizontalBars('clientChart', Array.isArray(search.clients) ? search.clients : [], 'count', 'client', '検索ログがありません。');
+  renderKillCriteria(data.kill_criteria || {});
+  renderZeroHits(Array.isArray(data.zero_hit) ? data.zero_hit : []);
+  renderUnreturned(corpus.unreturned || {}, corpus.available);
+  const generated = document.getElementById('metricsStatus');
+  generated.className = 'metrics-status';
+  generated.textContent = data.generated_at ? `集計日時: ${formatDateTime(data.generated_at)}` : '集計完了';
+}
+
+async function loadMetrics(force = false) {
+  if (metricsLoaded && !force) return;
+  const status = document.getElementById('metricsStatus');
+  const refresh = document.getElementById('metricsRefresh');
+  status.className = 'metrics-status';
+  status.textContent = '読み込み中…';
+  refresh.disabled = true;
+  try {
+    const response = await fetch('/ui/api/metrics');
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    renderMetrics(data);
+    metricsLoaded = true;
+  } catch (error) {
+    status.className = 'metrics-status error';
+    status.textContent = `メトリクスを取得できませんでした: ${error.message}`;
+  } finally {
+    refresh.disabled = false;
+  }
+}
+
+function switchView(view) {
+  state.view = view === 'metrics' ? 'metrics' : 'facts';
+  const isMetrics = state.view === 'metrics';
+  const factsView = document.getElementById('factsView');
+  const metricsView = document.getElementById('metricsView');
+  factsView.hidden = isMetrics;
+  factsView.style.display = isMetrics ? 'none' : 'block';
+  metricsView.hidden = !isMetrics;
+  metricsView.style.display = isMetrics ? 'block' : 'none';
+  document.getElementById('factsTab').setAttribute('aria-selected', String(!isMetrics));
+  document.getElementById('metricsTab').setAttribute('aria-selected', String(isMetrics));
+  if (isMetrics) {
+    closeDetailPanel();
+    loadMetrics();
+  }
+}
+
 function updateSortArrow() {
   const arrow = document.querySelector('#sortByCreated .arrow');
   arrow.textContent = state.sortDir === 'desc' ? '▾' : '▴';
@@ -572,6 +1042,9 @@ async function init() {
     updateSortArrow();
     renderList();
   });
+  document.getElementById('factsTab').addEventListener('click', () => switchView('facts'));
+  document.getElementById('metricsTab').addEventListener('click', () => switchView('metrics'));
+  document.getElementById('metricsRefresh').addEventListener('click', () => loadMetrics(true));
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape' && document.getElementById('detail').classList.contains('open')) closeDetailPanel();
   });
