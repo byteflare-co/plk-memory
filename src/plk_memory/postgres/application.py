@@ -37,6 +37,7 @@ from plk_memory.ports import (
     SearchIndex,
 )
 from plk_memory.settings import Settings
+from plk_memory.admission import CodexAdmissionRunner
 
 ActorProvider = Callable[[], ActorContext]
 ScopeProvider = Callable[[], QueryScope]
@@ -58,6 +59,7 @@ class PostgresAppServices:
         close_callback: Callable[[], Awaitable[None]] | None = None,
         health_callback: Callable[[], Awaitable[None]] | None = None,
         approval_repository: ApprovalRepository | None = None,
+        admission: CodexAdmissionRunner | None = None,
     ) -> None:
         self.repository = repository
         self.search_index = search_index
@@ -68,6 +70,10 @@ class PostgresAppServices:
         self._close_callback = close_callback
         self._health_callback = health_callback
         self.approval_repository = approval_repository
+        self.admission = admission or CodexAdmissionRunner(
+            codex_bin=settings.codex_bin,
+            timeout_seconds=settings.codex_admission_timeout_seconds,
+        )
 
     async def start(self) -> None:
         await self.search_index.start()

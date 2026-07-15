@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from uuid import UUID
 
+from plk_memory.admission import CodexAdmissionRunner
 from plk_memory.auth import current_actor
 from plk_memory.domain import ActorContext, QueryScope
 from plk_memory.facts import FactService
@@ -43,6 +44,10 @@ def build_services(settings: Settings, graph, promotion_backend=None,
             timeout_seconds=settings.codex_feedback_timeout_seconds,
         ),
     )
+    admission = CodexAdmissionRunner(
+        codex_bin=settings.codex_bin,
+        timeout_seconds=settings.codex_admission_timeout_seconds,
+    )
     if promotion_backend is None and enable_github_promotion:
         from plk_memory.github_promotion import GitHubPromotionBackend
         promotion_backend = GitHubPromotionBackend(store, settings)
@@ -50,7 +55,7 @@ def build_services(settings: Settings, graph, promotion_backend=None,
         settings=settings, store=store, facts=facts, graph=graph,
         sync=sync, state_store=state_store, usage=usage,
         promotion_store=promotion_store, promotion_backend=promotion_backend,
-        feedback=feedback,
+        feedback=feedback, admission=admission,
     )
 
 
@@ -114,4 +119,8 @@ def build_postgres_services(settings: Settings, graph=None):
         close_callback=database.close,
         health_callback=database.ping,
         approval_repository=PostgresApprovalRepository(database),
+        admission=CodexAdmissionRunner(
+            codex_bin=settings.codex_bin,
+            timeout_seconds=settings.codex_admission_timeout_seconds,
+        ),
     )

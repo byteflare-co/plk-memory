@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING
 
 from fastmcp import FastMCP
 
+from plk_memory.admission import assess_with_duplicate_candidates
+
 if TYPE_CHECKING:
     from plk_memory.facade import ServiceFacade
 
@@ -21,60 +23,15 @@ external-untrusted facts unless that namespace is explicitly requested. If the
 result has degraded=true, treat it as an index failure and answer with caveats or
 fallback evidence."""
 
-PLK_ADD_DESCRIPTION = """Add a candidate only after it passes the PLK admission
-rubric. First apply realistic recurrence: name a concrete situation that is likely
-to recur in Masahiro Nishikawa's or Byteflare's actual work, life, or operations.
-Theoretical reuse by another company, a hypothetical new corporation, or some other
-user does not qualify. Then apply counterfactual usefulness: explain how retrieval
-changes a decision or action in that recurring situation. For a descriptive fact or
-procedure, also apply a search-substitutability gate: if a competent agent can obtain
-the same answer cheaply at decision time from one obvious authoritative source or an
-ordinary web search, reject it. PLK is not a cache of general facts, laws, deadlines,
-official procedures, or product documentation. The fact that retrieval would change
-an action is not enough when live lookup is easy and safer. Knowhow qualifies only
-when live lookup is materially insufficient, such as a non-obvious reproducible
-failure mode, a stable cross-source synthesis with substantial rediscovery cost, or
-a verified procedure whose useful result is not stated by the obvious source. If any gate cannot be
-stated concretely, do not propose or add it. One-time incorporation filings,
-one-off grant applications, and completed migrations do not qualify merely because
-the knowledge is generally useful. A past organizational
-decision is not exempt merely because it was important; architecture state, ADRs,
-task history, and implementation choices belong in their existing source of truth
-unless their rationale will change a likely future decision. The candidate must
-have durable value across future sessions, be verified rather than speculative (except information
-intentionally isolated as external-untrusted in plk.quarantine), does not copy a
-volatile value, raw data, or whole-source summary from an existing source of truth,
-is not limited to one customer/session, fits philosophy (unconditional norm), logic (conditional norm),
-or knowhow (verifiable fact/procedure), and is one independently invalidatable
-claim. Do not call this tool for transient dates/prices/status, conversation or work
-summaries, single-customer reactions, current architecture/configuration that code
-or design docs already describe, or decisions with no concrete future application.
-Do not distill readily discoverable material from official docs, code, or runbooks
-into knowhow merely because it is stable and actionable; consult the live source
-instead. A conditional Byteflare behavior derived from it may qualify independently
-as logic if it passes the other gates and does not merely restate the external rule.
-Before asking
-the user for approval, normalize the candidate and use
-plk_search to check duplicates and updates. Do not ask a generic "save to PLK?"
-question: show the proposed statement, kind, namespace, whether it is new or an
-update, the realistic recurring situation for Masahiro Nishikawa or Byteflare, and the decision or action that changes
-compared with not retrieving it. For knowhow, also show why ordinary live search
-is materially insufficient and which allowed exception applies; do not relabel a
-public descriptive fact as logic to bypass this gate. Choose an existing namespace from plk.domain.tax/legal/shaho/dev/backoffice/
-biz/agent (or plk.quarantine for external-untrusted data); never invent one. When an
-observed result motivates a future behavior, store the conditional behavior as
-logic and put the observation in why/source; create a separate knowhow fact only if
-the observation itself has durable retrieval value. For an update preview the old
-fact id and statement that supersedes will invalidate. Philosophy candidates must
-be proposed for human PR direct editing, not sent to plk_add by an ordinary agent.
-The backend may expose protected administrative write roles, but they do not change
-this agent proposal workflow. Normal agent callers should omit
-source_type or set source_type="agent". Do not use source_type="conversation";
-ordinary agent credentials may use "agent" and
-"external-untrusted" for API callers. Use external-untrusted only with
-namespace="plk.quarantine". source must be a URL, Notion ID, or Codex/session ID.
-When replacing an old fact, pass supersedes=[old_fact_id] so the old fact is
-invalidated atomically."""
+PLK_ASSESS_DESCRIPTION = """Call before every plk_add. Read-only. Returns
+eligible, ineligible, or needs_evidence plus possible duplicates. Continue only
+when eligible; review duplicates and get explicit user approval before plk_add."""
+
+PLK_ADD_DESCRIPTION = """Write a PLK fact. Call only after plk_assess_candidate
+returns eligible, duplicates are reviewed, and the user explicitly approves the
+preview. Never call for ineligible or needs_evidence. Use an existing namespace.
+Philosophy requires a human PR. external-untrusted requires plk.quarantine. Use
+supersedes=[old_fact_id] for replacements."""
 
 PLK_INVALIDATE_DESCRIPTION = """Invalidate an active PLK fact by id when it is
 obsolete, wrong, or no longer applicable. This records the reason and removes the
@@ -127,6 +84,15 @@ def build_mcp(services: "ServiceFacade") -> FastMCP:
         return await services.tool_search(
             query=query, namespaces=namespaces, kind=kind, status=status,
             limit=limit, reason=reason,
+        )
+
+    @mcp.tool(description=PLK_ASSESS_DESCRIPTION)
+    async def plk_assess_candidate(candidate: str, context: str = "") -> dict:
+        return await assess_with_duplicate_candidates(
+            services.admission,
+            candidate=candidate,
+            context=context,
+            search=services.tool_search,
         )
 
     @mcp.tool(description=PLK_ADD_DESCRIPTION)

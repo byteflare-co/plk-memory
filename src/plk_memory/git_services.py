@@ -12,6 +12,7 @@ import posixpath
 import time
 
 from plk_memory.auth import current_client
+from plk_memory.admission import CodexAdmissionRunner
 from plk_memory.facts import FactError, FactNotFound, FactService
 from plk_memory.feedback import FeedbackCoordinator, FeedbackState
 from plk_memory.gitstore import GitStore, WriteConflict
@@ -37,6 +38,7 @@ class AppServices:
         usage: UsageLog,
         promotion_store: PromotionStore,
         feedback: FeedbackCoordinator,
+        admission: CodexAdmissionRunner,
         promotion_backend=None,
     ):
         self.settings = settings
@@ -48,6 +50,7 @@ class AppServices:
         self.usage = usage
         self.promotion_store = promotion_store
         self.feedback = feedback
+        self.admission = admission
         self.promotion_backend = promotion_backend
         self._bg_tasks: set[asyncio.Task] = set()
 

@@ -51,6 +51,8 @@ class Settings(BaseSettings):
     # ``mise exec -- codex`` を探索する。Codex の既存ログインを利用する。
     codex_bin: str = ""
     codex_feedback_timeout_seconds: float = Field(default=180, ge=10, le=1800)
+    # MCPの60秒応答制約内でprocess終了猶予を確保するため、lock待ち込み55秒以下。
+    codex_admission_timeout_seconds: float = Field(default=55, ge=10, le=55)
 
     # 認証（token -> client 名）
     tokens: dict[str, str] = {}

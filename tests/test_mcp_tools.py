@@ -1,11 +1,35 @@
 from types import SimpleNamespace
 from typing import Any, cast
 
+from fastmcp import Client
+
+from plk_memory.admission import AdmissionAssessment
 from plk_memory.mcp_tools import build_mcp
 
 
 class DummyServices:
     settings = SimpleNamespace(auth_mode="none")
+
+
+class FakeAdmission:
+    async def assess(self, *, candidate: str, context: str = "") -> AdmissionAssessment:
+        assert candidate == "候補ファクト"
+        assert context == "検証済み"
+        return AdmissionAssessment(
+            decision="ineligible",
+            reason="既存SoTの複製",
+            failed_gates=["sot_duplication"],
+            recommended_destination="existing_sot",
+            write_performed=False,
+            requires_user_approval=True,
+        )
+
+
+class AssessServices(DummyServices):
+    admission = FakeAdmission()
+
+    async def tool_search(self, **_kwargs):
+        raise AssertionError("ineligible candidate must not search")
 
 
 async def test_plk_tools_have_agent_facing_descriptions():
@@ -15,6 +39,7 @@ async def test_plk_tools_have_agent_facing_descriptions():
 
     assert set(tools) == {
         "plk_add",
+        "plk_assess_candidate",
         "plk_decide_promotion",
         "plk_history",
         "plk_invalidate",
@@ -25,58 +50,68 @@ async def test_plk_tools_have_agent_facing_descriptions():
     assert all(tool.description for tool in tools.values())
 
 
+async def test_plk_assess_description_preserves_read_only_approval_boundary():
+    mcp = build_mcp(cast(Any, DummyServices()))
+
+    tools = {tool.name: tool for tool in await mcp.list_tools()}
+    description = " ".join((tools["plk_assess_candidate"].description or "").split())
+
+    assert "Read-only" in description
+    assert "needs_evidence" in description
+    assert "possible duplicates" in description
+    assert "explicit user approval" in description
+    assert len(description) < 300
+
+
+async def test_plk_assess_tool_invokes_assessor_without_write_or_search():
+    mcp = build_mcp(cast(Any, AssessServices()))
+
+    async with Client(mcp) as client:
+        result = await client.call_tool(
+            "plk_assess_candidate",
+            {"candidate": "候補ファクト", "context": "検証済み"},
+        )
+
+    assert result.structured_content is not None
+    assert result.structured_content["decision"] == "ineligible"
+    assert result.structured_content["write_performed"] is False
+    assert result.structured_content["duplicate_check"] == {
+        "status": "not_run",
+        "hits": [],
+    }
+
+
 async def test_plk_add_description_explains_source_type_constraints():
     mcp = build_mcp(cast(Any, DummyServices()))
 
     tools = {tool.name: tool for tool in await mcp.list_tools()}
     description = tools["plk_add"].description or ""
 
-    assert 'source_type="agent"' in description
-    assert "human PR direct editing" in description
-    assert "protected administrative write roles" in description
-    assert 'source_type="conversation"' in description
-    assert 'namespace="plk.quarantine"' in description
+    assert "Philosophy requires a human PR" in description
+    assert "external-untrusted requires plk.quarantine" in description
     assert "supersedes=[old_fact_id]" in description
+    assert len(" ".join(description.split())) < 400
 
 
-async def test_plk_add_description_explains_semantic_admission_rubric():
+async def test_plk_add_description_requires_assessment_before_write():
+    mcp = build_mcp(cast(Any, DummyServices()))
+
+    tools = {tool.name: tool for tool in await mcp.list_tools()}
+    description = " ".join((tools["plk_add"].description or "").split())
+
+    assert "after plk_assess_candidate returns eligible" in description
+    assert "Never call for ineligible or needs_evidence" in description
+    assert "duplicates are reviewed" in description
+    assert "user explicitly approves" in description
+
+
+async def test_plk_add_description_delegates_semantic_judgment_to_assessor():
     mcp = build_mcp(cast(Any, DummyServices()))
 
     tools = {tool.name: tool for tool in await mcp.list_tools()}
     description = tools["plk_add"].description or ""
     normalized = " ".join(description.split())
 
-    assert "future sessions" in normalized
-    assert "realistic recurrence" in normalized
-    assert "Masahiro Nishikawa's or Byteflare's actual work" in normalized
-    assert "hypothetical new corporation" in normalized
-    assert "One-time incorporation filings" in normalized
-    assert "counterfactual usefulness" in normalized
-    assert "changes a decision or action" in normalized
-    assert "search-substitutability gate" in normalized
-    assert "one obvious authoritative source" in normalized
-    assert "ordinary web search" in normalized
-    assert "PLK is not a cache of general facts" in normalized
-    assert "live lookup is easy and safer" in normalized
-    assert "non-obvious reproducible failure mode" in normalized
-    assert "stable cross-source synthesis" in normalized
-    assert "consult the live source instead" in normalized
-    assert "may qualify independently as logic" in normalized
-    assert "why ordinary live search is materially insufficient" in normalized
-    assert "do not relabel a public descriptive fact as logic" in normalized
-    assert "organizational decision is not exempt" in normalized
-    assert "current architecture/configuration" in normalized
-    assert "decisions with no concrete future application" in normalized
-    assert "source of truth" in normalized
-    assert "plk.quarantine" in normalized
-    assert "one independently invalidatable claim" in normalized
-    assert "single-customer reactions" in normalized
-    assert 'generic "save to PLK?"' in normalized
-    assert "statement, kind, namespace" in normalized
-    assert "realistic recurring situation for Masahiro Nishikawa or Byteflare" in normalized
-    assert "decision or action that changes compared with not retrieving it" in normalized
-    assert "never invent one" in normalized
-    assert "conditional behavior as" in normalized
-    assert "old fact id and statement" in normalized
-    assert "Philosophy candidates must be proposed for human PR direct editing" in normalized
-    assert "not sent to plk_add by an ordinary agent" in normalized
+    assert "plk_assess_candidate returns eligible" in normalized
+    assert "explicitly approves" in normalized
+    assert len(normalized) < 400
