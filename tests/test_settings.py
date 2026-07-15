@@ -51,6 +51,12 @@ def test_git_identity_defaults_and_override():
     assert s.git_author_email == "x@y.co"
 
 
+def test_metrics_defaults():
+    settings = make()
+    assert settings.eval_history_path.name == "eval-history.jsonl"
+    assert settings.metrics_timezone == "Asia/Tokyo"
+
+
 def test_repo_slug_from_ssh_and_https_urls():
     assert make(data_repo_url="git@github.com:cutsome/agent-organization.git").repo_slug == "cutsome/agent-organization"
     assert make(data_repo_url="https://github.com/cutsome/agent-organization.git").repo_slug == "cutsome/agent-organization"

@@ -1,3 +1,5 @@
+import json
+
 import httpx
 import pytest
 from asgi_lifespan import LifespanManager
@@ -74,6 +76,32 @@ async def test_search_degraded_when_graph_down(ctx):
     svcs = app.state.services
     out = await svcs.tool_search(query="なんでも")
     assert out["degraded"] is True and out["hits"] == []
+
+
+async def test_search_logs_outcome_latency_and_search_id_on_all_paths(ctx, monkeypatch):
+    _, app, graph = ctx
+    services = app.state.services
+
+    ok = await services.tool_search(query="normal")
+    graph.ready = False
+    degraded = await services.tool_search(query="down")
+    graph.ready = True
+
+    async def fail_search(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(graph, "search", fail_search)
+    error = await services.tool_search(query="error")
+
+    records = [
+        json.loads(line)
+        for line in services.settings.usage_log_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [record["outcome"] for record in records] == ["ok", "degraded", "error"]
+    for response, record in zip((ok, degraded, error), records, strict=True):
+        assert len(response["search_id"]) == 26
+        assert response["search_id"] == record["search_id"]
+        assert isinstance(record["latency_ms"], int) and record["latency_ms"] >= 0
 
 
 async def test_admin_reindex_blocks_writes(ctx):

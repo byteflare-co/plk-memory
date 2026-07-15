@@ -68,11 +68,48 @@ async def test_ui_api_requires_cookie(uiclient):
     r = await uiclient.get("/ui/api/facts")
     assert r.status_code == 401
 
+    metrics = await uiclient.get("/ui/api/metrics")
+    assert metrics.status_code == 401
+
 
 async def test_ui_without_password_allows_direct_read(open_uiclient):
     r = await open_uiclient.get("/ui/api/facts")
     assert r.status_code == 200
     assert r.json()["facts"]
+
+
+async def test_metrics_missing_sources_returns_empty_structure(open_uiclient):
+    response = await open_uiclient.get("/ui/api/metrics")
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["search"]["weekly"]) == 12
+    assert body["search"]["total"] == 0
+    assert body["zero_hit"] == [] and body["eval"] == {}
+    assert body["corpus"]["available"] is True
+
+
+async def test_metrics_skips_broken_jsonl_and_malformed_fact(
+    remote, tmp_path, write_valid_fact
+):
+    origin, seed = remote
+    write_valid_fact(seed, "knowledge/domains/tax/valid.md")
+    push(seed)
+    settings = make_settings(tmp_path, origin, ui_password="")
+    settings.usage_log_path.write_text("not-json\nnull\n[]\n", encoding="utf-8")
+    settings.eval_history_path.write_text("not-json\nnull\n", encoding="utf-8")
+    app = create_app(settings=settings, graph=FakeGraphIndex())
+    app.state.services.store.ensure_repo()
+    app.state.services.store.fetch_and_ff()
+    broken = settings.knowledge_dir / "domains" / "tax" / "broken.md"
+    broken.write_text("---\n[invalid yaml\n---\n", encoding="utf-8")
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://plk") as client:
+        response = await client.get("/ui/api/metrics")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["search"]["total"] == 0 and body["eval"] == {}
+    assert body["corpus"]["status"]["active"] == 1
+    assert body["corpus"]["skipped_files"] == 1
 
 
 async def test_ui_without_password_login_is_noop(open_uiclient):
@@ -123,6 +160,15 @@ async def test_ui_page_has_kind_filter(uiclient):
 async def test_ui_proposal_preview_includes_body(uiclient):
     r = await uiclient.get("/static/app.js")
     assert "proposalField(wrap, 'body'" in r.text
+
+
+async def test_metrics_frontend_uses_safe_dom_and_metrics_endpoint(uiclient):
+    response = await uiclient.get("/static/app.js")
+    assert "fetch('/ui/api/metrics')" in response.text
+    assert response.text.count("innerHTML") == 1
+    assert "body.innerHTML = data.body_html" in response.text
+    assert "title.textContent" in response.text
+    assert "failures ${failures}" in response.text
 
 
 async def test_ui_login_wrong_password(uiclient):
