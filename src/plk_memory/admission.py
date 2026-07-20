@@ -13,6 +13,7 @@ import os
 import shutil
 import signal
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
@@ -371,27 +372,53 @@ async def assess_with_duplicate_candidates(
     candidate: str,
     context: str,
     search: Any,
+    total_timeout_seconds: float = 58,
 ) -> dict[str, Any]:
-    """Assess first, then search only candidates that passed semantic gates."""
+    """Assess a candidate, then search for duplicates regardless of eligibility."""
 
+    started_at = time.monotonic()
     assessment = await runner.assess(candidate=candidate, context=context)
     result = assessment.model_dump(mode="json")
     result["duplicate_check"] = {"status": "not_run", "hits": []}
-    if assessment.decision != "eligible":
-        return result
 
-    queries = assessment.search_queries or [assessment.statement]
+    # Search the user's original wording even when the assessor rejects the
+    # candidate. An assessor can correctly notice that a rule belongs in an
+    # existing SoT yet still fail to identify the already-active PLK fact. The
+    # raw wording is also the best retrieval key for the exact request that
+    # triggered this assessment.
+    queries = list(
+        dict.fromkeys(
+            query.strip()
+            for query in [candidate, *assessment.search_queries, assessment.statement]
+            if query.strip()
+        )
+    )
     collected: dict[str, dict[str, Any]] = {}
     degraded_messages: list[str] = []
     for query in queries:
-        response = await search(
-            query=query,
-            namespaces=[assessment.namespace] if assessment.namespace else None,
-            kind=assessment.kind or None,
-            status="active",
-            limit=5,
-            reason="admission-duplicate-check",
-        )
+        remaining = total_timeout_seconds - (time.monotonic() - started_at)
+        if remaining <= 0:
+            degraded_messages.append("duplicate search deadline exceeded")
+            break
+        try:
+            response = await asyncio.wait_for(
+                search(
+                    query=query,
+                    # Duplicate detection must not trust the assessor's
+                    # classification. The same rule may already exist under a
+                    # neighboring namespace or kind. The default search still
+                    # excludes quarantine facts.
+                    namespaces=None,
+                    kind=None,
+                    status="active",
+                    limit=5,
+                    reason="admission-duplicate-check",
+                ),
+                timeout=remaining,
+            )
+        except TimeoutError:
+            degraded_messages.append("duplicate search deadline exceeded")
+            break
         if response.get("degraded") or response.get("error"):
             degraded_messages.append(
                 str(response.get("message") or response.get("error") or "search failed")

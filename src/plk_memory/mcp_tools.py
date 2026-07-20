@@ -92,7 +92,9 @@ def build_mcp(services: "ServiceFacade") -> FastMCP:
             services.admission,
             candidate=candidate,
             context=context,
-            search=services.tool_search,
+            search=lambda **kwargs: services.tool_search(
+                **kwargs, log_usage=False
+            ),
         )
 
     @mcp.tool(description=PLK_ADD_DESCRIPTION)

@@ -117,7 +117,7 @@ def test_assessment_rejects_internally_inconsistent_results(overrides, message):
         assessment(**overrides)
 
 
-async def test_ineligible_candidate_does_not_search():
+async def test_ineligible_candidate_still_searches_for_existing_fact():
     runner = FakeRunner(
         assessment(
             decision="ineligible",
@@ -131,15 +131,25 @@ async def test_ineligible_candidate_does_not_search():
         )
     )
 
+    calls = []
+
     async def search(**kwargs):
-        raise AssertionError(f"search must not run: {kwargs}")
+        calls.append(kwargs)
+        return {
+            "degraded": False,
+            "hits": [{"fact_id": "F1", "statement": "already active"}],
+        }
 
     result = await assess_with_duplicate_candidates(
         runner, candidate="完了済み移行の記録", context="", search=search
     )
 
     assert result["decision"] == "ineligible"
-    assert result["duplicate_check"] == {"status": "not_run", "hits": []}
+    assert calls[0]["query"] == "完了済み移行の記録"
+    assert result["duplicate_check"] == {
+        "status": "review_required",
+        "hits": [{"fact_id": "F1", "statement": "already active"}],
+    }
 
 
 async def test_eligible_candidate_returns_unique_duplicate_candidates():
@@ -159,13 +169,52 @@ async def test_eligible_candidate_returns_unique_duplicate_candidates():
         runner, candidate="再現済みの非自明な障害", context="再現手順あり", search=search
     )
 
-    assert len(calls) == 2
+    assert len(calls) == 4
+    assert calls[0]["query"] == "再現済みの非自明な障害"
     assert calls[0]["reason"] == "admission-duplicate-check"
-    assert calls[0]["namespaces"] == ["plk.domain.dev"]
+    assert calls[0]["namespaces"] is None
+    assert calls[0]["kind"] is None
     assert result["duplicate_check"]["status"] == "review_required"
     assert result["duplicate_check"]["hits"] == [
         {"fact_id": "F1", "statement": "possible duplicate"}
     ]
+
+
+async def test_duplicate_search_does_not_filter_by_assessed_classification():
+    runner = FakeRunner(
+        assessment(
+            namespace="plk.domain.dev",
+            kind="logic",
+            search_queries=["最新安定版 技術 バージョン"],
+        )
+    )
+
+    async def search(**kwargs):
+        assert kwargs["namespaces"] is None
+        assert kwargs["kind"] is None
+        return {
+            "degraded": False,
+            "hits": [
+                {
+                    "fact_id": "01KX63RR8RDJ13C8AKDZ9X2T62",
+                    "namespace": "plk.domain.agent",
+                    "kind": "logic",
+                    "statement": "技術選定では公式確認した最新安定版を原則採用する",
+                }
+            ],
+        }
+
+    result = await assess_with_duplicate_candidates(
+        runner,
+        candidate="使う技術は常に最新にする",
+        context="古いバージョンの採用を防ぎたい",
+        search=search,
+    )
+
+    assert result["duplicate_check"]["status"] == "review_required"
+    assert result["duplicate_check"]["hits"][0]["fact_id"] == (
+        "01KX63RR8RDJ13C8AKDZ9X2T62"
+    )
 
 
 async def test_degraded_duplicate_search_is_explicit():
@@ -184,6 +233,31 @@ async def test_degraded_duplicate_search_is_explicit():
         "hits": [],
         "message": "index unavailable",
     }
+
+
+async def test_duplicate_search_respects_total_deadline():
+    runner = FakeRunner(assessment(search_queries=[]))
+
+    async def slow_search(**_kwargs):
+        await asyncio.sleep(1)
+        return {"degraded": False, "hits": []}
+
+    started_at = asyncio.get_running_loop().time()
+    result = await assess_with_duplicate_candidates(
+        runner,
+        candidate="期限内に重複確認する候補",
+        context="",
+        search=slow_search,
+        total_timeout_seconds=0.01,
+    )
+    elapsed = asyncio.get_running_loop().time() - started_at
+
+    assert result["duplicate_check"] == {
+        "status": "degraded",
+        "hits": [],
+        "message": "duplicate search deadline exceeded",
+    }
+    assert elapsed < 0.1
 
 
 def test_prompt_treats_candidate_and_context_as_untrusted_data():

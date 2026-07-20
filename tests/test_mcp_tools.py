@@ -28,8 +28,15 @@ class FakeAdmission:
 class AssessServices(DummyServices):
     admission = FakeAdmission()
 
-    async def tool_search(self, **_kwargs):
-        raise AssertionError("ineligible candidate must not search")
+    async def tool_search(self, **kwargs):
+        assert kwargs["query"] == "候補ファクト"
+        assert kwargs["namespaces"] is None
+        assert kwargs["kind"] is None
+        assert kwargs["log_usage"] is False
+        return {
+            "degraded": False,
+            "hits": [{"fact_id": "F1", "statement": "既存ファクト"}],
+        }
 
 
 async def test_plk_tools_have_agent_facing_descriptions():
@@ -63,7 +70,7 @@ async def test_plk_assess_description_preserves_read_only_approval_boundary():
     assert len(description) < 300
 
 
-async def test_plk_assess_tool_invokes_assessor_without_write_or_search():
+async def test_plk_assess_tool_searches_duplicates_without_writing():
     mcp = build_mcp(cast(Any, AssessServices()))
 
     async with Client(mcp) as client:
@@ -76,8 +83,8 @@ async def test_plk_assess_tool_invokes_assessor_without_write_or_search():
     assert result.structured_content["decision"] == "ineligible"
     assert result.structured_content["write_performed"] is False
     assert result.structured_content["duplicate_check"] == {
-        "status": "not_run",
-        "hits": [],
+        "status": "review_required",
+        "hits": [{"fact_id": "F1", "statement": "既存ファクト"}],
     }
 
 

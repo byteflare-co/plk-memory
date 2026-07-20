@@ -96,6 +96,7 @@ class AppServices:
         status: str = "active",
         limit: int = 10,
         reason: str | None = None,
+        log_usage: bool = True,
     ) -> dict:
         client = current_client.get()
         start = time.monotonic()
@@ -104,12 +105,13 @@ class AppServices:
 
         def log_search(outcome: str, results: list[dict]) -> int:
             latency_ms = int((time.monotonic() - start) * 1000)
-            self.usage.log(
-                client, "plk_search", query=query, hits=len(results),
-                latency_ms=latency_ms, reason=reason,
-                fact_ids=[str(result["fact_id"]) for result in results],
-                search_id=search_id, outcome=outcome,
-            )
+            if log_usage:
+                self.usage.log(
+                    client, "plk_search", query=query, hits=len(results),
+                    latency_ms=latency_ms, reason=reason,
+                    fact_ids=[str(result["fact_id"]) for result in results],
+                    search_id=search_id, outcome=outcome,
+                )
             return latency_ms
 
         if not self.graph.ready:

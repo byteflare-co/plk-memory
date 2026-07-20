@@ -110,8 +110,10 @@ class PostgresAppServices:
         status: str = "active",
         limit: int = 10,
         reason: str | None = None,
+        log_usage: bool = True,
     ) -> dict[str, Any]:
-        del reason  # Usage/audit logging belongs at the HTTP/MCP request boundary.
+        # Usage/audit logging belongs at the HTTP/MCP request boundary.
+        del reason, log_usage
         start = time.monotonic()
         scope = self._scope()
         allow_quarantine = bool(namespaces and "plk.quarantine" in namespaces)
