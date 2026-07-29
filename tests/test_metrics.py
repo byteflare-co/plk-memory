@@ -1,3 +1,4 @@
+import hashlib
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -101,11 +102,12 @@ def test_zero_hits_use_query_hash_when_plaintext_is_not_stored():
 
 
 def test_zero_hits_merge_plaintext_and_redacted_records_by_query_hash():
-    query_hash = "b" * 64
+    query = "same missing query"
+    query_hash = hashlib.sha256(query.encode()).hexdigest()
     usage = [
         usage_at(
             NOW,
-            query="same missing query",
+            query=query,
             query_hash=query_hash,
             hits=0,
             outcome="ok",
@@ -134,18 +136,19 @@ def test_zero_hits_merge_plaintext_and_redacted_records_by_query_hash():
 
 
 def test_zero_hits_merge_legacy_plaintext_with_new_hashed_records():
-    query_hash = "c" * 64
+    query = "legacy missing query"
+    query_hash = hashlib.sha256(query.encode()).hexdigest()
     usage = [
         usage_at(
             NOW,
-            query="legacy missing query",
+            query=query,
             hits=0,
             outcome="ok",
             client="legacy",
         ),
         usage_at(
             NOW + timedelta(minutes=1),
-            query="legacy missing query",
+            query=query,
             query_hash=query_hash,
             hits=0,
             outcome="ok",
@@ -174,26 +177,27 @@ def test_zero_hits_merge_legacy_plaintext_with_new_hashed_records():
 
 
 def test_zero_hits_do_not_guess_legacy_bucket_for_ambiguous_preview():
+    query_preview = "x" * 200
     usage = [
         usage_at(
             NOW,
-            query="same truncated preview",
+            query=query_preview,
             hits=0,
             outcome="ok",
             client="legacy",
         ),
         usage_at(
             NOW + timedelta(minutes=1),
-            query="same truncated preview",
-            query_hash="d" * 64,
+            query=query_preview,
+            query_hash=hashlib.sha256((query_preview + " first").encode()).hexdigest(),
             hits=0,
             outcome="ok",
             client="codex",
         ),
         usage_at(
             NOW + timedelta(minutes=2),
-            query="same truncated preview",
-            query_hash="e" * 64,
+            query=query_preview,
+            query_hash=hashlib.sha256((query_preview + " second").encode()).hexdigest(),
             hits=0,
             outcome="ok",
             client="claude",

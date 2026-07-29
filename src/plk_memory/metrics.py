@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 from collections import Counter
 from datetime import date, datetime, timedelta, timezone
@@ -220,9 +221,11 @@ def _zero_hit_queries(usage: list[dict]) -> list[dict]:
         query_hash = record.get("query_hash")
         if (
             isinstance(query, str)
+            and len(query) < 200
             and isinstance(query_hash, str)
             and len(query_hash) == 64
             and all(character in "0123456789abcdef" for character in query_hash)
+            and hashlib.sha256(query.encode()).hexdigest() == query_hash
         ):
             hashes_by_query.setdefault(query, set()).add(query_hash)
     legacy_query_hashes = {
