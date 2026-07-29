@@ -237,6 +237,39 @@ def test_zero_hits_merge_exact_200_character_queries_when_hash_matches():
     assert rows[0]["clients"] == ["codex", "legacy"]
 
 
+def test_zero_hits_keep_legacy_preview_separate_when_exact_and_long_hashes_exist():
+    query_preview = "x" * 200
+    usage = [
+        usage_at(
+            NOW,
+            query=query_preview,
+            hits=0,
+            outcome="ok",
+            client="legacy",
+        ),
+        usage_at(
+            NOW + timedelta(minutes=1),
+            query=query_preview,
+            query_hash=hashlib.sha256(query_preview.encode()).hexdigest(),
+            hits=0,
+            outcome="ok",
+            client="exact",
+        ),
+        usage_at(
+            NOW + timedelta(minutes=2),
+            query=query_preview,
+            query_hash=hashlib.sha256((query_preview + " suffix").encode()).hexdigest(),
+            hits=0,
+            outcome="ok",
+            client="longer",
+        ),
+    ]
+
+    rows = build_metrics(usage, [], [], now=NOW, tz=JST)["zero_hit"]
+
+    assert [row["count"] for row in rows] == [1, 1, 1]
+
+
 def test_corpus_datetime_types_and_unreturned():
     posts = [
         {"id": "01A", "status": "active", "namespace": "plk.domain.tax", "kind": "logic",

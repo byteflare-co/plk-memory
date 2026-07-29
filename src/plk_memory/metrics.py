@@ -225,13 +225,13 @@ def _zero_hit_queries(usage: list[dict]) -> list[dict]:
             and isinstance(query_hash, str)
             and len(query_hash) == 64
             and all(character in "0123456789abcdef" for character in query_hash)
-            and hashlib.sha256(query.encode()).hexdigest() == query_hash
         ):
             hashes_by_query.setdefault(query, set()).add(query_hash)
     legacy_query_hashes = {
         query: next(iter(query_hashes))
         for query, query_hashes in hashes_by_query.items()
         if len(query_hashes) == 1
+        and hashlib.sha256(query.encode()).hexdigest() == next(iter(query_hashes))
     }
 
     groups: dict[str, dict] = {}
