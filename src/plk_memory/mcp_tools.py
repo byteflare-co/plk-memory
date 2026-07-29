@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from fastmcp import FastMCP
 
@@ -26,6 +26,13 @@ fallback evidence."""
 PLK_ASSESS_DESCRIPTION = """Call before every plk_add. Read-only. Returns
 eligible, ineligible, or needs_evidence plus possible duplicates. Continue only
 when eligible; review duplicates and get explicit user approval before plk_add."""
+
+PLK_RECORD_DECISION_DESCRIPTION = """After one or more plk_search calls returned
+facts, call this once for the final decision. Pass every relevant search_id,
+the fact ids actually used, and the observed effect. Use effect=none plus a
+no_use_reason when none of the returned facts affected the decision. Zero-hit
+searches need no record call. Reuse decision_id only to retry the exact same
+payload. If recording fails with non_blocking=true, continue the main task."""
 
 PLK_ADD_DESCRIPTION = """Write a PLK fact. Call only after plk_assess_candidate
 returns eligible, duplicates are reviewed, and the user explicitly approves the
@@ -95,6 +102,29 @@ def build_mcp(services: "ServiceFacade") -> FastMCP:
             search=lambda **kwargs: services.tool_search(
                 **kwargs, log_usage=False
             ),
+        )
+
+    @mcp.tool(description=PLK_RECORD_DECISION_DESCRIPTION)
+    async def plk_record_decision(
+        decision_id: str,
+        search_ids: list[str],
+        used_fact_ids: list[str],
+        effect: Literal["changed_action", "prevented_error", "confirmed", "none"],
+        no_use_reason: Literal[
+            "irrelevant",
+            "already_known",
+            "stale",
+            "conflict",
+            "insufficient",
+        ]
+        | None = None,
+    ) -> dict:
+        return await services.tool_record_decision(
+            decision_id=decision_id,
+            search_ids=search_ids,
+            used_fact_ids=used_fact_ids,
+            effect=effect,
+            no_use_reason=no_use_reason,
         )
 
     @mcp.tool(description=PLK_ADD_DESCRIPTION)

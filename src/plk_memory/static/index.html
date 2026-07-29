@@ -48,7 +48,7 @@
   html, body { height: 100%; }
   body {
     margin: 0; background: var(--bg); color: var(--text);
-    font-family: var(--font-sans); font-size: 14px; line-height: 1.55;
+    font-family: var(--font-sans); font-size: 15.5px; line-height: 1.6;
     -webkit-font-smoothing: antialiased;
   }
   ::selection { background: var(--accent); color: var(--accent-fg); }
@@ -106,7 +106,7 @@
   .btn-primary:active { filter: brightness(.94); }
   #login .err { color: var(--danger); font-size: 12px; margin-top: 10px; min-height: 1em; }
 
-  #main { display: none; max-width: 1180px; margin: 0 auto; padding: 20px 24px 60px; }
+  #main { display: none; max-width: 1280px; margin: 0 auto; padding: 24px 28px 72px; }
 
   .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 12px; }
   .search-wrap {
@@ -149,10 +149,10 @@
   }
 
   .table-wrap { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; overflow-x: auto; }
-  table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 640px; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; min-width: 640px; }
   thead th {
     background: var(--surface-2); text-align: left; font-weight: 500;
-    font-size: 11px; letter-spacing: .04em; color: var(--text-faint); text-transform: uppercase;
+    font-size: 12px; letter-spacing: .04em; color: var(--text-faint); text-transform: uppercase;
     padding: 9px 14px; border-bottom: 1px solid var(--border); user-select: none;
   }
   thead th.sortable { cursor: pointer; }
@@ -258,43 +258,59 @@
   .operation-error { color: var(--danger); font-size: 12px; margin-top: 8px; white-space: pre-wrap; }
 
   #metricsView { display: none; }
-  .metrics-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
-  .metrics-heading h1 { margin: 0; font-size: 20px; line-height: 1.35; }
-  .metrics-heading p { margin: 3px 0 0; color: var(--text-muted); font-size: 12.5px; }
+  .metrics-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+  .metrics-heading h1 { margin: 0; font-size: 26px; line-height: 1.35; }
+  .metrics-heading p { margin: 5px 0 0; color: var(--text-muted); font-size: 15px; }
   .metrics-refresh {
     flex: none; border: 1px solid var(--border-strong); background: var(--surface); color: var(--text);
-    border-radius: var(--radius-sm); padding: 7px 12px; font-size: 12.5px; cursor: pointer;
+    border-radius: var(--radius-sm); padding: 9px 15px; font-size: 14px; cursor: pointer;
   }
   .metrics-refresh:hover { border-color: var(--accent); }
   .metrics-refresh:disabled { opacity: .55; cursor: wait; }
-  .metrics-status { min-height: 22px; color: var(--text-faint); font-size: 12px; margin-bottom: 8px; }
+  .metrics-status { min-height: 24px; color: var(--text-muted); font-size: 13px; margin-bottom: 10px; }
   .metrics-status.error { color: var(--danger); }
-  .stat-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
-  .stat-tile { min-height: 94px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; }
-  .stat-label { color: var(--text-faint); font-size: 11px; font-weight: 600; letter-spacing: .03em; text-transform: uppercase; }
-  .stat-value { margin-top: 8px; font-size: 24px; font-weight: 650; letter-spacing: -.025em; }
-  .stat-note { margin-top: 3px; color: var(--text-muted); font-size: 11px; }
+  .metrics-summary {
+    margin-bottom: 18px; padding: 22px 24px; border: 1px solid var(--border-strong);
+    border-left: 4px solid var(--accent); border-radius: var(--radius); background: var(--surface);
+  }
+  .metrics-summary[data-tone="good"] { border-left-color: var(--success); }
+  .metrics-summary[data-tone="attention"] { border-left-color: var(--warning); }
+  .summary-eyebrow { color: var(--text-muted); font-size: 13px; font-weight: 650; }
+  .metrics-summary h2 { margin: 4px 0 5px; font-size: 21px; line-height: 1.45; }
+  .summary-lead { margin: 0; color: var(--text-muted); font-size: 14.5px; }
+  .summary-points { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 18px; border-top: 1px solid var(--border); }
+  .summary-point { padding: 16px 18px 0 0; }
+  .summary-point + .summary-point { border-left: 1px solid var(--border); padding-left: 18px; }
+  .summary-point h3 { margin: 0 0 5px; font-size: 13px; color: var(--text-muted); }
+  .summary-point p { margin: 0; font-size: 14.5px; line-height: 1.65; }
+  .stat-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 18px; }
+  .stat-tile { min-height: 116px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 17px; }
+  .stat-label { color: var(--text-muted); font-size: 13px; font-weight: 600; letter-spacing: .02em; }
+  .stat-value { margin-top: 9px; font-size: 30px; line-height: 1.2; font-weight: 650; letter-spacing: -.025em; }
+  .stat-note { margin-top: 7px; color: var(--text-muted); font-size: 13px; line-height: 1.5; }
   .stat-value.ok { color: var(--success); }
   .stat-value.warn { color: var(--warning); }
   .stat-value.bad { color: var(--danger); }
-  .metrics-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-  .metric-card { min-width: 0; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 15px; }
+  .metrics-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+  .metric-card { min-width: 0; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; }
   .metric-card.wide { grid-column: 1 / -1; }
-  .metric-card h2 { margin: 0; font-size: 14px; font-weight: 600; }
-  .metric-card .subhead { margin: 2px 0 11px; color: var(--text-faint); font-size: 11.5px; }
-  .chart { min-height: 210px; overflow-x: auto; }
-  .chart svg { display: block; width: 100%; min-width: 480px; height: 210px; overflow: visible; }
-  .chart-empty { display: flex; min-height: 180px; align-items: center; justify-content: center; color: var(--text-faint); font-size: 12.5px; text-align: center; padding: 20px; }
-  .chart-legend { display: flex; flex-wrap: wrap; gap: 8px 14px; margin-top: 8px; color: var(--text-muted); font-size: 11px; }
+  .metric-card h2 { margin: 0; font-size: 17px; font-weight: 650; }
+  .metric-card .subhead { margin: 4px 0 8px; color: var(--text-muted); font-size: 13.5px; }
+  .metric-guide { margin: 0 0 14px; color: var(--text); font-size: 13.5px; line-height: 1.6; }
+  .metric-guide strong { color: var(--accent); }
+  .chart { min-height: 240px; overflow-x: auto; }
+  .chart svg { display: block; width: 100%; min-width: 520px; height: 240px; overflow: visible; }
+  .chart-empty { display: flex; min-height: 200px; align-items: center; justify-content: center; color: var(--text-muted); font-size: 14px; text-align: center; padding: 24px; }
+  .chart-legend { display: flex; flex-wrap: wrap; gap: 10px 16px; margin-top: 10px; color: var(--text-muted); font-size: 13px; }
   .legend-item { display: inline-flex; align-items: center; gap: 5px; }
   .legend-swatch { width: 9px; height: 9px; border-radius: 2px; flex: none; }
   .metrics-table { min-width: 620px; }
   .metrics-table tbody tr { cursor: default; }
   .metrics-table td:first-child { max-width: 520px; white-space: normal; overflow-wrap: anywhere; }
-  .metrics-table .mono { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); }
-  .metrics-note { margin-top: 10px; padding: 9px 11px; border-radius: var(--radius-sm); background: var(--warning-bg); color: var(--warning); font-size: 11.5px; }
+  .metrics-table .mono { font-family: var(--font-mono); font-size: 12.5px; color: var(--text-muted); }
+  .metrics-note { margin-top: 12px; padding: 11px 13px; border-radius: var(--radius-sm); background: var(--warning-bg); color: var(--warning); font-size: 13px; }
   .metrics-kill { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-  .metrics-kill .status-pill { font-size: 12px; }
+  .metrics-kill .status-pill { font-size: 13px; }
 
   @media (max-width: 720px) {
     #detail { width: 100vw; }
@@ -304,7 +320,9 @@
     .view-tabs { margin-left: auto; }
     .ro-badge { display: none; }
     #main { padding-inline: 14px; }
-    .stat-grid, .metrics-grid { grid-template-columns: 1fr; }
+    .summary-points, .stat-grid, .metrics-grid { grid-template-columns: 1fr; }
+    .summary-point + .summary-point { border-left: 0; border-top: 1px solid var(--border); padding-left: 0; margin-top: 14px; }
+    .metrics-summary { padding: 18px; }
     .metric-card.wide { grid-column: auto; }
   }
 </style>
@@ -318,7 +336,7 @@
   </div>
   <nav class="view-tabs" id="viewTabs" aria-label="ビュー切替">
     <button id="factsTab" type="button" role="tab" aria-selected="true" aria-controls="factsView">Facts</button>
-    <button id="metricsTab" type="button" role="tab" aria-selected="false" aria-controls="metricsView">Metrics</button>
+    <button id="metricsTab" type="button" role="tab" aria-selected="false" aria-controls="metricsView">利用状況</button>
   </nav>
   <div class="ro-badge"><span class="dot"></span>reviewed writes</div>
 </header>
@@ -375,20 +393,34 @@
 
   <section id="metricsView" role="tabpanel" aria-labelledby="metricsTab" hidden>
     <div class="metrics-heading">
-      <div><h1>Metrics</h1><p>利用実態・コーパス健全性・検索品質</p></div>
-      <button class="metrics-refresh" id="metricsRefresh" type="button">再取得</button>
+      <div><h1>利用状況</h1><p>検索から最終判断までの計測・登録データの状態・検索精度</p></div>
+      <button class="metrics-refresh" id="metricsRefresh" type="button">更新</button>
     </div>
     <div class="metrics-status" id="metricsStatus" role="status" aria-live="polite"></div>
+    <section class="metrics-summary" id="metricsSummary" aria-labelledby="metricsSummaryTitle">
+      <div class="summary-eyebrow">いまの状態</div>
+      <h2 id="metricsSummaryTitle">データを読み込んでいます</h2>
+      <p class="summary-lead" id="metricsSummaryLead">利用状況を集計し、改善の進み具合をまとめます。</p>
+      <div class="summary-points">
+        <div class="summary-point"><h3>使われているか</h3><p id="metricsUsageSummary">—</p></div>
+        <div class="summary-point"><h3>判断に貢献したか</h3><p id="metricsValueSummary">—</p></div>
+        <div class="summary-point"><h3>次に改善すること</h3><p id="metricsActionSummary">—</p></div>
+      </div>
+    </section>
     <div class="stat-grid" id="metricsStats"></div>
     <div class="metrics-grid">
-      <section class="metric-card wide"><h2>週別検索数</h2><p class="subhead">auto / manual の積み上げ</p><div class="chart" id="weeklySearchChart"></div></section>
-      <section class="metric-card"><h2>週別結果返却率</h2><p class="subhead">正常検索のうち結果が 1 件以上返った割合</p><div class="chart" id="returnRateChart"></div></section>
-      <section class="metric-card"><h2>検索品質</h2><p class="subhead">hit@5 / MRR（runner × queries hash）</p><div class="chart" id="evalChart"></div></section>
-      <section class="metric-card"><h2>namespace 別 active ファクト</h2><p class="subhead">件数降順</p><div class="chart" id="namespaceChart"></div></section>
-      <section class="metric-card"><h2>クライアント別検索数</h2><p class="subhead">全期間 top 10</p><div class="chart" id="clientChart"></div></section>
-      <section class="metric-card wide"><h2>キル基準との距離</h2><p class="subhead">直近 4 完了週の auto 結果返却検索（proxy）</p><div id="killCriteria"></div></section>
-      <section class="metric-card wide"><h2>ゼロヒットクエリ</h2><p class="subhead">正常検索のみ・直近発生順</p><div class="table-wrap"><table class="metrics-table"><thead><tr><th>query</th><th>回数</th><th>最終発生</th><th>clients</th></tr></thead><tbody id="zeroHitRows"></tbody></table></div><div class="metrics-note">outcome がない旧レコードは正常扱いのため、障害由来の記録が含まれる場合があります。</div></section>
-      <section class="metric-card wide"><h2>未返却ファクト</h2><p class="subhead">検索結果に一度も含まれていない active ファクト（最大 30 件）</p><div class="table-wrap"><table class="metrics-table"><thead><tr><th>statement</th><th>namespace</th><th>fact id</th></tr></thead><tbody id="unreturnedRows"></tbody></table></div></section>
+      <section class="metric-card wide"><h2>週別検索数</h2><p class="subhead">自動検索 / 手動検索の内訳</p><p class="metric-guide"><strong>見方:</strong> 検索数が継続していれば、日常の判断で使われています。赤い障害線は 0 件が理想です。</p><div class="chart" id="weeklySearchChart"></div></section>
+      <section class="metric-card"><h2>週別結果返却率</h2><p class="subhead">正常検索のうち結果が 1 件以上返った割合</p><p class="metric-guide"><strong>見方:</strong> 高いほど、探した情報が見つかっています。前週より下がったら「結果が 0 件だった検索」を確認します。</p><div class="chart" id="returnRateChart"></div></section>
+      <section class="metric-card"><h2>検索精度</h2><p class="subhead">上位 5 件の正解率 / 検索順位スコア（検索方式・評価条件別）</p><p class="metric-guide"><strong>見方:</strong> 同じ評価条件で前回より上がれば、検索改善の効果が出ています。未評価の場合は改善を客観比較できません。</p><div class="chart" id="evalChart"></div></section>
+      <section class="metric-card"><h2>分類別の有効ファクト数</h2><p class="subhead">件数の多い順</p><p class="metric-guide"><strong>見方:</strong> 登録内容の偏りを確認します。よく検索する分野の件数が少なければ、情報不足の可能性があります。</p><div class="chart" id="namespaceChart"></div></section>
+      <section class="metric-card"><h2>呼び出し元別の検索数</h2><p class="subhead">全期間の上位 10 件</p><p class="metric-guide"><strong>見方:</strong> どのツールで定着しているかを確認します。利用元が増えれば、活用範囲が広がっています。</p><div class="chart" id="clientChart"></div></section>
+      <section class="metric-card"><h2>意思決定への影響</h2><p class="subhead">計測済みの最終判断を影響別に集計</p><p class="metric-guide"><strong>見方:</strong> 「行動を変更」「誤りを防止」は強い貢献、「確認を補強」は採用、「不採用」は理由を確認します。</p><div class="chart" id="effectChart"></div></section>
+      <section class="metric-card"><h2>不採用の理由</h2><p class="subhead">検索結果を使わなかった判断の内訳</p><p class="metric-guide"><strong>活用方法:</strong> 古い・矛盾・不十分が多い場合は、該当ファクトを修正します。未計測はここへ混ぜません。</p><div class="chart" id="noUseReasonChart"></div></section>
+      <section class="metric-card wide"><h2>呼び出し元別の計測状況</h2><p class="subhead">結果が返った検索のうち、最終判断まで記録された割合</p><div class="table-wrap"><table class="metrics-table"><thead><tr><th>呼び出し元</th><th>計測対象</th><th>計測済み</th><th>計測率</th><th>強い貢献</th></tr></thead><tbody id="measurementClientRows"></tbody></table></div></section>
+      <section class="metric-card wide"><h2>ファクト別の観測貢献</h2><p class="subhead">検索結果に出た回数と、最終判断で使われた回数（最大 50 件）</p><p class="metric-guide"><strong>注意:</strong> エージェントの自己申告に基づく観測値です。未計測の検索は未使用として扱いません。</p><div class="table-wrap"><table class="metrics-table"><thead><tr><th>ファクト ID</th><th>結果返却</th><th>採用判断</th><th>強い貢献</th><th>観測採用率</th></tr></thead><tbody id="contributionFactRows"></tbody></table></div></section>
+      <section class="metric-card wide"><h2>継続判断の参考値</h2><p class="subhead">直近 4 完了週に、自動検索が行動変更または誤り防止へ貢献した判断数</p><p class="metric-guide"><strong>見方:</strong> 毎週 3 回以上の強い貢献が観測されたかを見る参考値です。4週分の計測がそろうまでは、継続可否を確定しません。</p><div id="killCriteria"></div></section>
+      <section class="metric-card wide"><h2>結果が 0 件だった検索</h2><p class="subhead">正常に完了した検索のみ・直近発生順</p><p class="metric-guide"><strong>活用方法:</strong> ここが具体的な改善リストです。必要な情報が未登録なのか、検索語が登録内容と合っていないのかを切り分けます。</p><div class="table-wrap"><table class="metrics-table"><thead><tr><th>検索内容</th><th>回数</th><th>最終発生</th><th>呼び出し元</th></tr></thead><tbody id="zeroHitRows"></tbody></table></div><div class="metrics-note">実行結果が記録されていない古いデータは正常扱いのため、障害時の記録が含まれる場合があります。</div></section>
+      <section class="metric-card wide"><h2>検索結果に出ていないファクト</h2><p class="subhead">検索結果に一度も含まれていない有効なファクト（最大 30 件）</p><p class="metric-guide"><strong>活用方法:</strong> 件数が多い場合は、検索される価値がある内容か、検索しやすい表現になっているかを見直します。</p><div class="table-wrap"><table class="metrics-table"><thead><tr><th>内容</th><th>分類</th><th>ファクト ID</th></tr></thead><tbody id="unreturnedRows"></tbody></table></div></section>
     </div>
   </section>
 </div>

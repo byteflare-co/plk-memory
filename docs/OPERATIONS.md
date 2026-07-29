@@ -70,6 +70,11 @@ uv run uvicorn plk_memory.app:create_app --factory --host 127.0.0.1 --port 8735
 uv run plk-index-worker
 ```
 
+`0003_decision_telemetry` migrationは、検索イベント・意思決定イベント・両者の
+1対1解決リンクをtenant RLS付きで作る。検索文previewの保持期間は
+`PLK_USAGE_RAW_QUERY_RETENTION_DAYS`（既定30日、0〜365日）で設定し、期限後も
+集計用のSHA-256だけを残す。
+
 `/healthz` はDBへ接続できない場合503。Graphiti/Ollama停止時はDB writeを維持し、検索だけdegradedになる。
 workerはGraphへの外部副作用をDB leaseだけではfenceできないため1件ずつclaimし、同一factのrevisionを
 順番に処理する。max attempts到達後はdead letterへ移す。

@@ -13,7 +13,8 @@ Phase 2 Task 10 時点では「ユーザーのグローバル CLAUDE.md への�
 `.bak-plk` サフィックスで同ディレクトリに保存: `~/.claude/CLAUDE.md.bak-plk` /
 `~/.codex/AGENTS.md.bak-plk` / `~/.hermes/SOUL.md.bak-plk`）。
 
-`reason="auto-guideline"` を利用ログに記録する仕組み自体は配布と独立に検証済み（下記）。
+`reason="auto-guideline"` の検索記録に加え、2026-07-29からヒット後の
+`plk_record_decision` 1回記録を共通ガイドラインへ追加した。
 
 ## 配布状況
 
@@ -32,7 +33,13 @@ Claude Code から `plk_search(reason="auto-guideline")` を手動で 1 回呼�
 「税務・社保・法務」文脈の依頼を投げ、エージェントが自発的に `reason="auto-guideline"` 付きで
 `plk_search` を呼ぶことの実地確認が残作業。
 
+## 2026-07-29 意思決定計測の配布更新
+
+`guideline-line.md` は、複数検索を1回の `plk_record_decision` にまとめる方式へ更新した。
+全検索が0ヒットなら追加呼び出し不要、記録失敗は非ブロッキング、未記録は未計測として扱う。
+各グローバル指示ファイルはこの更新後の文面へ同期し、検索→最終判断の実地確認を行う。
+
 ## 残作業
 
 1. 各クライアント（Claude Code / Codex / Hermes）で意図的に「税務・社保・法務」文脈の依頼を投げ、
-   エージェントが自発的に `reason="auto-guideline"` 付きで `plk_search` を呼ぶことを 1 件ずつ確認する
+   エージェントが自発的に検索し、ヒット時に `plk_record_decision` まで呼ぶことを 1 件ずつ確認する

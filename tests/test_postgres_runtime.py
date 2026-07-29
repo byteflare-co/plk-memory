@@ -102,6 +102,26 @@ async def test_postgres_runtime_write_worker_search_invalidate_roundtrip():
 
         search = await services.tool_search("PostgreSQL runtime roundtrip")
         assert [hit["fact_id"] for hit in search["hits"]] == [added["fact_id"]]
+        decision = await services.tool_record_decision(
+            decision_id=f"runtime-decision-{organization_id}",
+            search_ids=[search["search_id"]],
+            used_fact_ids=[added["fact_id"]],
+            effect="changed_action",
+        )
+        assert decision["recorded"] is True
+        replay = await services.tool_record_decision(
+            decision_id=f"runtime-decision-{organization_id}",
+            search_ids=[search["search_id"]],
+            used_fact_ids=[added["fact_id"]],
+            effect="changed_action",
+        )
+        assert replay["replayed"] is True
+        usage = await services.ui_usage_records()
+        assert any(
+            row.get("decision_id") == f"runtime-decision-{organization_id}"
+            and row.get("used_fact_ids") == [added["fact_id"]]
+            for row in usage
+        )
 
         other_actor = actor.model_copy(update={"organization_id": uuid4()})
         other_token = current_actor.set(other_actor)

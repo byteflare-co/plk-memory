@@ -8,6 +8,7 @@ cross-tenant index documents can never become the response source of truth.
 from __future__ import annotations
 
 import hashlib
+import logging
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
@@ -38,10 +39,17 @@ from plk_memory.ports import (
 )
 from plk_memory.settings import Settings
 from plk_memory.admission import CodexAdmissionRunner
+from plk_memory.telemetry import (
+    DecisionCommand,
+    FactReference,
+    TelemetryError,
+    TelemetryStore,
+)
 
 ActorProvider = Callable[[], ActorContext]
 ScopeProvider = Callable[[], QueryScope]
 StatusProvider = Callable[[], Awaitable[dict[str, Any]]]
+logger = logging.getLogger(__name__)
 
 
 class PostgresAppServices:
@@ -60,6 +68,7 @@ class PostgresAppServices:
         health_callback: Callable[[], Awaitable[None]] | None = None,
         approval_repository: ApprovalRepository | None = None,
         admission: CodexAdmissionRunner | None = None,
+        telemetry: TelemetryStore | None = None,
     ) -> None:
         self.repository = repository
         self.search_index = search_index
@@ -70,6 +79,7 @@ class PostgresAppServices:
         self._close_callback = close_callback
         self._health_callback = health_callback
         self.approval_repository = approval_repository
+        self.telemetry = telemetry
         self.admission = admission or CodexAdmissionRunner(
             codex_bin=settings.codex_bin,
             timeout_seconds=settings.codex_admission_timeout_seconds,
@@ -112,17 +122,30 @@ class PostgresAppServices:
         reason: str | None = None,
         log_usage: bool = True,
     ) -> dict[str, Any]:
-        # Usage/audit logging belongs at the HTTP/MCP request boundary.
-        del reason, log_usage
         start = time.monotonic()
         scope = self._scope()
+        client = scope.actor_id
+        search_id = str(ULID())
         allow_quarantine = bool(namespaces and "plk.quarantine" in namespaces)
 
         if not self.search_index.ready:
+            latency_ms = int((time.monotonic() - start) * 1000)
+            if log_usage:
+                await self._record_search(
+                    client=client,
+                    search_id=search_id,
+                    query=query,
+                    hits=[],
+                    latency_ms=latency_ms,
+                    reason=reason,
+                    outcome="degraded",
+                )
             return {
                 "degraded": True,
                 "message": "search index が未接続（degraded モード）",
                 "hits": [],
+                "search_id": search_id,
+                "latency_ms": latency_ms,
             }
 
         try:
@@ -143,12 +166,41 @@ class PostgresAppServices:
             candidate_ids = list(dict.fromkeys(item.fact_id for item in candidates))
             records = await self.repository.get_many(scope, candidate_ids)
         except (ValidationError, ValueError) as error:
-            return {"error": f"検索条件が不正: {error}", "hits": []}
+            latency_ms = int((time.monotonic() - start) * 1000)
+            if log_usage:
+                await self._record_search(
+                    client=client,
+                    search_id=search_id,
+                    query=query,
+                    hits=[],
+                    latency_ms=latency_ms,
+                    reason=reason,
+                    outcome="error",
+                )
+            return {
+                "error": f"検索条件が不正: {error}",
+                "hits": [],
+                "search_id": search_id,
+                "latency_ms": latency_ms,
+            }
         except Exception as error:  # noqa: BLE001 - index failure is a degraded read
+            latency_ms = int((time.monotonic() - start) * 1000)
+            if log_usage:
+                await self._record_search(
+                    client=client,
+                    search_id=search_id,
+                    query=query,
+                    hits=[],
+                    latency_ms=latency_ms,
+                    reason=reason,
+                    outcome="error",
+                )
             return {
                 "degraded": True,
                 "message": f"search 失敗: {error}",
                 "hits": [],
+                "search_id": search_id,
+                "latency_ms": latency_ms,
             }
 
         by_id = {record.id: record for record in records}
@@ -167,11 +219,59 @@ class PostgresAppServices:
             if len(results) >= limit:
                 break
 
+        latency_ms = int((time.monotonic() - start) * 1000)
+        if log_usage:
+            await self._record_search(
+                client=client,
+                search_id=search_id,
+                query=query,
+                hits=results,
+                latency_ms=latency_ms,
+                reason=reason,
+                outcome="ok",
+            )
         return {
             "hits": results,
             "degraded": False,
-            "latency_ms": int((time.monotonic() - start) * 1000),
+            "search_id": search_id,
+            "latency_ms": latency_ms,
         }
+
+    async def tool_record_decision(
+        self,
+        *,
+        decision_id: str,
+        search_ids: list[str],
+        used_fact_ids: list[str],
+        effect: str,
+        no_use_reason: str | None = None,
+    ) -> dict[str, Any]:
+        actor = self._actor()
+        try:
+            command = DecisionCommand.model_validate(
+                {
+                    "decision_id": decision_id,
+                    "search_ids": search_ids,
+                    "used_fact_ids": used_fact_ids,
+                    "effect": effect,
+                    "no_use_reason": no_use_reason,
+                }
+            )
+            if self.telemetry is None:
+                raise RuntimeError("telemetry store is unavailable")
+            return await self.telemetry.record_decision(
+                client=actor.actor_id,
+                command=command,
+            )
+        except (ValidationError, TelemetryError) as error:
+            return {"error": str(error), "recorded": False}
+        except Exception as error:  # noqa: BLE001 - measurement is non-blocking
+            logger.exception("PLK decision telemetry write failed")
+            return {
+                "recorded": False,
+                "non_blocking": True,
+                "error": f"telemetry unavailable: {error}",
+            }
 
     async def tool_add(
         self,
@@ -423,8 +523,25 @@ class PostgresAppServices:
         return [self._search_hit(record, None) for record in records]
 
     async def ui_metrics_posts(self) -> tuple[list[dict], int]:
-        """Corpus metrics are not available until PostgreSQL usage is recorded."""
-        return [], 0
+        records = await self.repository.list(
+            self._scope(),
+            FactFilters(status=None, limit=1000),
+        )
+        return [
+            {
+                "id": record.id,
+                "revision": record.revision,
+                "status": record.status,
+                "created_at": record.created_at,
+                **record.payload.model_dump(mode="json"),
+            }
+            for record in records
+        ], 0
+
+    async def ui_usage_records(self) -> list[dict]:
+        if self.telemetry is None:
+            return []
+        return await self.telemetry.list_usage()
 
     async def ui_fact_detail(self, fact_id: str) -> dict[str, Any] | None:
         scope = self._scope()
@@ -515,6 +632,39 @@ class PostgresAppServices:
         if missing:
             raise FactMissing(missing[0])
         return revisions
+
+    async def _record_search(
+        self,
+        *,
+        client: str,
+        search_id: str,
+        query: str,
+        hits: list[dict[str, Any]],
+        latency_ms: int,
+        reason: str | None,
+        outcome: str,
+    ) -> None:
+        if self.telemetry is None:
+            return
+        try:
+            await self.telemetry.record_search(
+                client=client,
+                search_id=search_id,
+                query=query,
+                hits=len(hits),
+                latency_ms=latency_ms,
+                reason=reason,
+                fact_refs=[
+                    FactReference(
+                        fact_id=str(hit["fact_id"]),
+                        revision=hit.get("revision"),
+                    )
+                    for hit in hits
+                ],
+                outcome=outcome,
+            )
+        except Exception:  # noqa: BLE001 - telemetry must never block search
+            logger.exception("PLK search telemetry write failed")
 
     @staticmethod
     def _visible(

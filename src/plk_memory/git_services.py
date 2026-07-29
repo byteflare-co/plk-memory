@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import posixpath
 import time
 
@@ -23,7 +24,11 @@ from plk_memory.promotions import PromotionState, PromotionStore, new_promotion,
 from plk_memory.settings import Settings
 from plk_memory.state import StateStore
 from plk_memory.sync import SyncEngine
+from plk_memory.telemetry import DecisionCommand, FactReference, TelemetryError
 from plk_memory.usage_log import UsageLog
+from pydantic import ValidationError
+
+logger = logging.getLogger(__name__)
 
 
 class AppServices:
@@ -103,19 +108,33 @@ class AppServices:
         search_id = str(ULID())
         allow_quarantine = bool(namespaces and "plk.quarantine" in namespaces)
 
-        def log_search(outcome: str, results: list[dict]) -> int:
+        async def log_search(outcome: str, results: list[dict]) -> int:
             latency_ms = int((time.monotonic() - start) * 1000)
             if log_usage:
-                self.usage.log(
-                    client, "plk_search", query=query, hits=len(results),
-                    latency_ms=latency_ms, reason=reason,
-                    fact_ids=[str(result["fact_id"]) for result in results],
-                    search_id=search_id, outcome=outcome,
-                )
+                try:
+                    fact_refs = [
+                        FactReference(
+                            fact_id=str(result["fact_id"]),
+                            content_hash=self._fact_content_hash(str(result["path"])),
+                        )
+                        for result in results
+                    ]
+                    await self.usage.record_search(
+                        client=client or "unknown",
+                        search_id=search_id,
+                        query=query,
+                        hits=len(results),
+                        latency_ms=latency_ms,
+                        reason=reason,
+                        fact_refs=fact_refs,
+                        outcome=outcome,
+                    )
+                except Exception:  # noqa: BLE001 - telemetry must never block search
+                    logger.exception("PLK search telemetry write failed")
             return latency_ms
 
         if not self.graph.ready:
-            latency_ms = log_search("degraded", [])
+            latency_ms = await log_search("degraded", [])
             return {
                 "degraded": True,
                 "message": "graph index が未接続（degraded モード）",
@@ -164,7 +183,7 @@ class AppServices:
                 if len(results) >= limit:
                     break
         except Exception as error:  # noqa: BLE001 - search failures remain degraded reads
-            latency_ms = log_search("error", [])
+            latency_ms = await log_search("error", [])
             return {
                 "degraded": True,
                 "message": f"search 失敗: {error}",
@@ -173,13 +192,44 @@ class AppServices:
                 "latency_ms": latency_ms,
             }
 
-        latency_ms = log_search("ok", results)
+        latency_ms = await log_search("ok", results)
         return {
             "hits": results,
             "degraded": False,
             "search_id": search_id,
             "latency_ms": latency_ms,
         }
+
+    async def tool_record_decision(
+        self,
+        *,
+        decision_id: str,
+        search_ids: list[str],
+        used_fact_ids: list[str],
+        effect: str,
+        no_use_reason: str | None = None,
+    ) -> dict:
+        client = self._require_client()
+        try:
+            command = DecisionCommand.model_validate(
+                {
+                    "decision_id": decision_id,
+                    "search_ids": search_ids,
+                    "used_fact_ids": used_fact_ids,
+                    "effect": effect,
+                    "no_use_reason": no_use_reason,
+                }
+            )
+            return await self.usage.record_decision(client=client, command=command)
+        except (ValidationError, TelemetryError) as error:
+            return {"error": str(error), "recorded": False}
+        except Exception as error:  # noqa: BLE001 - measurement is non-blocking
+            logger.exception("PLK decision telemetry write failed")
+            return {
+                "recorded": False,
+                "non_blocking": True,
+                "error": f"telemetry unavailable: {error}",
+            }
 
     async def tool_add(
         self,
@@ -296,6 +346,9 @@ class AppServices:
                 continue
             posts.append(dict(post.metadata))
         return posts, skipped
+
+    async def ui_usage_records(self) -> list[dict]:
+        return await self.usage.list_usage()
 
     async def ui_fact_detail(self, fact_id: str) -> dict | None:
         try:

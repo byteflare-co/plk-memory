@@ -34,7 +34,10 @@ def build_services(settings: Settings, graph, promotion_backend=None,
         graph = GraphIndex(settings)
     state_store = StateStore(settings.state_path)
     sync = SyncEngine(store, facts, graph, state_store, settings)
-    usage = UsageLog(settings.usage_log_path)
+    usage = UsageLog(
+        settings.usage_log_path,
+        raw_query_retention_days=settings.usage_raw_query_retention_days,
+    )
     promotion_store = PromotionStore(settings.state_path.with_name("promotions.json"))
     feedback = FeedbackCoordinator(
         FeedbackStore(settings.feedback_path),
@@ -67,6 +70,7 @@ def build_postgres_services(settings: Settings, graph=None):
     from plk_memory.postgres.database import PostgresDatabase
     from plk_memory.postgres.graph_adapter import PostgresGraphSearchIndex
     from plk_memory.postgres.repository import PostgresFactRepository
+    from plk_memory.postgres.telemetry import PostgresTelemetryStore
     from plk_memory.postgres.worker import PostgresProjectionStatus
 
     database = PostgresDatabase(
@@ -109,6 +113,12 @@ def build_postgres_services(settings: Settings, graph=None):
     async def status_provider() -> dict:
         return await projection_status.snapshot(scope_provider().organization_id)
 
+    telemetry = PostgresTelemetryStore(
+        database,
+        organization_provider=lambda: scope_provider().organization_id,
+        raw_query_retention_days=settings.usage_raw_query_retention_days,
+    )
+
     return PostgresAppServices(
         repository=repository,
         search_index=search_index,
@@ -119,6 +129,7 @@ def build_postgres_services(settings: Settings, graph=None):
         close_callback=database.close,
         health_callback=database.ping,
         approval_repository=PostgresApprovalRepository(database),
+        telemetry=telemetry,
         admission=CodexAdmissionRunner(
             codex_bin=settings.codex_bin,
             timeout_seconds=settings.codex_admission_timeout_seconds,

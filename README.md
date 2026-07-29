@@ -134,6 +134,7 @@ Gitにファイルとして保存する構成は、人間が直接読み、レ�
 | tool | 役割 | 認可 |
 |---|---|---|
 | `plk_search` | 知識を検索する。PostgreSQL modeでは候補をDBで再検証する | read |
+| `plk_record_decision` | 検索結果を最終判断で採用したか、行動変更・誤り防止・確認補強・不採用のどれだったかを記録する | read |
 | `plk_assess_candidate` | 自然文候補の保存適格性をread-onlyで判定し、判定結果にかかわらず重複候補を検索する | read |
 | `plk_add` | factを追加し、`supersedes`対象があれば同時に無効化する | write |
 | `plk_invalidate` | 理由を記録してactive factを無効化する | write |
@@ -147,7 +148,14 @@ Gitにファイルとして保存する構成は、人間が直接読み、レ�
 新規／更新previewと明示承認を経て`plk_add`へ進みます。assessment自体は承認でも書き込みでもありません。
 
 各クライアントには、税務・社保・法務・過去の意思決定・社内ノウハウに関する判断前に
-`plk_search(reason="auto-guideline")`を一度呼ぶルールを配布します。
+`plk_search(reason="auto-guideline")`を呼び、ヒットがあった場合だけ最終回答前に関連する検索を
+まとめて`plk_record_decision`へ1回記録するルールを配布します。0ヒット時は追加呼び出し不要です。
+未記録の検索は未使用と推定せず、ダッシュボードでは未計測として分離します。
+
+検索イベントと意思決定イベントはGit backendでは権限`0600`のJSONL、PostgreSQL backendでは
+tenant RLS付きテーブルへ保存します。検索文はSHA-256を恒久保持し、平文プレビューは既定30日で
+削除します。自由記述の判断理由や回答本文は保存しません。メトリクスは因果効果ではなく、
+エージェントの最終判断時申告に基づく「観測貢献」です。
 
 ## Web UIのreviewed writes
 
@@ -195,6 +203,7 @@ PostgreSQL-primary runtimeとして、以下を実装済みです。
 - tenant別Graph partitionとDB current-row rehydrate
 - revision固定のpromotion proposal / approval / rejection / stale判定
 - Git snapshotのshadow importとparity検証
+- tenant共通の検索・意思決定テレメトリと観測貢献ダッシュボード
 
 production deployment前には、次の検証が必要です。
 

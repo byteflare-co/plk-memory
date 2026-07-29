@@ -19,7 +19,7 @@ import nh3
 from fastapi import APIRouter, HTTPException, Request, Response, status
 
 from plk_memory.metrics import build_metrics
-from plk_memory.usage_records import read_eval_history, read_usage
+from plk_memory.usage_records import read_eval_history
 
 if TYPE_CHECKING:
     from plk_memory.facade import ServiceFacade
@@ -180,13 +180,13 @@ def build_ui_router(services: "ServiceFacade") -> APIRouter:
         _require_cookie(request)
         posts, skipped = await services.ui_metrics_posts()
         result = build_metrics(
-            read_usage(settings.usage_log_path),
+            await services.ui_usage_records(),
             posts,
             read_eval_history(settings.eval_history_path),
             now=datetime.now(timezone.utc),
             tz=ZoneInfo(settings.metrics_timezone),
         )
-        result["corpus"]["available"] = settings.storage_backend == "git"
+        result["corpus"]["available"] = True
         result["corpus"]["skipped_files"] = skipped
         return result
 

@@ -573,7 +573,7 @@ function svgText(parent, value, attrs = {}) {
   return textEl;
 }
 
-function makeChart(host, label, width = 760, height = 210) {
+function makeChart(host, label, width = 760, height = 240) {
   clearElement(host);
   const svg = svgElement('svg', { viewBox: `0 0 ${width} ${height}`, role: 'img', 'aria-label': label });
   host.appendChild(svg);
@@ -634,7 +634,7 @@ function drawGrid(svg, { left, top, width, height, ticks = 4, maxValue = 1, form
     const y = top + (height * i / ticks);
     svg.appendChild(svgElement('line', { x1: left, y1: y, x2: left + width, y2: y, stroke: 'var(--border)', 'stroke-width': 1 }));
     svgText(svg, formatter(maxValue * (ticks - i) / ticks), {
-      x: left - 8, y: y + 4, fill: 'var(--text-faint)', 'font-size': 10, 'text-anchor': 'end',
+      x: left - 8, y: y + 4, fill: 'var(--text-muted)', 'font-size': 12, 'text-anchor': 'end',
     });
   }
 }
@@ -649,7 +649,7 @@ function renderWeeklySearch(weekly) {
     return;
   }
   const svg = makeChart(host, '週別検索数の積み上げ棒グラフ');
-  const left = 42; const top = 12; const width = 700; const height = 158;
+  const left = 48; const top = 12; const width = 694; const height = 180;
   const maxValue = Math.max(1, ...weekly.map(row => (numberOrNull(row.auto) || 0) + (numberOrNull(row.manual) || 0)));
   drawGrid(svg, { left, top, width, height, maxValue, formatter: value => String(Math.round(value)) });
   const slot = width / weekly.length;
@@ -662,16 +662,16 @@ function renderWeeklySearch(weekly) {
     const x = left + slot * index + (slot - barWidth) / 2;
     const autoRect = svgElement('rect', { x, y: top + height - autoHeight, width: barWidth, height: autoHeight, rx: 2, fill: CHART_COLORS[0] });
     const autoTitle = svgElement('title');
-    autoTitle.textContent = `${String(row.week || '')}: auto ${auto}`;
+    autoTitle.textContent = `${String(row.week || '')}: 自動検索 ${auto}`;
     autoRect.appendChild(autoTitle);
     svg.appendChild(autoRect);
     const manualRect = svgElement('rect', { x, y: top + height - autoHeight - manualHeight, width: barWidth, height: manualHeight, rx: 2, fill: CHART_COLORS[2] });
     const manualTitle = svgElement('title');
-    manualTitle.textContent = `${String(row.week || '')}: manual ${manual}`;
+    manualTitle.textContent = `${String(row.week || '')}: 手動検索 ${manual}`;
     manualRect.appendChild(manualTitle);
     svg.appendChild(manualRect);
     svgText(svg, compactWeek(row.week) + (row.in_progress ? '*' : ''), {
-      x: x + barWidth / 2, y: 190, fill: 'var(--text-faint)', 'font-size': 9, 'text-anchor': 'middle',
+      x: x + barWidth / 2, y: 220, fill: 'var(--text-muted)', 'font-size': 11, 'text-anchor': 'middle',
     });
   });
   let failurePath = '';
@@ -682,7 +682,7 @@ function renderWeeklySearch(weekly) {
     failurePath += `${failurePath ? ' L' : 'M'} ${x} ${y}`;
     const marker = svgElement('circle', { cx: x, cy: y, r: 3, fill: CHART_COLORS[6] });
     const title = svgElement('title');
-    title.textContent = `${String(row.week || '')}: failures ${failures}`;
+    title.textContent = `${String(row.week || '')}: 障害 ${failures}`;
     marker.appendChild(title);
     svg.appendChild(marker);
   });
@@ -693,9 +693,9 @@ function renderWeeklySearch(weekly) {
     }), firstMarker);
   }
   const legend = appendLegend(host, [
-    { label: 'auto', color: CHART_COLORS[0] },
-    { label: 'manual', color: CHART_COLORS[2] },
-    { label: 'failures', color: CHART_COLORS[6] },
+    { label: '自動検索', color: CHART_COLORS[0] },
+    { label: '手動検索', color: CHART_COLORS[2] },
+    { label: '障害', color: CHART_COLORS[6] },
   ]);
   const progressNote = document.createElement('span');
   progressNote.textContent = '* 進行中の週';
@@ -713,8 +713,8 @@ function renderReturnRate(weekly) {
     renderChartEmpty(host, '正常検索の観測がまだありません。');
     return;
   }
-  const svg = makeChart(host, '週別結果返却率の折れ線グラフ', 600, 210);
-  const left = 42; const top = 12; const width = 540; const height = 158;
+  const svg = makeChart(host, '週別結果返却率の折れ線グラフ', 600, 240);
+  const left = 48; const top = 12; const width = 532; const height = 180;
   drawGrid(svg, { left, top, width, height, maxValue: 1, formatter: value => `${Math.round(value * 100)}%` });
   const step = points.length > 1 ? width / (points.length - 1) : 0;
   const paths = [];
@@ -734,7 +734,7 @@ function renderReturnRate(weekly) {
     circle.appendChild(title);
     svg.appendChild(circle);
     svgText(svg, compactWeek(point.week) + (point.inProgress ? '*' : ''), {
-      x, y: 190, fill: 'var(--text-faint)', 'font-size': 9, 'text-anchor': 'middle',
+      x, y: 220, fill: 'var(--text-muted)', 'font-size': 11, 'text-anchor': 'middle',
     });
   });
   if (path) paths.push(path);
@@ -756,17 +756,17 @@ function renderHorizontalBars(hostId, rows, valueKey, labelKey, emptyMessage) {
     return;
   }
   const shown = rows.slice(0, 10);
-  const height = Math.max(210, shown.length * 28 + 24);
+  const height = Math.max(240, shown.length * 32 + 28);
   const svg = makeChart(host, `${hostId} 横棒グラフ`, 600, height);
   svg.style.height = `${height}px`;
-  const left = 150; const width = 410;
+  const left = 170; const width = 390;
   const maxValue = Math.max(1, ...shown.map(row => numberOrNull(row[valueKey]) || 0));
   shown.forEach((row, index) => {
     const value = Math.max(0, numberOrNull(row[valueKey]) || 0);
-    const y = 12 + index * 28;
-    svgText(svg, row[labelKey] || '—', { x: left - 9, y: y + 14, fill: 'var(--text-muted)', 'font-size': 10.5, 'text-anchor': 'end' });
-    svg.appendChild(svgElement('rect', { x: left, y, width: width * value / maxValue, height: 18, rx: 3, fill: CHART_COLORS[index % CHART_COLORS.length] }));
-    svgText(svg, value, { x: left + width * value / maxValue + 6, y: y + 14, fill: 'var(--text)', 'font-size': 10.5 });
+    const y = 14 + index * 32;
+    svgText(svg, row[labelKey] || '—', { x: left - 10, y: y + 15, fill: 'var(--text-muted)', 'font-size': 12, 'text-anchor': 'end' });
+    svg.appendChild(svgElement('rect', { x: left, y, width: width * value / maxValue, height: 20, rx: 3, fill: CHART_COLORS[index % CHART_COLORS.length] }));
+    svgText(svg, value, { x: left + width * value / maxValue + 7, y: y + 15, fill: 'var(--text)', 'font-size': 12 });
   });
 }
 
@@ -794,8 +794,8 @@ function renderEval(evalData) {
     renderChartEmpty(host, '評価は未実行です。uv run python scripts/eval/run_eval.py で計測できます。');
     return;
   }
-  const svg = makeChart(host, '検索品質 hit at 5 と MRR の折れ線グラフ', 600, 210);
-  const left = 42; const top = 12; const width = 540; const height = 158;
+  const svg = makeChart(host, '上位5件の正解率と検索順位スコアの折れ線グラフ', 600, 240);
+  const left = 48; const top = 12; const width = 532; const height = 180;
   drawGrid(svg, { left, top, width, height, maxValue: 1, formatter: value => `${Math.round(value * 100)}%` });
   const timestamps = [...new Set(series.flatMap(item => item.points.map(point => String(point.ts || ''))))].sort();
   const xFor = ts => timestamps.length > 1 ? left + width * timestamps.indexOf(String(ts || '')) / (timestamps.length - 1) : left + width / 2;
@@ -812,7 +812,8 @@ function renderEval(evalData) {
         path += `${path ? ' L' : 'M'} ${x} ${y}`;
         const circle = svgElement('circle', { cx: x, cy: y, r: 2.8, fill: baseColor });
         const title = svgElement('title');
-        title.textContent = `${item.runner} / ${item.hash} / ${field}: ${percent(value)}`;
+        const scoreName = field === 'hit5_rate' ? '上位5件の正解率' : '検索順位スコア';
+        title.textContent = `${item.runner} / ${item.hash} / ${scoreName}: ${percent(value)}`;
         circle.appendChild(title);
         svg.appendChild(circle);
       });
@@ -821,11 +822,11 @@ function renderEval(evalData) {
         if (dashed) attrs['stroke-dasharray'] = '5 4';
         svg.insertBefore(svgElement('path', attrs), svg.querySelector('circle'));
       }
-      legend.push({ label: `${item.runner} · ${item.hash} · ${field === 'hit5_rate' ? 'hit@5' : 'MRR'}`, color: baseColor });
+      legend.push({ label: `${item.runner} · ${item.hash} · ${field === 'hit5_rate' ? '上位5件の正解率' : '検索順位スコア'}`, color: baseColor });
     });
   });
   const labels = timestamps.length > 5 ? timestamps.filter((_, index) => index % Math.ceil(timestamps.length / 5) === 0) : timestamps;
-  labels.forEach(ts => svgText(svg, formatDate(ts), { x: xFor(ts), y: 190, fill: 'var(--text-faint)', 'font-size': 9, 'text-anchor': 'middle' }));
+  labels.forEach(ts => svgText(svg, formatDate(ts), { x: xFor(ts), y: 220, fill: 'var(--text-muted)', 'font-size': 11, 'text-anchor': 'middle' }));
   appendLegend(host, legend);
 }
 
@@ -855,10 +856,91 @@ function last7dReturnRate(search) {
   return okTotal > 0 ? Number(bucket.returned || 0) / okTotal : null;
 }
 
+function weeklySearchCount(row) {
+  return (numberOrNull(row.auto) || 0) + (numberOrNull(row.manual) || 0);
+}
+
+function weeklyReturnRate(row) {
+  const total = numberOrNull(row.ok_total);
+  return total > 0 ? Number(row.returned || 0) / total : null;
+}
+
+function signedCount(value, unit) {
+  const rounded = Math.round(value);
+  return `${rounded > 0 ? '+' : ''}${rounded}${unit}`;
+}
+
+function renderMetricsSummary(data) {
+  const summary = document.getElementById('metricsSummary');
+  const title = document.getElementById('metricsSummaryTitle');
+  const lead = document.getElementById('metricsSummaryLead');
+  const usageSummary = document.getElementById('metricsUsageSummary');
+  const valueSummary = document.getElementById('metricsValueSummary');
+  const actionSummary = document.getElementById('metricsActionSummary');
+  const search = data.search || {};
+  const contribution = data.contribution || {};
+  const weekly = Array.isArray(search.weekly) ? search.weekly : [];
+  const last7 = search.last7d || {};
+  const okTotal = numberOrNull(last7.ok_total) || 0;
+  const returned = numberOrNull(last7.returned) || 0;
+  const noResult = Math.max(0, okTotal - returned);
+  const failures = weekly.reduce((sum, row) => sum + (numberOrNull(row.failures) || 0), 0);
+  const total = numberOrNull(search.total) || 0;
+  const current = weekly.findLast(row => row.in_progress) || weekly.at(-1) || {};
+  const completed = weekly.filter(row => !row.in_progress && weeklyReturnRate(row) !== null);
+  const latest = completed.at(-1);
+  const previous = completed.at(-2);
+  const evalAvailable = Object.keys(data.eval || {}).length > 0;
+
+  const measurable = numberOrNull(contribution.measurable_hit_searches) || 0;
+  const resolved = numberOrNull(contribution.resolved_hit_searches) || 0;
+  const strong = numberOrNull(contribution.strong_contribution_decisions) || 0;
+  const adopted = numberOrNull(contribution.adopted_decisions) || 0;
+  const unresolved = numberOrNull(contribution.unresolved_hit_searches) || 0;
+
+  if (okTotal === 0) {
+    summary.dataset.tone = 'attention';
+    title.textContent = '改善を判断するための検索データがまだありません';
+    lead.textContent = '検索が記録されると、利用量・結果返却率・前週からの変化をここに表示します。';
+  } else if (measurable > 0 && resolved === 0) {
+    summary.dataset.tone = 'attention';
+    title.textContent = '検索は使われていますが、最終判断への貢献はまだ未計測です';
+    lead.textContent = '結果が返った検索の後に plk_record_decision を記録すると、採用と強い貢献を分けて確認できます。';
+  } else if (noResult === 0 && failures === 0 && unresolved === 0) {
+    summary.dataset.tone = 'good';
+    title.textContent = '検索から最終判断まで計測できています';
+    lead.textContent = '自己申告の観測値として、採用された判断と行動変更・誤り防止への貢献を確認できます。';
+  } else {
+    summary.dataset.tone = 'attention';
+    title.textContent = '検索の利用は進んでいます。未計測または結果 0 件の検索に改善余地があります';
+    lead.textContent = '検索結果の返却と最終判断への貢献を分けて確認します。';
+  }
+
+  const currentCount = weeklySearchCount(current);
+  usageSummary.textContent = `全期間で ${total} 回、${current.in_progress ? '今週' : '直近週'}は ${currentCount} 回検索されています。`;
+
+  let trendText = '完了週が 2 週たまると、前週からの変化を表示します。';
+  if (latest && previous) {
+    const searchDelta = weeklySearchCount(latest) - weeklySearchCount(previous);
+    const rateDelta = (weeklyReturnRate(latest) - weeklyReturnRate(previous)) * 100;
+    trendText = `完了週の前週比は、検索数 ${signedCount(searchDelta, ' 回')}、結果返却率 ${signedCount(rateDelta, ' ポイント')}です。`;
+  }
+  valueSummary.textContent = `計測対象 ${measurable} 回中 ${resolved} 回を最終判断まで記録しました（${percent(contribution.measurement_rate)}）。採用 ${adopted} 件、うち行動変更・誤り防止 ${strong} 件です。`;
+
+  const actions = [];
+  if (unresolved > 0) actions.push(`未計測の ${unresolved} 回で最終判断を記録する`);
+  if (noResult > 0) actions.push(`結果が 0 件だった ${noResult} 回の検索を見直す`);
+  if (!evalAvailable) actions.push('検索精度の定期評価を実行する');
+  if (failures > 0) actions.push(`${failures} 件の障害原因を確認する`);
+  if (!actions.length) actions.push('現在の状態を維持し、週ごとの変化を確認する');
+  actionSummary.textContent = `${actions.join('。')}。`;
+}
+
 function renderStats(data) {
   const host = document.getElementById('metricsStats');
   clearElement(host);
   const search = data.search || {};
+  const contribution = data.contribution || {};
   const clients = Array.isArray(search.clients) ? search.clients : [];
   const weekly = Array.isArray(search.weekly) ? search.weekly : [];
   const total = numberOrNull(search.total) ?? clients.reduce((sum, row) => sum + (numberOrNull(row.count) || 0), 0);
@@ -866,15 +948,18 @@ function renderStats(data) {
   const latency = search.latency || {};
   const last7dLatency = latency.last7d || {};
   addStatTile(host, '総検索数', String(total), `直近 12 週の障害 ${failures} 件`);
-  addStatTile(host, '直近 7 日結果返却率', percent(last7dReturnRate(search)), `latency p50 ${numberOrNull(last7dLatency.p50) ?? '—'} ms`);
+  addStatTile(host, '最終判断の計測率', percent(contribution.measurement_rate), `未計測 ${numberOrNull(contribution.unresolved_hit_searches) || 0} 回`);
+  addStatTile(host, '採用された判断', String(numberOrNull(contribution.adopted_decisions) || 0), '確認補強を含む観測値');
+  addStatTile(host, '強い貢献', String(numberOrNull(contribution.strong_contribution_decisions) || 0), '行動変更 + 誤り防止');
+  addStatTile(host, '直近 7 日の結果返却率', percent(last7dReturnRate(search)), `応答時間の中央値 ${numberOrNull(last7dLatency.p50) ?? '—'} ms`);
   const corpus = data.corpus || {};
   const active = corpus.available === false ? '—' : String(numberOrNull((corpus.status || {}).active) ?? 0);
-  addStatTile(host, 'active ファクト', active, corpus.available === false ? 'backend 未対応' : `読み込み skip ${numberOrNull(corpus.skipped_files) || 0} 件`);
+  addStatTile(host, '有効なファクト', active, corpus.available === false ? '現在の保存方式では集計できません' : `読み込めなかったファイル ${numberOrNull(corpus.skipped_files) || 0} 件`);
   const verdict = String((data.kill_criteria || {}).verdict || 'inconclusive');
   const verdictMeta = {
-    proxy_ok: ['proxy OK', 'ok'], proxy_breached: ['proxy breached', 'bad'], inconclusive: ['判定不能', 'warn'],
+    observed_ok: ['基準内', 'ok'], observed_breached: ['基準未達', 'bad'], inconclusive: ['データ不足', 'warn'],
   }[verdict] || [verdict, 'warn'];
-  addStatTile(host, 'キル基準 proxy', verdictMeta[0], '正式判定は Phase 2 以降', verdictMeta[1]);
+  addStatTile(host, '継続判断の参考値', verdictMeta[0], '強い貢献の観測数による参考判定', verdictMeta[1]);
 }
 
 function emptyTableRow(tbody, columns, message) {
@@ -891,7 +976,7 @@ function renderZeroHits(rows) {
   const tbody = document.getElementById('zeroHitRows');
   clearElement(tbody);
   if (!rows.length) {
-    emptyTableRow(tbody, 4, 'ゼロヒットクエリはありません。');
+    emptyTableRow(tbody, 4, '結果が 0 件だった検索はありません。');
     return;
   }
   rows.forEach(row => {
@@ -914,18 +999,18 @@ function renderUnreturned(unreturned, corpusAvailable) {
   const tbody = document.getElementById('unreturnedRows');
   clearElement(tbody);
   if (corpusAvailable === false) {
-    emptyTableRow(tbody, 3, 'この backend ではコーパス指標を利用できません。');
+    emptyTableRow(tbody, 3, '現在の保存方式では、登録データの状態を集計できません。');
     return;
   }
   const rows = Array.isArray(unreturned.items) ? unreturned.items : [];
   if (!rows.length) {
-    emptyTableRow(tbody, 3, '未返却の active ファクトはありません。');
+    emptyTableRow(tbody, 3, '検索結果に出ていない有効なファクトはありません。');
     return;
   }
   rows.forEach(row => {
     const tr = document.createElement('tr');
     const statement = document.createElement('td');
-    statement.textContent = row.statement || '（statement なし）';
+    statement.textContent = row.statement || '（内容なし）';
     const namespace = document.createElement('td');
     namespace.textContent = row.namespace || '—';
     const id = document.createElement('td');
@@ -940,11 +1025,11 @@ function renderKillCriteria(criteria) {
   const host = document.getElementById('killCriteria');
   clearElement(host);
   const verdict = String(criteria.verdict || 'inconclusive');
-  const labels = { proxy_ok: 'proxy OK', proxy_breached: 'proxy breached', inconclusive: '判定不能' };
+  const labels = { observed_ok: '基準内', observed_breached: '基準未達', inconclusive: 'データ不足' };
   const row = document.createElement('div');
   row.className = 'metrics-kill';
   const pill = document.createElement('span');
-  const statusClass = verdict === 'proxy_ok' ? 'active' : 'invalidated';
+  const statusClass = verdict === 'observed_ok' ? 'active' : 'invalidated';
   pill.className = `status-pill ${statusClass}`;
   const dot = document.createElement('span');
   dot.className = 'dot';
@@ -959,24 +1044,90 @@ function renderKillCriteria(criteria) {
     chart.className = 'chart';
     chart.id = 'killWeeksChart';
     host.appendChild(chart);
-    renderHorizontalBars('killWeeksChart', weeks, 'auto_returned_searches', 'week', '完了週の観測がありません。');
+    renderHorizontalBars('killWeeksChart', weeks, 'auto_strong_contribution_decisions', 'week', '完了週の観測がありません。');
   }
   const note = document.createElement('div');
   note.className = 'metrics-note';
-  note.textContent = '正式判定は Phase 2（引用計測）以降です。保守時間は本ダッシュボードの対象外です。';
+  note.textContent = 'エージェントが最終判断時に申告した観測値です。因果効果の証明ではなく、未計測の検索は判定へ含めません。';
   host.appendChild(note);
+}
+
+function renderMeasurementClients(rows) {
+  const tbody = document.getElementById('measurementClientRows');
+  clearElement(tbody);
+  if (!rows.length) {
+    emptyTableRow(tbody, 5, '最終判断まで計測できる検索がありません。');
+    return;
+  }
+  rows.forEach(row => {
+    const tr = document.createElement('tr');
+    [row.client || 'unknown', numberOrNull(row.measurable) || 0, numberOrNull(row.resolved) || 0,
+      percent(row.measurement_rate), numberOrNull(row.strong) || 0].forEach((value, index) => {
+      const td = document.createElement('td');
+      td.textContent = String(value);
+      if (index === 0) td.className = 'mono';
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
+}
+
+function renderContributionFacts(rows) {
+  const tbody = document.getElementById('contributionFactRows');
+  clearElement(tbody);
+  if (!rows.length) {
+    emptyTableRow(tbody, 5, '貢献を集計できるファクトがありません。');
+    return;
+  }
+  rows.forEach(row => {
+    const tr = document.createElement('tr');
+    [row.fact_id || '—', numberOrNull(row.returned_searches) || 0,
+      numberOrNull(row.used_decisions) || 0, numberOrNull(row.strong_decisions) || 0,
+      percent(row.observed_use_rate)].forEach((value, index) => {
+      const td = document.createElement('td');
+      td.textContent = String(value);
+      if (index === 0) td.className = 'mono';
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
 }
 
 function renderMetrics(data) {
   const search = data.search || {};
   const weekly = Array.isArray(search.weekly) ? search.weekly : [];
   const corpus = data.corpus || {};
+  const contribution = data.contribution || {};
+  renderMetricsSummary(data);
   renderStats(data);
   renderWeeklySearch(weekly);
   renderReturnRate(weekly);
   renderEval(data.eval || {});
-  renderHorizontalBars('namespaceChart', Array.isArray(corpus.namespaces) ? corpus.namespaces : [], 'count', 'namespace', corpus.available === false ? 'この backend ではコーパス指標を利用できません。' : 'active ファクトがありません。');
+  renderHorizontalBars('namespaceChart', Array.isArray(corpus.namespaces) ? corpus.namespaces : [], 'count', 'namespace', corpus.available === false ? '現在の保存方式では、登録データの状態を集計できません。' : '有効なファクトがありません。');
   renderHorizontalBars('clientChart', Array.isArray(search.clients) ? search.clients : [], 'count', 'client', '検索ログがありません。');
+  const effectLabels = {
+    changed_action: '行動を変更',
+    prevented_error: '誤りを防止',
+    confirmed: '確認を補強',
+    none: '不採用',
+  };
+  const effectRows = Object.entries(contribution.effects || {}).map(([effect, count]) => ({
+    label: effectLabels[effect] || effect, count,
+  }));
+  renderHorizontalBars('effectChart', effectRows, 'count', 'label', '最終判断の記録がありません。');
+  const reasonLabels = {
+    irrelevant: '関連しない',
+    already_known: '既知だった',
+    stale: '古い',
+    conflict: '矛盾した',
+    insufficient: '不十分',
+  };
+  const reasonRows = (Array.isArray(contribution.no_use_reasons) ? contribution.no_use_reasons : []).map(row => ({
+    label: reasonLabels[row.reason] || row.reason, count: row.count,
+  }));
+  renderHorizontalBars('noUseReasonChart', reasonRows, 'count', 'label', '不採用の記録はありません。');
+  renderMeasurementClients(Array.isArray(contribution.clients) ? contribution.clients : []);
+  renderContributionFacts(Array.isArray(contribution.facts) ? contribution.facts : []);
   renderKillCriteria(data.kill_criteria || {});
   renderZeroHits(Array.isArray(data.zero_hit) ? data.zero_hit : []);
   renderUnreturned(corpus.unreturned || {}, corpus.available);

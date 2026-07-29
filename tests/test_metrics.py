@@ -91,11 +91,57 @@ def _four_completed_weeks(counts: list[int]) -> list[dict]:
     records = []
     for offset, count in enumerate(reversed(counts), start=1):
         week = current - timedelta(weeks=offset)
-        records.append(usage_at(week, hits=0, outcome="ok"))  # marks the week observed
+        marker_id = f"marker-{offset}"
         records.extend(
-            usage_at(week + timedelta(hours=i + 1), hits=1, outcome="ok", reason="auto-guideline")
-            for i in range(count)
+            [
+                usage_at(
+                    week,
+                    hits=1,
+                    outcome="ok",
+                    reason="auto-guideline",
+                    client="codex",
+                    search_id=marker_id,
+                    fact_ids=["F"],
+                ),
+                {
+                    "tool": "plk_record_decision",
+                    "ts": week.isoformat(),
+                    "client": "codex",
+                    "decision_id": f"marker-decision-{offset}",
+                    "search_ids": [marker_id],
+                    "used_fact_ids": [],
+                    "effect": "none",
+                    "no_use_reason": "irrelevant",
+                    "outcome": "recorded",
+                },
+            ]
         )
+        for index in range(count):
+            search_id = f"strong-{offset}-{index}"
+            timestamp = week + timedelta(hours=index + 1)
+            records.extend(
+                [
+                    usage_at(
+                        timestamp,
+                        hits=1,
+                        outcome="ok",
+                        reason="auto-guideline",
+                        client="codex",
+                        search_id=search_id,
+                        fact_ids=["F"],
+                    ),
+                    {
+                        "tool": "plk_record_decision",
+                        "ts": timestamp.isoformat(),
+                        "client": "codex",
+                        "decision_id": f"decision-{offset}-{index}",
+                        "search_ids": [search_id],
+                        "used_fact_ids": ["F"],
+                        "effect": "changed_action",
+                        "outcome": "recorded",
+                    },
+                ]
+            )
     return records
 
 
@@ -103,12 +149,12 @@ def test_kill_criteria_three_verdicts_and_ignores_current_week():
     empty = build_metrics([], [], [], now=NOW, tz=JST)["kill_criteria"]
     assert empty["verdict"] == "inconclusive"
     breached = build_metrics(_four_completed_weeks([0, 1, 2, 0]), [], [], now=NOW, tz=JST)
-    assert breached["kill_criteria"]["verdict"] == "proxy_breached"
+    assert breached["kill_criteria"]["verdict"] == "observed_breached"
     ok_usage = _four_completed_weeks([0, 1, 3, 0])
     ok_usage += [usage_at(datetime(2026, 7, 13, tzinfo=JST), hits=10,
                           outcome="ok", reason="auto-guideline")]
     ok = build_metrics(ok_usage, [], [], now=NOW, tz=JST)["kill_criteria"]
-    assert ok["verdict"] == "proxy_ok"
+    assert ok["verdict"] == "observed_ok"
     assert all(row["week"] != "2026-07-13" for row in ok["weeks"])
 
 
@@ -121,3 +167,102 @@ def test_eval_grouping_sorts_and_keeps_queries_hash():
     ]
     rows = build_metrics([], [], history, now=NOW, tz=JST)["eval"]["graph"]
     assert [row["queries_hash"] for row in rows] == ["sha256:a", "sha256:b"]
+
+
+def test_contribution_separates_unmeasured_adoption_and_strong_effects():
+    usage = [
+        usage_at(
+            NOW,
+            search_id="S1",
+            client="codex",
+            hits=2,
+            outcome="ok",
+            fact_ids=["F1", "F2"],
+        ),
+        usage_at(
+            NOW,
+            search_id="S2",
+            client="codex",
+            hits=1,
+            outcome="ok",
+            fact_ids=["F2"],
+        ),
+        usage_at(
+            NOW,
+            search_id="S3",
+            client="claude",
+            hits=1,
+            outcome="ok",
+            fact_ids=["F3"],
+        ),
+        usage_at(NOW, search_id="ZERO", client="codex", hits=0, outcome="ok"),
+        {
+            "tool": "plk_record_decision",
+            "ts": NOW.isoformat(),
+            "client": "codex",
+            "decision_id": "D1",
+            "search_ids": ["S1", "S2"],
+            "used_fact_ids": ["F2"],
+            "effect": "prevented_error",
+            "outcome": "recorded",
+        },
+    ]
+    contribution = build_metrics(usage, [], [], now=NOW, tz=JST)["contribution"]
+    assert contribution["hit_searches"] == 3
+    assert contribution["resolved_hit_searches"] == 2
+    assert contribution["unresolved_hit_searches"] == 1
+    assert contribution["measurement_rate"] == 2 / 3
+    assert contribution["decisions"] == 1
+    assert contribution["adopted_decisions"] == 1
+    assert contribution["strong_contribution_decisions"] == 1
+    assert contribution["effects"]["prevented_error"] == 1
+    assert contribution["clients"][0] == {
+        "client": "codex",
+        "measurable": 2,
+        "resolved": 2,
+        "adopted": 1,
+        "strong": 1,
+        "measurement_rate": 1,
+    }
+    facts = {row["fact_id"]: row for row in contribution["facts"]}
+    assert facts["F2"]["returned_searches"] == 2
+    assert facts["F2"]["used_decisions"] == 1
+    assert facts["F2"]["strong_decisions"] == 1
+
+
+def test_contribution_ignores_invalid_or_cross_client_decision_records():
+    usage = [
+        usage_at(
+            NOW,
+            search_id="S1",
+            client="codex",
+            hits=1,
+            outcome="ok",
+            fact_ids=["F1"],
+        ),
+        {
+            "tool": "plk_record_decision",
+            "ts": NOW.isoformat(),
+            "client": "claude",
+            "decision_id": "FOREIGN",
+            "search_ids": ["S1"],
+            "used_fact_ids": ["F1"],
+            "effect": "changed_action",
+            "outcome": "recorded",
+        },
+        {
+            "tool": "plk_record_decision",
+            "ts": NOW.isoformat(),
+            "client": "codex",
+            "decision_id": "UNRETURNED",
+            "search_ids": ["S1"],
+            "used_fact_ids": ["OTHER"],
+            "effect": "prevented_error",
+            "outcome": "recorded",
+        },
+    ]
+    contribution = build_metrics(usage, [], [], now=NOW, tz=JST)["contribution"]
+    assert contribution["resolved_hit_searches"] == 0
+    assert contribution["unresolved_hit_searches"] == 1
+    assert contribution["decisions"] == 0
+    assert contribution["strong_contribution_decisions"] == 0

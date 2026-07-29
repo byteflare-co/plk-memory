@@ -104,6 +104,69 @@ async def test_search_logs_outcome_latency_and_search_id_on_all_paths(ctx, monke
         assert isinstance(record["latency_ms"], int) and record["latency_ms"] >= 0
 
 
+async def test_record_decision_links_search_to_exact_returned_fact(ctx):
+    _, app, _ = ctx
+    services = app.state.services
+    from plk_memory.auth import current_client
+
+    current_client.set("claude-code")
+    created = await services.tool_add(**VALID_ARGS)
+    await services.sync.sync()
+    searched = await services.tool_search(
+        query="中間申告 前期税額",
+        reason="auto-guideline",
+    )
+    result = await services.tool_record_decision(
+        decision_id="decision-1",
+        search_ids=[searched["search_id"]],
+        used_fact_ids=[created["fact_id"]],
+        effect="prevented_error",
+    )
+    replay = await services.tool_record_decision(
+        decision_id="decision-1",
+        search_ids=[searched["search_id"]],
+        used_fact_ids=[created["fact_id"]],
+        effect="prevented_error",
+    )
+
+    assert result == {
+        "recorded": True,
+        "replayed": False,
+        "decision_id": "decision-1",
+    }
+    assert replay["replayed"] is True
+    usage = await services.ui_usage_records()
+    decision = usage[-1]
+    assert decision["used_fact_refs"][0]["fact_id"] == created["fact_id"]
+    assert len(decision["used_fact_refs"][0]["content_hash"]) == 64
+
+
+async def test_telemetry_failure_does_not_block_search_or_main_task(ctx, monkeypatch):
+    _, app, _ = ctx
+    services = app.state.services
+    from plk_memory.auth import current_client
+
+    async def fail(*args, **kwargs):
+        raise OSError("disk unavailable")
+
+    monkeypatch.setattr(services.usage, "record_search", fail)
+    searched = await services.tool_search("nonblocking")
+    assert searched["degraded"] is False
+    assert len(searched["search_id"]) == 26
+
+    current_client.set("claude-code")
+    monkeypatch.setattr(services.usage, "record_decision", fail)
+    decision = await services.tool_record_decision(
+        decision_id="decision-nonblocking",
+        search_ids=[searched["search_id"]],
+        used_fact_ids=[],
+        effect="none",
+        no_use_reason="irrelevant",
+    )
+    assert decision["recorded"] is False
+    assert decision["non_blocking"] is True
+
+
 async def test_admin_reindex_blocks_writes(ctx):
     c, app, graph = ctx
     svcs = app.state.services

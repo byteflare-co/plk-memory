@@ -18,6 +18,11 @@ _USAGE_TYPES: dict[str, type | tuple[type, ...]] = {
     "reason": str,
     "fact_id": str,
     "search_id": str,
+    "decision_id": str,
+    "query_hash": str,
+    "effect": str,
+    "no_use_reason": str,
+    "request_hash": str,
     "outcome": str,
 }
 
@@ -82,6 +87,23 @@ def _read_jsonl(path: Path, field_types: dict[str, Any]) -> list[dict]:
             or not all(isinstance(item, str) for item in fact_ids)
         ):
             record.pop("fact_ids", None)
+        for field in ("search_ids", "used_fact_ids"):
+            values = record.get(field)
+            if values is not None and (
+                not isinstance(values, list)
+                or not all(isinstance(item, str) for item in values)
+            ):
+                record.pop(field, None)
+        for field in ("fact_refs", "used_fact_refs"):
+            values = record.get(field)
+            if values is not None and (
+                not isinstance(values, list)
+                or not all(
+                    isinstance(item, dict) and isinstance(item.get("fact_id"), str)
+                    for item in values
+                )
+            ):
+                record.pop(field, None)
         records.append(record)
     return records
 

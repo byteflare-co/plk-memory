@@ -147,6 +147,7 @@ tags: []                    # triplet ingest モード時は 1 件以上必須
 | ツール | 機能 | 認可 |
 |---|---|---|
 | `plk_search` | ハイブリッド検索（query, namespace[], kind, status, 期間）。**Byteflare 既定 = 全 namespace（単一 group）** | read |
+| `plk_record_decision` | 1回以上の検索を最終判断へ結び付け、採用ファクトと影響（行動変更・誤り防止・確認補強・不採用）を冪等記録 | read |
 | `plk_add` | 知見追加。**`supersedes: [id]` オプションで旧ファクトの invalidate まで同一 commit でアトミックに実行** | write |
 | `plk_propose_promotion` | PromotionRequest 作成 → GitHub PR 生成。**push 完了（local==origin/main）がプリコンディション** | write |
 | `plk_invalidate` | 無効化（`invalidation_reason` 必須 → frontmatter へ書き込み → commit ＋ グラフから削除） | write |
@@ -182,7 +183,7 @@ tags: []                    # triplet ingest モード時は 1 件以上必須
 - **記憶汚染ゲートの実効化**（レビュー指摘採用）: written_by はサーバーがトークンから導出（申告無視）。API 経由の source_type 上限は `agent`（`user` は人間の PR 直編集のみ・CI 強制）。「上方向の偽装」をツールレベルで遮断。
 - **shared 直 push バイパス対策**: ingest 側を信頼アンカーにする。`shared/` 配下の変更は「approving review 付き merged PR 由来」を GitHub API で検証してから ingest。直 push 由来の shared/ 変更は隔離＋アラート。API の push 用資格情報は fine-grained PAT（対象リポ限定・contents:write のみ）とし、PR 作成用と分離。
 - **昇格 PR の CI 必須チェック**: (a) 変更は `domains/*→shared/*` の rename・1 ファイルのみ・内容差分は frontmatter の `namespace:` 行 1 行（`plk.domain.<d>` → `plk.shared`）のみ許容（※当初案「rename 100%・内容変更なし」は namespace↔パス一致チェックと構造的に両立不能なことが Phase 0 実装の最終レビューで判明し、2026-07-02 にこの形へ確定） (b) source_type ≠ external-untrusted (c) PR 本文は固定テンプレート生成・HTML コメント/生 HTML 除去。運用規約「承認判断は PR 本文でなく Files changed を正とする」。
-- **ハードデリート runbook（改訂）**: 手順 1 = **該当シークレットの失効・ローテーション**（Anthropic/Tailscale/freee 各コンソール）。手順 2 以降 = API 停止 → `git filter-repo` → GitHub 側残存（dangling commit・PR diff キャッシュ）は「鍵失効済みのため許容」or Support へ purge 依頼を選択 → 全クライアント re-clone → 全 reindex。**利用ログは本文を記録しない**（コンテンツハッシュ＋メタデータのみ。消せない残存箇所を作らない）。
+- **ハードデリート runbook（改訂）**: 手順 1 = **該当シークレットの失効・ローテーション**（Anthropic/Tailscale/freee 各コンソール）。手順 2 以降 = API 停止 → `git filter-repo` → GitHub 側残存（dangling commit・PR diff キャッシュ）は「鍵失効済みのため許容」or Support へ purge 依頼を選択 → 全クライアント re-clone → 全 reindex。利用ログはファクト本文・回答本文・自由記述の判断理由を記録しない。検索文previewは既定30日で削除し、以後はhash＋構造化メタデータだけを残す。
 - EC2 デプロイ注意（検証済み）: MCP SDK の DNS リバインディング保護 → 実ホスト名では transport_security の allowlist 必須。リバースプロキシは /mcp でエラー時も HTML を返さない（Hermes の content-type プリフライト対策）。
 
 ## 8. 障害・縮退（v3 §9.5 のオフライン契約）
@@ -193,10 +194,10 @@ tags: []                    # triplet ingest モード時は 1 件以上必須
 
 ## 9. 運用設計
 
-- **検索を呼ぶ動線（must-fix 反映・Phase 1 成果物）**: 各クライアントの設定/スキルに 1 行を配布 — 「税務・社保・法務・過去の意思決定に関わる判断の前に plk_search を引く」。CLAUDE.md / Codex config / Hermes プロンプト / スキル化。利用ログに「自発（プロンプト誘導）か人間の明示指示か」を記録し、チェックポイント判定は動線導入後の期間のみを対象にする。
+- **検索と意思決定を結ぶ動線**: 各クライアントへ「対象判断前に `plk_search(reason="auto-guideline")`。1回以上ヒットしたら最終回答前に関連する全`search_id`をまとめ、`plk_record_decision`を1回呼ぶ。0ヒット時は追加呼び出し不要」を配布する。未記録は未使用と見なさず未計測として分離する。`decision_id`は同じpayloadの再送だけを許し、1つの検索を複数判断へ重複計上しない。
 - **昇格フロー**: `plk_propose_promotion` → PromotionRequest（proposed）→ PR 自動作成 → 人間が GitHub でレビュー・merge → ポーリング検知 → applied ＋ ingest。却下 = クローズ＋理由（rejected）。未処理一覧は `plk_status` から。
 - **キュレーション**: 週次でなく**月次 or 需要駆動**（オンデマンドレポート生成）。矛盾・重複検出は**コーパス 100 件到達まで無効**（小コーパス期の誤検知によるアラート疲れ防止）。レポートは markdown としてデータリポジトリに commit（GitHub がそのまま閲覧・通知導線 = Phase 1 の UI 代替）。
-- **監査**: 別建て監査ストアは作らない（1人運用で読者不在）。書き込み監査 = push 済み git 履歴。読み取り = 利用ログ JSONL。LogSink IF だけ定義し、実体は 組織展開 側で CloudWatch/Aurora に。
+- **観測テレメトリ**: 検索イベント（返却factのrevision/content hashを含む）と意思決定イベントを分離する。Git backendはprivate JSONL、PostgreSQL backendはtenant RLS付きテーブルへ保存する。検索文はhashを恒久保持し、平文previewは既定30日で削除する。回答本文・自由記述理由は保存しない。ダッシュボードの貢献は因果効果ではなくエージェント自己申告による観測値。
 
 ## 10. 逆輸入マッピングと「検証されないもの」（false green 対策）
 

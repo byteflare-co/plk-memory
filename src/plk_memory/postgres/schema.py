@@ -395,6 +395,89 @@ audit_events = Table(
     ),
 )
 
+search_events = Table(
+    "search_events",
+    metadata,
+    Column("organization_id", UUID(as_uuid=True), nullable=False),
+    Column("search_id", String(26), nullable=False),
+    Column("client", String(255), nullable=False),
+    Column("query_preview", Text),
+    Column("query_hash", String(64), nullable=False),
+    Column("reason", String(64)),
+    Column("outcome", String(32), nullable=False),
+    Column("hits", Integer, nullable=False),
+    Column("latency_ms", Integer, nullable=False),
+    Column("fact_refs", JSONB, nullable=False, server_default=text("'[]'::jsonb")),
+    Column(
+        "created_at", DateTime(timezone=True), nullable=False, server_default=func.now()
+    ),
+    PrimaryKeyConstraint("organization_id", "search_id"),
+    CheckConstraint(
+        "outcome IN ('ok', 'degraded', 'error')",
+        name="search_outcome",
+    ),
+    CheckConstraint("hits >= 0", name="nonnegative_hits"),
+    CheckConstraint("latency_ms >= 0", name="nonnegative_latency"),
+    CheckConstraint("jsonb_typeof(fact_refs) = 'array'", name="fact_refs_array"),
+)
+
+decision_events = Table(
+    "decision_events",
+    metadata,
+    Column("organization_id", UUID(as_uuid=True), nullable=False),
+    Column("decision_id", String(64), nullable=False),
+    Column("client", String(255), nullable=False),
+    Column("effect", String(32), nullable=False),
+    Column("no_use_reason", String(32)),
+    Column("search_ids", JSONB, nullable=False),
+    Column("used_fact_refs", JSONB, nullable=False, server_default=text("'[]'::jsonb")),
+    Column("request_hash", String(64), nullable=False),
+    Column(
+        "created_at", DateTime(timezone=True), nullable=False, server_default=func.now()
+    ),
+    PrimaryKeyConstraint("organization_id", "decision_id"),
+    CheckConstraint(
+        "effect IN ('changed_action', 'prevented_error', 'confirmed', 'none')",
+        name="decision_effect",
+    ),
+    CheckConstraint(
+        "no_use_reason IS NULL OR no_use_reason IN "
+        "('irrelevant', 'already_known', 'stale', 'conflict', 'insufficient')",
+        name="decision_no_use_reason",
+    ),
+    CheckConstraint("jsonb_typeof(search_ids) = 'array'", name="search_ids_array"),
+    CheckConstraint(
+        "jsonb_typeof(used_fact_refs) = 'array'", name="used_fact_refs_array"
+    ),
+)
+
+decision_search_links = Table(
+    "decision_search_links",
+    metadata,
+    Column("organization_id", UUID(as_uuid=True), nullable=False),
+    Column("search_id", String(26), nullable=False),
+    Column("decision_id", String(64), nullable=False),
+    PrimaryKeyConstraint("organization_id", "search_id"),
+    ForeignKeyConstraint(
+        ["organization_id", "search_id"],
+        [
+            f"{SCHEMA}.search_events.organization_id",
+            f"{SCHEMA}.search_events.search_id",
+        ],
+        name="fk_decision_search_links_org_search",
+        ondelete="CASCADE",
+    ),
+    ForeignKeyConstraint(
+        ["organization_id", "decision_id"],
+        [
+            f"{SCHEMA}.decision_events.organization_id",
+            f"{SCHEMA}.decision_events.decision_id",
+        ],
+        name="fk_decision_search_links_org_decision",
+        ondelete="CASCADE",
+    ),
+)
+
 
 Index(
     "ix_knowledge_facts_org_namespace_status",
@@ -443,6 +526,16 @@ Index(
     audit_events.c.resource_type,
     audit_events.c.resource_id,
     audit_events.c.created_at,
+)
+Index(
+    "ix_search_events_org_created",
+    search_events.c.organization_id,
+    search_events.c.created_at,
+)
+Index(
+    "ix_decision_events_org_created",
+    decision_events.c.organization_id,
+    decision_events.c.created_at,
 )
 
 

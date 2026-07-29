@@ -25,6 +25,7 @@ from plk_memory.domain import (
 from plk_memory.ports import FactMissing, RevisionConflict
 from plk_memory.postgres.application import PostgresAppServices
 from plk_memory.settings import Settings
+from plk_memory.telemetry import DecisionCommand
 
 
 ORG = UUID("00000000-0000-0000-0000-000000000001")
@@ -153,7 +154,32 @@ class FakeIndex:
         return None
 
 
-def services(repository: FakeRepository, index: FakeIndex) -> PostgresAppServices:
+class FakeTelemetry:
+    def __init__(self) -> None:
+        self.searches = []
+        self.decisions = []
+
+    async def record_search(self, **values):
+        self.searches.append(values)
+
+    async def record_decision(self, *, client, command):
+        self.decisions.append((client, command))
+        return {
+            "recorded": True,
+            "replayed": False,
+            "decision_id": command.decision_id,
+        }
+
+    async def list_usage(self):
+        return [{"tool": "plk_search", "search_id": "S1"}]
+
+
+def services(
+    repository: FakeRepository,
+    index: FakeIndex,
+    *,
+    telemetry=None,
+) -> PostgresAppServices:
     actor = ActorContext(
         organization_id=ORG,
         actor_id="service:test",
@@ -167,6 +193,7 @@ def services(repository: FakeRepository, index: FakeIndex) -> PostgresAppService
         actor_provider=lambda: actor,
         scope_provider=lambda: scope,
         settings=Settings.model_construct(),
+        telemetry=telemetry,
     )
 
 
@@ -201,6 +228,46 @@ async def test_search_rehydrates_current_database_revision_and_order():
     ]
     assert index.last_query is not None
     assert index.last_query.filters.limit == 50
+
+
+async def test_search_and_decision_use_common_postgres_telemetry_contract():
+    telemetry = FakeTelemetry()
+    app = services(
+        FakeRepository([record("F1", revision=7)]),
+        FakeIndex([IndexCandidate(fact_id="F1", indexed_revision=6)]),
+        telemetry=telemetry,
+    )
+
+    searched = await app.tool_search("database", reason="auto-guideline")
+    decision = await app.tool_record_decision(
+        decision_id="D1",
+        search_ids=[searched["search_id"]],
+        used_fact_ids=["F1"],
+        effect="confirmed",
+    )
+
+    assert len(searched["search_id"]) == 26
+    assert telemetry.searches[0]["fact_refs"][0].model_dump() == {
+        "fact_id": "F1",
+        "revision": 7,
+        "content_hash": None,
+    }
+    assert telemetry.searches[0]["reason"] == "auto-guideline"
+    assert decision["recorded"] is True
+    assert telemetry.decisions == [
+        (
+            "service:test",
+            DecisionCommand(
+                decision_id="D1",
+                search_ids=(searched["search_id"],),
+                used_fact_ids=("F1",),
+                effect="confirmed",
+            ),
+        )
+    ]
+    assert await app.ui_usage_records() == [
+        {"tool": "plk_search", "search_id": "S1"}
+    ]
 
 
 async def test_add_passes_idempotency_and_expected_superseded_revision():

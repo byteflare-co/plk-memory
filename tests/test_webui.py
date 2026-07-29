@@ -168,7 +168,39 @@ async def test_metrics_frontend_uses_safe_dom_and_metrics_endpoint(uiclient):
     assert response.text.count("innerHTML") == 1
     assert "body.innerHTML = data.body_html" in response.text
     assert "title.textContent" in response.text
-    assert "failures ${failures}" in response.text
+    assert "直近 12 週の障害 ${failures}" in response.text
+
+
+async def test_metrics_frontend_uses_clear_labels(uiclient):
+    page = await uiclient.get("/")
+    script = await uiclient.get("/static/app.js")
+    visible_copy = page.text + script.text
+    assert "継続判断の参考値" in visible_copy
+    assert "登録データの状態" in visible_copy
+    assert "上位 5 件の正解率" in page.text
+    assert "キル基準" not in visible_copy
+    assert "コーパス" not in visible_copy
+    assert "proxy OK" not in visible_copy
+
+
+async def test_metrics_frontend_explains_status_and_next_action(uiclient):
+    page = await uiclient.get("/")
+    script = await uiclient.get("/static/app.js")
+    assert 'id="metricsSummaryTitle"' in page.text
+    assert 'id="metricsActionSummary"' in page.text
+    assert "使われているか" in page.text
+    assert "判断に貢献したか" in page.text
+    assert "未計測の検索は未使用として扱いません" in page.text
+    assert "見方:" in page.text
+    assert "結果が 0 件だった ${noResult} 回の検索を見直す" in script.text
+    assert "完了週の前週比" in script.text
+
+
+async def test_metrics_frontend_uses_readable_type_sizes(uiclient):
+    page = await uiclient.get("/")
+    assert "font-size: 15.5px" in page.text
+    assert ".stat-value { margin-top: 9px; font-size: 30px" in page.text
+    assert ".metric-card h2 { margin: 0; font-size: 17px" in page.text
 
 
 async def test_ui_login_wrong_password(uiclient):
