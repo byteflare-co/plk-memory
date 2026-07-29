@@ -225,12 +225,20 @@ def _zero_hit_queries(usage: list[dict]) -> list[dict]:
             or hits != 0
         ):
             continue
-        if isinstance(query, str):
+        if (
+            isinstance(query_hash, str)
+            and len(query_hash) == 64
+            and all(character in "0123456789abcdef" for character in query_hash)
+        ):
+            group_key = f"hash:{query_hash}"
+            display_query = (
+                query
+                if isinstance(query, str)
+                else f"hash:{query_hash[:12]}…（平文非保存）"
+            )
+        elif isinstance(query, str):
             group_key = f"query:{query}"
             display_query = query
-        elif isinstance(query_hash, str) and len(query_hash) == 64:
-            group_key = f"hash:{query_hash}"
-            display_query = f"hash:{query_hash[:12]}…（平文非保存）"
         else:
             continue
         group = groups.setdefault(
@@ -242,6 +250,8 @@ def _zero_hit_queries(usage: list[dict]) -> list[dict]:
                 "clients": set(),
             },
         )
+        if isinstance(query, str):
+            group["query"] = query
         group["count"] += 1
         if isinstance(record.get("client"), str):
             group["clients"].add(record["client"])

@@ -100,6 +100,39 @@ def test_zero_hits_use_query_hash_when_plaintext_is_not_stored():
     ]
 
 
+def test_zero_hits_merge_plaintext_and_redacted_records_by_query_hash():
+    query_hash = "b" * 64
+    usage = [
+        usage_at(
+            NOW,
+            query="same missing query",
+            query_hash=query_hash,
+            hits=0,
+            outcome="ok",
+            client="codex",
+        ),
+        usage_at(
+            NOW + timedelta(minutes=1),
+            query=None,
+            query_hash=query_hash,
+            hits=0,
+            outcome="ok",
+            client="claude",
+        ),
+    ]
+
+    rows = build_metrics(usage, [], [], now=NOW, tz=JST)["zero_hit"]
+
+    assert rows == [
+        {
+            "query": "same missing query",
+            "count": 2,
+            "last_ts": (NOW + timedelta(minutes=1)).isoformat(),
+            "clients": ["claude", "codex"],
+        }
+    ]
+
+
 def test_corpus_datetime_types_and_unreturned():
     posts = [
         {"id": "01A", "status": "active", "namespace": "plk.domain.tax", "kind": "logic",
