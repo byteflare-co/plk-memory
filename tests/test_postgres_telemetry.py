@@ -13,6 +13,9 @@ pytestmark = pytest.mark.postgres
 
 
 class FailingMaintenanceDatabase:
+    async def ping(self) -> None:
+        raise ConnectionError("temporary maintenance outage")
+
     @asynccontextmanager
     async def worker_transaction(self):
         raise ConnectionError("temporary maintenance outage")
