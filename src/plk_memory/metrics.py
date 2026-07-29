@@ -221,7 +221,7 @@ def _zero_hit_queries(usage: list[dict]) -> list[dict]:
         query_hash = record.get("query_hash")
         if (
             isinstance(query, str)
-            and len(query) < 200
+            and len(query) <= 200
             and isinstance(query_hash, str)
             and len(query_hash) == 64
             and all(character in "0123456789abcdef" for character in query_hash)

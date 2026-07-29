@@ -209,6 +209,34 @@ def test_zero_hits_do_not_guess_legacy_bucket_for_ambiguous_preview():
     assert [row["count"] for row in rows] == [1, 1, 1]
 
 
+def test_zero_hits_merge_exact_200_character_queries_when_hash_matches():
+    query = "x" * 200
+    query_hash = hashlib.sha256(query.encode()).hexdigest()
+    usage = [
+        usage_at(
+            NOW,
+            query=query,
+            hits=0,
+            outcome="ok",
+            client="legacy",
+        ),
+        usage_at(
+            NOW + timedelta(minutes=1),
+            query=query,
+            query_hash=query_hash,
+            hits=0,
+            outcome="ok",
+            client="codex",
+        ),
+    ]
+
+    rows = build_metrics(usage, [], [], now=NOW, tz=JST)["zero_hit"]
+
+    assert len(rows) == 1
+    assert rows[0]["count"] == 2
+    assert rows[0]["clients"] == ["codex", "legacy"]
+
+
 def test_corpus_datetime_types_and_unreturned():
     posts = [
         {"id": "01A", "status": "active", "namespace": "plk.domain.tax", "kind": "logic",
