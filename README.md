@@ -155,7 +155,8 @@ Gitにファイルとして保存する構成は、人間が直接読み、レ�
 検索イベントと意思決定イベントはGit backendでは権限`0600`のJSONL、PostgreSQL backendでは
 tenant RLS付きテーブルへ保存します。検索文のSHA-256は両backendで恒久保持します。Git backend
 だけが平文previewを既定30日で保持して期限削除し、PostgreSQL backendはDB制約で平文保存を禁止して
-常にhashと構造化メタデータだけを残します。
+常にhashと構造化メタデータだけを残します。PostgreSQLのzero-hit一覧はhash先頭12桁を非可逆な
+bucket labelとして使い、同じ検索の再発回数を追跡します。
 自由記述の判断理由や回答本文は保存しません。メトリクスは因果効果ではなく、
 エージェントの最終判断時申告に基づく「観測貢献」です。
 

@@ -67,6 +67,39 @@ def test_zero_hits_group_all_then_sort_and_exclude_failures():
     )
 
 
+def test_zero_hits_use_query_hash_when_plaintext_is_not_stored():
+    query_hash = "a" * 64
+    usage = [
+        usage_at(
+            NOW,
+            query=None,
+            query_hash=query_hash,
+            hits=0,
+            outcome="ok",
+            client="codex",
+        ),
+        usage_at(
+            NOW + timedelta(minutes=1),
+            query=None,
+            query_hash=query_hash,
+            hits=0,
+            outcome="ok",
+            client="claude",
+        ),
+    ]
+
+    rows = build_metrics(usage, [], [], now=NOW, tz=JST)["zero_hit"]
+
+    assert rows == [
+        {
+            "query": "hash:aaaaaaaaaaaa…（平文非保存）",
+            "count": 2,
+            "last_ts": (NOW + timedelta(minutes=1)).isoformat(),
+            "clients": ["claude", "codex"],
+        }
+    ]
+
+
 def test_corpus_datetime_types_and_unreturned():
     posts = [
         {"id": "01A", "status": "active", "namespace": "plk.domain.tax", "kind": "logic",

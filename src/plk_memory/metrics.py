@@ -216,16 +216,32 @@ def _zero_hit_queries(usage: list[dict]) -> list[dict]:
     groups: dict[str, dict] = {}
     for record in _searches(usage):
         query = record.get("query")
+        query_hash = record.get("query_hash")
         hits = record.get("hits")
         if (
             _outcome(record) != "ok"
             or not isinstance(hits, int)
             or isinstance(hits, bool)
             or hits != 0
-            or not isinstance(query, str)
         ):
             continue
-        group = groups.setdefault(query, {"count": 0, "last_ts": None, "clients": set()})
+        if isinstance(query, str):
+            group_key = f"query:{query}"
+            display_query = query
+        elif isinstance(query_hash, str) and len(query_hash) == 64:
+            group_key = f"hash:{query_hash}"
+            display_query = f"hash:{query_hash[:12]}…（平文非保存）"
+        else:
+            continue
+        group = groups.setdefault(
+            group_key,
+            {
+                "query": display_query,
+                "count": 0,
+                "last_ts": None,
+                "clients": set(),
+            },
+        )
         group["count"] += 1
         if isinstance(record.get("client"), str):
             group["clients"].add(record["client"])
@@ -236,12 +252,12 @@ def _zero_hit_queries(usage: list[dict]) -> list[dict]:
                 group["last_ts"] = ts.isoformat()
     rows = [
         {
-            "query": query,
+            "query": group["query"],
             "count": group["count"],
             "last_ts": group["last_ts"],
             "clients": sorted(group["clients"]),
         }
-        for query, group in groups.items()
+        for group in groups.values()
     ]
     rows.sort(key=lambda row: row["query"])
     rows.sort(

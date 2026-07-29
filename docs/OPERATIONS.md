@@ -73,8 +73,9 @@ uv run plk-index-worker
 `0003_decision_telemetry` migrationは、検索イベント・意思決定イベント・両者の
 1対1解決リンクをtenant RLS付きで作る。`0004_postgres_query_hash_only`は既存の検索文previewを
 消去し、DB制約で以後の平文保存を禁止する。PostgreSQL backendは検索文のSHA-256と構造化
-メタデータだけを残す。`PLK_USAGE_RAW_QUERY_RETENTION_DAYS`（既定30日、0〜365日）は
-Git backendのprivate JSONL previewだけに適用する。
+メタデータだけを残し、zero-hit一覧はhash先頭12桁をbucket labelとして同一検索を集計する。
+`PLK_USAGE_RAW_QUERY_RETENTION_DAYS`（既定30日、0〜365日）はGit backendのprivate JSONL
+previewだけに適用する。
 
 `/healthz` はDBへ接続できない場合503。Graphiti/Ollama停止時はDB writeを維持し、検索だけdegradedになる。
 workerはGraphへの外部副作用をDB leaseだけではfenceできないため1件ずつclaimし、同一factのrevisionを
