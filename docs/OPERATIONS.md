@@ -71,13 +71,10 @@ uv run plk-index-worker
 ```
 
 `0003_decision_telemetry` migrationは、検索イベント・意思決定イベント・両者の
-1対1解決リンクをtenant RLS付きで作る。検索文previewの保持期間は
-`PLK_USAGE_RAW_QUERY_RETENTION_DAYS`（既定30日、0〜365日）で設定し、期限後も
-集計用のSHA-256だけを残す。PostgreSQLの期限処理は`PLK_WORKER_DATABASE_URL`の
-BYPASSRLS専用接続で起動時に全tenantを掃除し、次の期限を非同期で待つ。この接続が未設定なら
-平文previewは保存せずhash-onlyで動作する。接続障害中も同じfail-closed動作とし、
-各検索の保存直前に保守接続を確認する。期限処理は60秒ごとに再試行し、復旧後の新規検索から
-preview保存を再開する。
+1対1解決リンクをtenant RLS付きで作る。`0004_postgres_query_hash_only`は既存の検索文previewを
+消去し、DB制約で以後の平文保存を禁止する。PostgreSQL backendは検索文のSHA-256と構造化
+メタデータだけを残す。`PLK_USAGE_RAW_QUERY_RETENTION_DAYS`（既定30日、0〜365日）は
+Git backendのprivate JSONL previewだけに適用する。
 
 `/healthz` はDBへ接続できない場合503。Graphiti/Ollama停止時はDB writeを維持し、検索だけdegradedになる。
 workerはGraphへの外部副作用をDB leaseだけではfenceできないため1件ずつclaimし、同一factのrevisionを

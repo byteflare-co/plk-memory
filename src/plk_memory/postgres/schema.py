@@ -419,6 +419,7 @@ search_events = Table(
     CheckConstraint("hits >= 0", name="nonnegative_hits"),
     CheckConstraint("latency_ms >= 0", name="nonnegative_latency"),
     CheckConstraint("jsonb_typeof(fact_refs) = 'array'", name="fact_refs_array"),
+    CheckConstraint("query_preview IS NULL", name="query_preview_hash_only"),
 )
 
 decision_events = Table(

@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
-import logging
-from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
-from sqlalchemy import func, insert, select, update
+from sqlalchemy import insert, select
 from sqlalchemy.exc import IntegrityError
 
 from plk_memory.postgres.database import PostgresDatabase
@@ -24,25 +21,15 @@ from plk_memory.telemetry import (
     TelemetryError,
 )
 
-logger = logging.getLogger(__name__)
-
-
 class PostgresTelemetryStore:
     def __init__(
         self,
         database: PostgresDatabase,
         *,
         organization_provider,
-        raw_query_retention_days: int,
-        maintenance_database: PostgresDatabase | None = None,
     ) -> None:
         self.database = database
-        self.maintenance_database = maintenance_database
         self._organization_provider = organization_provider
-        self.raw_query_retention_days = raw_query_retention_days
-        self._redaction_task: asyncio.Task[None] | None = None
-        self._redaction_wakeup = asyncio.Event()
-        self._start_lock = asyncio.Lock()
 
     def _organization_id(self) -> UUID:
         return self._organization_provider()
@@ -60,36 +47,13 @@ class PostgresTelemetryStore:
         outcome: str,
     ) -> None:
         organization_id = self._organization_id()
-        if (
-            self.maintenance_database is not None
-            and self.raw_query_retention_days > 0
-            and (self._redaction_task is None or self._redaction_task.done())
-        ):
-            await self.start()
-        preview_available = False
-        if (
-            self.maintenance_database is not None
-            and self.raw_query_retention_days > 0
-        ):
-            try:
-                await self.maintenance_database.ping()
-                preview_available = True
-            except Exception:  # noqa: BLE001 - hash-only fallback preserves search
-                logger.warning(
-                    "PostgreSQL telemetry preview disabled: maintenance unavailable"
-                )
         async with self.database.transaction(organization_id) as session:
             await session.execute(
                 insert(search_events).values(
                     organization_id=organization_id,
                     search_id=search_id,
                     client=client,
-                    query_preview=(
-                        query[:200] or None
-                        if self.raw_query_retention_days > 0
-                        and preview_available
-                        else None
-                    ),
+                    query_preview=None,
                     query_hash=hashlib.sha256(query.encode()).hexdigest(),
                     reason=reason[:64] if reason else None,
                     outcome=outcome,
@@ -101,8 +65,6 @@ class PostgresTelemetryStore:
                     ],
                 )
             )
-        if preview_available:
-            self._redaction_wakeup.set()
 
     async def record_decision(
         self,
@@ -237,7 +199,6 @@ class PostgresTelemetryStore:
     async def list_usage(self) -> list[dict]:
         organization_id = self._organization_id()
         async with self.database.transaction(organization_id) as session:
-            await self._redact_expired(session)
             searches = (
                 await session.execute(
                     select(search_events).order_by(search_events.c.created_at)
@@ -285,97 +246,3 @@ class PostgresTelemetryStore:
         )
         records.sort(key=lambda item: item["ts"])
         return records
-
-    async def start(self) -> None:
-        if (
-            self.maintenance_database is None
-            or self.raw_query_retention_days <= 0
-        ):
-            return
-        async with self._start_lock:
-            if self._redaction_task is not None and not self._redaction_task.done():
-                return
-            retry = False
-            try:
-                next_redaction = await self._redact_all_expired()
-            except Exception:  # noqa: BLE001 - hash-only fallback preserves search
-                logger.exception("PostgreSQL telemetry preview maintenance unavailable")
-                next_redaction = None
-                retry = True
-            self._redaction_task = asyncio.create_task(
-                self._redact_queries_when_due(next_redaction, retry=retry)
-            )
-
-    async def close(self) -> None:
-        task = self._redaction_task
-        self._redaction_task = None
-        if task is not None:
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
-        if self.maintenance_database is not None:
-            await self.maintenance_database.close()
-
-    async def _redact_queries_when_due(
-        self,
-        next_redaction: datetime | None,
-        *,
-        retry: bool,
-    ) -> None:
-        while True:
-            try:
-                if retry:
-                    await asyncio.sleep(60)
-                else:
-                    self._redaction_wakeup.clear()
-                    if next_redaction is None:
-                        await self._redaction_wakeup.wait()
-                    else:
-                        delay = max(
-                            (
-                                next_redaction - datetime.now(timezone.utc)
-                            ).total_seconds(),
-                            0.05,
-                        )
-                        try:
-                            await asyncio.wait_for(
-                                self._redaction_wakeup.wait(),
-                                timeout=delay,
-                            )
-                        except TimeoutError:
-                            pass
-                next_redaction = await self._redact_all_expired()
-                retry = False
-            except asyncio.CancelledError:
-                raise
-            except Exception:  # noqa: BLE001 - retry without blocking search
-                if not retry:
-                    logger.exception(
-                        "PostgreSQL telemetry preview maintenance interrupted"
-                    )
-                retry = True
-
-    async def _redact_all_expired(self) -> datetime | None:
-        if self.maintenance_database is None:
-            return None
-        async with self.maintenance_database.worker_transaction() as session:
-            await self._redact_expired(session)
-            oldest = await session.scalar(
-                select(func.min(search_events.c.created_at)).where(
-                    search_events.c.query_preview.is_not(None)
-                )
-            )
-        if oldest is None:
-            return None
-        return oldest + timedelta(days=self.raw_query_retention_days)
-
-    async def _redact_expired(self, session) -> None:
-        await session.execute(
-            update(search_events)
-            .where(
-                search_events.c.query_preview.is_not(None),
-                search_events.c.created_at
-                < datetime.now(timezone.utc)
-                - timedelta(days=self.raw_query_retention_days),
-            )
-            .values(query_preview=None)
-        )

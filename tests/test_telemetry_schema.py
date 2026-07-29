@@ -23,4 +23,8 @@ def test_telemetry_tables_are_tenant_scoped_and_link_each_search_once():
     ]
     assert "query_preview" in search_events.c
     assert "query_hash" in search_events.c
+    assert any(
+        constraint.name == "ck_search_events_query_preview_hash_only"
+        for constraint in search_events.constraints
+    )
     assert "used_fact_refs" in decision_events.c

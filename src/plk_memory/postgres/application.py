@@ -86,9 +86,6 @@ class PostgresAppServices:
         )
 
     async def start(self) -> None:
-        telemetry_start = getattr(self.telemetry, "start", None)
-        if telemetry_start is not None:
-            await telemetry_start()
         await self.search_index.start()
 
     async def check_database(self) -> None:
@@ -97,9 +94,6 @@ class PostgresAppServices:
         await self._health_callback()
 
     async def close(self) -> None:
-        telemetry_close = getattr(self.telemetry, "close", None)
-        if telemetry_close is not None:
-            await telemetry_close()
         graph = getattr(self.search_index, "graph", None)
         if graph is not None and hasattr(graph, "close"):
             await graph.close()

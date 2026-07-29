@@ -109,25 +109,12 @@ def build_postgres_services(settings: Settings, graph=None):
         )
 
     projection_status = PostgresProjectionStatus(database)
-    telemetry_maintenance_database = (
-        PostgresDatabase(
-            settings.worker_database_url,
-            pool_size=2,
-            application_name="plk-telemetry-maintenance",
-            allow_cross_organization=True,
-        )
-        if settings.worker_database_url
-        else None
-    )
-
     async def status_provider() -> dict:
         return await projection_status.snapshot(scope_provider().organization_id)
 
     telemetry = PostgresTelemetryStore(
         database,
         organization_provider=lambda: scope_provider().organization_id,
-        raw_query_retention_days=settings.usage_raw_query_retention_days,
-        maintenance_database=telemetry_maintenance_database,
     )
 
     return PostgresAppServices(

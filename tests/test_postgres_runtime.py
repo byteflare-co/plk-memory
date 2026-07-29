@@ -1,9 +1,7 @@
 import os
-from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import update
 
 from plk_memory.app import create_app
 from plk_memory.auth import current_actor
@@ -15,7 +13,6 @@ from plk_memory.postgres.outbox import (
     PostgresIndexStateRepository,
 )
 from plk_memory.postgres.repository import PostgresFactRepository
-from plk_memory.postgres.schema import search_events
 from plk_memory.postgres.worker import PostgresIndexWorker
 from plk_memory.settings import Settings
 from tests.fakes import FakeGraphIndex
@@ -129,7 +126,7 @@ async def test_postgres_runtime_write_worker_search_invalidate_roundtrip():
         search_usage = next(
             row for row in usage if row.get("search_id") == search["search_id"]
         )
-        assert search_usage["query"] == "PostgreSQL runtime roundtrip"
+        assert search_usage["query"] is None
         assert len(search_usage["query_hash"]) == 64
 
         other_actor = actor.model_copy(update={"organization_id": uuid4()})
@@ -168,31 +165,6 @@ async def test_postgres_runtime_write_worker_search_invalidate_roundtrip():
         search = await services.tool_search("PostgreSQL runtime roundtrip")
         assert search["hits"] == []
 
-        # A restart must resume retention cleanup for existing rows even when
-        # that tenant performs no later search or metrics read.
-        original_search_id = search_usage["search_id"]
-        await services.close()
-        async with worker_database.worker_transaction() as session:
-            await session.execute(
-                update(search_events)
-                .where(
-                    search_events.c.organization_id == organization_id,
-                    search_events.c.search_id == original_search_id,
-                )
-                .values(created_at=datetime.now(UTC) - timedelta(days=31))
-            )
-        restarted_app = create_app(settings=settings, graph=FakeGraphIndex())
-        services = restarted_app.state.services
-        await services.check_database()
-        await services.start()
-        restarted_usage = await services.ui_usage_records()
-        restarted_search = next(
-            row
-            for row in restarted_usage
-            if row.get("search_id") == original_search_id
-        )
-        assert restarted_search["query"] is None
-        assert len(restarted_search["query_hash"]) == 64
     finally:
         current_actor.reset(token)
         await services.close()
