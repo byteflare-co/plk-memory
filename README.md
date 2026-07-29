@@ -154,7 +154,9 @@ Gitにファイルとして保存する構成は、人間が直接読み、レ�
 
 検索イベントと意思決定イベントはGit backendでは権限`0600`のJSONL、PostgreSQL backendでは
 tenant RLS付きテーブルへ保存します。検索文はSHA-256を恒久保持し、平文プレビューは既定30日で
-削除します。自由記述の判断理由や回答本文は保存しません。メトリクスは因果効果ではなく、
+削除します。PostgreSQLではBYPASSRLS専用の`PLK_WORKER_DATABASE_URL`で全tenantの期限処理を
+再起動時にも再開し、未設定時は平文previewを保存せずhashだけを残します。自由記述の判断理由や
+回答本文は保存しません。メトリクスは因果効果ではなく、
 エージェントの最終判断時申告に基づく「観測貢献」です。
 
 ## Web UIのreviewed writes

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
@@ -23,6 +24,8 @@ from plk_memory.telemetry import (
     TelemetryError,
 )
 
+logger = logging.getLogger(__name__)
+
 
 class PostgresTelemetryStore:
     def __init__(
@@ -31,12 +34,16 @@ class PostgresTelemetryStore:
         *,
         organization_provider,
         raw_query_retention_days: int,
+        maintenance_database: PostgresDatabase | None = None,
     ) -> None:
         self.database = database
+        self.maintenance_database = maintenance_database
         self._organization_provider = organization_provider
         self.raw_query_retention_days = raw_query_retention_days
-        self._redaction_tasks: dict[UUID, asyncio.Task[None]] = {}
-        self._redaction_wakeups: dict[UUID, asyncio.Event] = {}
+        self._redaction_task: asyncio.Task[None] | None = None
+        self._redaction_wakeup = asyncio.Event()
+        self._start_lock = asyncio.Lock()
+        self._maintenance_ready = False
 
     def _organization_id(self) -> UUID:
         return self._organization_provider()
@@ -54,6 +61,12 @@ class PostgresTelemetryStore:
         outcome: str,
     ) -> None:
         organization_id = self._organization_id()
+        if (
+            self.maintenance_database is not None
+            and self.raw_query_retention_days > 0
+            and (self._redaction_task is None or self._redaction_task.done())
+        ):
+            await self.start()
         async with self.database.transaction(organization_id) as session:
             await session.execute(
                 insert(search_events).values(
@@ -63,6 +76,7 @@ class PostgresTelemetryStore:
                     query_preview=(
                         query[:200] or None
                         if self.raw_query_retention_days > 0
+                        and self._maintenance_ready
                         else None
                     ),
                     query_hash=hashlib.sha256(query.encode()).hexdigest(),
@@ -76,8 +90,8 @@ class PostgresTelemetryStore:
                     ],
                 )
             )
-        if self.raw_query_retention_days > 0:
-            self._ensure_redaction_task(organization_id)
+        if self._maintenance_ready:
+            self._redaction_wakeup.set()
 
     async def record_decision(
         self,
@@ -261,55 +275,92 @@ class PostgresTelemetryStore:
         records.sort(key=lambda item: item["ts"])
         return records
 
-    async def close(self) -> None:
-        tasks = list(self._redaction_tasks.values())
-        self._redaction_tasks.clear()
-        self._redaction_wakeups.clear()
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-
-    def _ensure_redaction_task(self, organization_id: UUID) -> None:
-        task = self._redaction_tasks.get(organization_id)
-        if task is None or task.done():
-            self._redaction_wakeups[organization_id] = asyncio.Event()
-            self._redaction_tasks[organization_id] = asyncio.create_task(
-                self._redact_queries_when_due(organization_id)
+    async def start(self) -> None:
+        if (
+            self.maintenance_database is None
+            or self.raw_query_retention_days <= 0
+        ):
+            return
+        async with self._start_lock:
+            if self._redaction_task is not None and not self._redaction_task.done():
+                return
+            retry = False
+            try:
+                next_redaction = await self._redact_all_expired()
+                self._maintenance_ready = True
+            except Exception:  # noqa: BLE001 - hash-only fallback preserves search
+                logger.exception("PostgreSQL telemetry preview maintenance unavailable")
+                next_redaction = None
+                retry = True
+                self._maintenance_ready = False
+            self._redaction_task = asyncio.create_task(
+                self._redact_queries_when_due(next_redaction, retry=retry)
             )
-        self._redaction_wakeups[organization_id].set()
 
-    async def _redact_queries_when_due(self, organization_id: UUID) -> None:
-        try:
-            while True:
-                wakeup = self._redaction_wakeups[organization_id]
-                wakeup.clear()
-                async with self.database.transaction(organization_id) as session:
-                    await self._redact_expired(session)
-                    oldest = await session.scalar(
-                        select(func.min(search_events.c.created_at)).where(
-                            search_events.c.query_preview.is_not(None)
+    async def close(self) -> None:
+        task = self._redaction_task
+        self._redaction_task = None
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        self._maintenance_ready = False
+        if self.maintenance_database is not None:
+            await self.maintenance_database.close()
+
+    async def _redact_queries_when_due(
+        self,
+        next_redaction: datetime | None,
+        *,
+        retry: bool,
+    ) -> None:
+        while True:
+            try:
+                if retry:
+                    await asyncio.sleep(60)
+                else:
+                    self._redaction_wakeup.clear()
+                    if next_redaction is None:
+                        await self._redaction_wakeup.wait()
+                    else:
+                        delay = max(
+                            (
+                                next_redaction - datetime.now(timezone.utc)
+                            ).total_seconds(),
+                            0.05,
                         )
+                        try:
+                            await asyncio.wait_for(
+                                self._redaction_wakeup.wait(),
+                                timeout=delay,
+                            )
+                        except TimeoutError:
+                            pass
+                next_redaction = await self._redact_all_expired()
+                self._maintenance_ready = True
+                retry = False
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - retry without blocking search
+                if not retry:
+                    logger.exception(
+                        "PostgreSQL telemetry preview maintenance interrupted"
                     )
-                if oldest is None:
-                    await wakeup.wait()
-                    continue
-                expires_at = oldest + timedelta(
-                    days=self.raw_query_retention_days
+                self._maintenance_ready = False
+                retry = True
+
+    async def _redact_all_expired(self) -> datetime | None:
+        if self.maintenance_database is None:
+            return None
+        async with self.maintenance_database.worker_transaction() as session:
+            await self._redact_expired(session)
+            oldest = await session.scalar(
+                select(func.min(search_events.c.created_at)).where(
+                    search_events.c.query_preview.is_not(None)
                 )
-                delay = max(
-                    (expires_at - datetime.now(timezone.utc)).total_seconds(),
-                    0.05,
-                )
-                try:
-                    await asyncio.wait_for(wakeup.wait(), timeout=delay)
-                except TimeoutError:
-                    pass
-        finally:
-            current = asyncio.current_task()
-            if self._redaction_tasks.get(organization_id) is current:
-                self._redaction_tasks.pop(organization_id, None)
-                self._redaction_wakeups.pop(organization_id, None)
+            )
+        if oldest is None:
+            return None
+        return oldest + timedelta(days=self.raw_query_retention_days)
 
     async def _redact_expired(self, session) -> None:
         await session.execute(

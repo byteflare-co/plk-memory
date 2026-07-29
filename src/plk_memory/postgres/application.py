@@ -86,6 +86,9 @@ class PostgresAppServices:
         )
 
     async def start(self) -> None:
+        telemetry_start = getattr(self.telemetry, "start", None)
+        if telemetry_start is not None:
+            await telemetry_start()
         await self.search_index.start()
 
     async def check_database(self) -> None:

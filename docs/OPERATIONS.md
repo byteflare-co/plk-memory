@@ -73,7 +73,9 @@ uv run plk-index-worker
 `0003_decision_telemetry` migrationは、検索イベント・意思決定イベント・両者の
 1対1解決リンクをtenant RLS付きで作る。検索文previewの保持期間は
 `PLK_USAGE_RAW_QUERY_RETENTION_DAYS`（既定30日、0〜365日）で設定し、期限後も
-集計用のSHA-256だけを残す。
+集計用のSHA-256だけを残す。PostgreSQLの期限処理は`PLK_WORKER_DATABASE_URL`の
+BYPASSRLS専用接続で起動時に全tenantを掃除し、次の期限を非同期で待つ。この接続が未設定なら
+平文previewは保存せずhash-onlyで動作する。
 
 `/healthz` はDBへ接続できない場合503。Graphiti/Ollama停止時はDB writeを維持し、検索だけdegradedになる。
 workerはGraphへの外部副作用をDB leaseだけではfenceできないため1件ずつclaimし、同一factのrevisionを
