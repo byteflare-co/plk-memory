@@ -133,6 +133,78 @@ def test_zero_hits_merge_plaintext_and_redacted_records_by_query_hash():
     ]
 
 
+def test_zero_hits_merge_legacy_plaintext_with_new_hashed_records():
+    query_hash = "c" * 64
+    usage = [
+        usage_at(
+            NOW,
+            query="legacy missing query",
+            hits=0,
+            outcome="ok",
+            client="legacy",
+        ),
+        usage_at(
+            NOW + timedelta(minutes=1),
+            query="legacy missing query",
+            query_hash=query_hash,
+            hits=0,
+            outcome="ok",
+            client="codex",
+        ),
+        usage_at(
+            NOW + timedelta(minutes=2),
+            query=None,
+            query_hash=query_hash,
+            hits=0,
+            outcome="ok",
+            client="claude",
+        ),
+    ]
+
+    rows = build_metrics(usage, [], [], now=NOW, tz=JST)["zero_hit"]
+
+    assert rows == [
+        {
+            "query": "legacy missing query",
+            "count": 3,
+            "last_ts": (NOW + timedelta(minutes=2)).isoformat(),
+            "clients": ["claude", "codex", "legacy"],
+        }
+    ]
+
+
+def test_zero_hits_do_not_guess_legacy_bucket_for_ambiguous_preview():
+    usage = [
+        usage_at(
+            NOW,
+            query="same truncated preview",
+            hits=0,
+            outcome="ok",
+            client="legacy",
+        ),
+        usage_at(
+            NOW + timedelta(minutes=1),
+            query="same truncated preview",
+            query_hash="d" * 64,
+            hits=0,
+            outcome="ok",
+            client="codex",
+        ),
+        usage_at(
+            NOW + timedelta(minutes=2),
+            query="same truncated preview",
+            query_hash="e" * 64,
+            hits=0,
+            outcome="ok",
+            client="claude",
+        ),
+    ]
+
+    rows = build_metrics(usage, [], [], now=NOW, tz=JST)["zero_hit"]
+
+    assert [row["count"] for row in rows] == [1, 1, 1]
+
+
 def test_corpus_datetime_types_and_unreturned():
     posts = [
         {"id": "01A", "status": "active", "namespace": "plk.domain.tax", "kind": "logic",

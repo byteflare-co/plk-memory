@@ -213,8 +213,26 @@ def _search_stats(usage: list[dict], now: datetime, tz: ZoneInfo) -> dict:
 
 
 def _zero_hit_queries(usage: list[dict]) -> list[dict]:
+    searches = _searches(usage)
+    hashes_by_query: dict[str, set[str]] = {}
+    for record in searches:
+        query = record.get("query")
+        query_hash = record.get("query_hash")
+        if (
+            isinstance(query, str)
+            and isinstance(query_hash, str)
+            and len(query_hash) == 64
+            and all(character in "0123456789abcdef" for character in query_hash)
+        ):
+            hashes_by_query.setdefault(query, set()).add(query_hash)
+    legacy_query_hashes = {
+        query: next(iter(query_hashes))
+        for query, query_hashes in hashes_by_query.items()
+        if len(query_hashes) == 1
+    }
+
     groups: dict[str, dict] = {}
-    for record in _searches(usage):
+    for record in searches:
         query = record.get("query")
         query_hash = record.get("query_hash")
         hits = record.get("hits")
@@ -236,6 +254,9 @@ def _zero_hit_queries(usage: list[dict]) -> list[dict]:
                 if isinstance(query, str)
                 else f"hash:{query_hash[:12]}…（平文非保存）"
             )
+        elif isinstance(query, str) and query in legacy_query_hashes:
+            group_key = f"hash:{legacy_query_hashes[query]}"
+            display_query = query
         elif isinstance(query, str):
             group_key = f"query:{query}"
             display_query = query
