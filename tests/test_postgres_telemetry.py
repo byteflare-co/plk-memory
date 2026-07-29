@@ -22,7 +22,7 @@ class FailingMaintenanceDatabase:
         return None
 
 
-async def test_transient_maintenance_failure_keeps_preview_capture():
+async def test_maintenance_failure_falls_back_to_hash_only():
     database_url = os.environ.get("PLK_TEST_DATABASE_URL")
     if not database_url:
         pytest.skip("PLK_TEST_DATABASE_URL is not configured")
@@ -52,7 +52,7 @@ async def test_transient_maintenance_failure_keeps_preview_capture():
         )
         usage = await telemetry.list_usage()
         recorded = next(row for row in usage if row.get("search_id") == search_id)
-        assert recorded["query"] == "preview survives a transient sweeper outage"
+        assert recorded["query"] is None
         assert len(recorded["query_hash"]) == 64
     finally:
         await telemetry.close()

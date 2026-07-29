@@ -43,6 +43,7 @@ class PostgresTelemetryStore:
         self._redaction_task: asyncio.Task[None] | None = None
         self._redaction_wakeup = asyncio.Event()
         self._start_lock = asyncio.Lock()
+        self._maintenance_ready = False
 
     def _organization_id(self) -> UUID:
         return self._organization_provider()
@@ -75,8 +76,7 @@ class PostgresTelemetryStore:
                     query_preview=(
                         query[:200] or None
                         if self.raw_query_retention_days > 0
-                        and self._redaction_task is not None
-                        and not self._redaction_task.done()
+                        and self._maintenance_ready
                         else None
                     ),
                     query_hash=hashlib.sha256(query.encode()).hexdigest(),
@@ -90,7 +90,7 @@ class PostgresTelemetryStore:
                     ],
                 )
             )
-        if self._redaction_task is not None and not self._redaction_task.done():
+        if self._maintenance_ready:
             self._redaction_wakeup.set()
 
     async def record_decision(
@@ -287,10 +287,12 @@ class PostgresTelemetryStore:
             retry = False
             try:
                 next_redaction = await self._redact_all_expired()
-            except Exception:  # noqa: BLE001 - retry loop preserves search
+                self._maintenance_ready = True
+            except Exception:  # noqa: BLE001 - hash-only fallback preserves search
                 logger.exception("PostgreSQL telemetry preview maintenance unavailable")
                 next_redaction = None
                 retry = True
+                self._maintenance_ready = False
             self._redaction_task = asyncio.create_task(
                 self._redact_queries_when_due(next_redaction, retry=retry)
             )
@@ -301,6 +303,7 @@ class PostgresTelemetryStore:
         if task is not None:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+        self._maintenance_ready = False
         if self.maintenance_database is not None:
             await self.maintenance_database.close()
 
@@ -333,6 +336,7 @@ class PostgresTelemetryStore:
                         except TimeoutError:
                             pass
                 next_redaction = await self._redact_all_expired()
+                self._maintenance_ready = True
                 retry = False
             except asyncio.CancelledError:
                 raise
@@ -341,6 +345,7 @@ class PostgresTelemetryStore:
                     logger.exception(
                         "PostgreSQL telemetry preview maintenance interrupted"
                     )
+                self._maintenance_ready = False
                 retry = True
 
     async def _redact_all_expired(self) -> datetime | None:

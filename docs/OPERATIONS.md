@@ -75,7 +75,8 @@ uv run plk-index-worker
 `PLK_USAGE_RAW_QUERY_RETENTION_DAYS`（既定30日、0〜365日）で設定し、期限後も
 集計用のSHA-256だけを残す。PostgreSQLの期限処理は`PLK_WORKER_DATABASE_URL`の
 BYPASSRLS専用接続で起動時に全tenantを掃除し、次の期限を非同期で待つ。この接続が未設定なら
-平文previewは保存せずhash-onlyで動作する。
+平文previewは保存せずhash-onlyで動作する。接続障害中も同じfail-closed動作とし、
+期限処理は60秒ごとに再試行する。復旧後の新規検索からpreview保存を再開する。
 
 `/healthz` はDBへ接続できない場合503。Graphiti/Ollama停止時はDB writeを維持し、検索だけdegradedになる。
 workerはGraphへの外部副作用をDB leaseだけではfenceできないため1件ずつclaimし、同一factのrevisionを
