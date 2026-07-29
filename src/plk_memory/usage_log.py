@@ -19,22 +19,33 @@ from plk_memory.usage_records import read_usage
 
 
 class UsageLog:
-    def __init__(self, path: Path, *, raw_query_retention_days: int = 30):
+    def __init__(self, path: Path, *, raw_query_retention_days: int | float = 30):
         self.path = path
         self.raw_query_retention_days = raw_query_retention_days
         self._lock = threading.Lock()
+        self._redaction_timer: threading.Timer | None = None
+        self._next_redaction_at: datetime | None = None
+        self._closed = False
         path.parent.mkdir(parents=True, exist_ok=True)
         if path.exists():
             path.chmod(0o600)
+        with self._lock:
+            next_redaction = self._redact_expired_queries()
+            self._schedule_redaction(next_redaction)
 
     def log(self, client: str | None, tool: str, *, query: str | None = None,
             hits: int | None = None, latency_ms: int | None = None,
             reason: str | None = None, fact_ids: list[str] | None = None,
             fact_refs: list[dict] | None = None,
             search_id: str | None = None, outcome: str | None = None) -> None:
-        query_preview = (query or "")[:200] or None
+        now = datetime.now(timezone.utc)
+        query_preview = (
+            (query or "")[:200] or None
+            if self.raw_query_retention_days > 0
+            else None
+        )
         rec = {
-            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "ts": now.isoformat(timespec="seconds"),
             "client": client, "tool": tool,
             "query": query_preview,
             "query_hash": hashlib.sha256((query or "").encode()).hexdigest()
@@ -46,8 +57,11 @@ class UsageLog:
             "search_id": search_id, "outcome": outcome,
         }
         with self._lock:
-            self._redact_expired_queries()
             self._append(rec)
+            if query_preview is not None:
+                self._schedule_redaction(
+                    now + timedelta(days=self.raw_query_retention_days)
+                )
 
     async def record_search(
         self,
@@ -185,8 +199,17 @@ class UsageLog:
 
     async def list_usage(self) -> list[dict]:
         with self._lock:
-            self._redact_expired_queries()
+            next_redaction = self._redact_expired_queries()
+            self._schedule_redaction(next_redaction)
             return read_usage(self.path)
+
+    async def close(self) -> None:
+        with self._lock:
+            self._closed = True
+            if self._redaction_timer is not None:
+                self._redaction_timer.cancel()
+                self._redaction_timer = None
+            self._next_redaction_at = None
 
     def _append(self, record: dict) -> None:
         descriptor = os.open(
@@ -203,17 +226,18 @@ class UsageLog:
             os.close(descriptor)
         self.path.chmod(0o600)
 
-    def _redact_expired_queries(self) -> None:
+    def _redact_expired_queries(self) -> datetime | None:
         if not self.path.exists():
-            return
+            return None
         try:
             lines = self.path.read_text(encoding="utf-8").splitlines()
         except (OSError, UnicodeDecodeError):
-            return
+            return None
         cutoff = datetime.now(timezone.utc) - timedelta(
             days=self.raw_query_retention_days
         )
         changed = False
+        next_redaction: datetime | None = None
         output: list[str] = []
         for line in lines:
             try:
@@ -234,10 +258,49 @@ class UsageLog:
             ):
                 record["query"] = None
                 changed = True
+            elif (
+                record.get("tool") == "plk_search"
+                and record.get("query") is not None
+            ):
+                expires_at = timestamp + timedelta(
+                    days=self.raw_query_retention_days
+                )
+                if next_redaction is None or expires_at < next_redaction:
+                    next_redaction = expires_at
             output.append(json.dumps(record, ensure_ascii=False))
         if not changed:
-            return
+            return next_redaction
         temporary = self.path.with_suffix(f"{self.path.suffix}.tmp")
         temporary.write_text("\n".join(output) + "\n", encoding="utf-8")
         temporary.chmod(0o600)
         os.replace(temporary, self.path)
+        return next_redaction
+
+    def _schedule_redaction(self, redaction_at: datetime | None) -> None:
+        if self._closed or redaction_at is None:
+            return
+        if (
+            self._redaction_timer is not None
+            and self._next_redaction_at is not None
+            and self._next_redaction_at <= redaction_at
+        ):
+            return
+        if self._redaction_timer is not None:
+            self._redaction_timer.cancel()
+        delay = max(
+            (redaction_at - datetime.now(timezone.utc)).total_seconds(),
+            0.05,
+        )
+        self._next_redaction_at = redaction_at
+        self._redaction_timer = threading.Timer(delay, self._run_redaction)
+        self._redaction_timer.daemon = True
+        self._redaction_timer.start()
+
+    def _run_redaction(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._redaction_timer = None
+            self._next_redaction_at = None
+            next_redaction = self._redact_expired_queries()
+            self._schedule_redaction(next_redaction)

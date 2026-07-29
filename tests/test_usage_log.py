@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 from datetime import datetime, timedelta, timezone
@@ -205,3 +206,63 @@ async def test_redacts_expired_query_but_keeps_hash(tmp_path):
     assert records[0]["query"] is None
     assert records[0]["query_hash"] == "d" * 64
     assert "private query" not in path.read_text(encoding="utf-8")
+
+
+async def test_zero_day_retention_never_persists_plaintext(tmp_path):
+    path = tmp_path / "u.jsonl"
+    log = UsageLog(path, raw_query_retention_days=0)
+
+    await log.record_search(
+        client="codex",
+        search_id="S1",
+        query="private query",
+        hits=0,
+        latency_ms=1,
+        reason="auto-guideline",
+        fact_refs=[],
+        outcome="ok",
+    )
+
+    records = await log.list_usage()
+    assert records[0]["query"] is None
+    assert len(records[0]["query_hash"]) == 64
+    assert "private query" not in path.read_text(encoding="utf-8")
+    await log.close()
+
+
+def test_search_append_does_not_scan_existing_usage_log(tmp_path, monkeypatch):
+    path = tmp_path / "u.jsonl"
+    log = UsageLog(path)
+    calls = 0
+    original = log._redact_expired_queries
+
+    def counted_redaction():
+        nonlocal calls
+        calls += 1
+        return original()
+
+    monkeypatch.setattr(log, "_redact_expired_queries", counted_redaction)
+    log.log("codex", "plk_search", query="one", search_id="S1", outcome="ok")
+    log.log("codex", "plk_search", query="two", search_id="S2", outcome="ok")
+
+    assert calls == 0
+
+
+async def test_active_log_redacts_last_query_without_later_access(tmp_path):
+    path = tmp_path / "u.jsonl"
+    log = UsageLog(path, raw_query_retention_days=0.000001)
+    await log.record_search(
+        client="codex",
+        search_id="S1",
+        query="last private query",
+        hits=1,
+        latency_ms=1,
+        reason="auto-guideline",
+        fact_refs=[FactReference(fact_id="F1")],
+        outcome="ok",
+    )
+
+    await asyncio.sleep(0.2)
+
+    assert "last private query" not in path.read_text(encoding="utf-8")
+    await log.close()

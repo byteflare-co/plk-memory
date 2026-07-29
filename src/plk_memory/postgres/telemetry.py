@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
-from sqlalchemy import insert, select, update
+from sqlalchemy import func, insert, select, update
 from sqlalchemy.exc import IntegrityError
 
 from plk_memory.postgres.database import PostgresDatabase
@@ -34,6 +35,8 @@ class PostgresTelemetryStore:
         self.database = database
         self._organization_provider = organization_provider
         self.raw_query_retention_days = raw_query_retention_days
+        self._redaction_tasks: dict[UUID, asyncio.Task[None]] = {}
+        self._redaction_wakeups: dict[UUID, asyncio.Event] = {}
 
     def _organization_id(self) -> UUID:
         return self._organization_provider()
@@ -52,13 +55,16 @@ class PostgresTelemetryStore:
     ) -> None:
         organization_id = self._organization_id()
         async with self.database.transaction(organization_id) as session:
-            await self._redact_expired(session)
             await session.execute(
                 insert(search_events).values(
                     organization_id=organization_id,
                     search_id=search_id,
                     client=client,
-                    query_preview=query[:200] or None,
+                    query_preview=(
+                        query[:200] or None
+                        if self.raw_query_retention_days > 0
+                        else None
+                    ),
                     query_hash=hashlib.sha256(query.encode()).hexdigest(),
                     reason=reason[:64] if reason else None,
                     outcome=outcome,
@@ -70,6 +76,8 @@ class PostgresTelemetryStore:
                     ],
                 )
             )
+        if self.raw_query_retention_days > 0:
+            self._ensure_redaction_task(organization_id)
 
     async def record_decision(
         self,
@@ -252,6 +260,56 @@ class PostgresTelemetryStore:
         )
         records.sort(key=lambda item: item["ts"])
         return records
+
+    async def close(self) -> None:
+        tasks = list(self._redaction_tasks.values())
+        self._redaction_tasks.clear()
+        self._redaction_wakeups.clear()
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    def _ensure_redaction_task(self, organization_id: UUID) -> None:
+        task = self._redaction_tasks.get(organization_id)
+        if task is None or task.done():
+            self._redaction_wakeups[organization_id] = asyncio.Event()
+            self._redaction_tasks[organization_id] = asyncio.create_task(
+                self._redact_queries_when_due(organization_id)
+            )
+        self._redaction_wakeups[organization_id].set()
+
+    async def _redact_queries_when_due(self, organization_id: UUID) -> None:
+        try:
+            while True:
+                wakeup = self._redaction_wakeups[organization_id]
+                wakeup.clear()
+                async with self.database.transaction(organization_id) as session:
+                    await self._redact_expired(session)
+                    oldest = await session.scalar(
+                        select(func.min(search_events.c.created_at)).where(
+                            search_events.c.query_preview.is_not(None)
+                        )
+                    )
+                if oldest is None:
+                    await wakeup.wait()
+                    continue
+                expires_at = oldest + timedelta(
+                    days=self.raw_query_retention_days
+                )
+                delay = max(
+                    (expires_at - datetime.now(timezone.utc)).total_seconds(),
+                    0.05,
+                )
+                try:
+                    await asyncio.wait_for(wakeup.wait(), timeout=delay)
+                except TimeoutError:
+                    pass
+        finally:
+            current = asyncio.current_task()
+            if self._redaction_tasks.get(organization_id) is current:
+                self._redaction_tasks.pop(organization_id, None)
+                self._redaction_wakeups.pop(organization_id, None)
 
     async def _redact_expired(self, session) -> None:
         await session.execute(

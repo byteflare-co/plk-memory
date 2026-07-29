@@ -31,6 +31,7 @@ async def test_postgres_runtime_write_worker_search_invalidate_roundtrip():
         worker_database_url=database_url,
         default_organization_id=str(organization_id),
         tokens={"test-token": "runtime-test"},
+        usage_raw_query_retention_days=0,
         outbox_batch_size=1,
         worker_consumer_name=f"runtime-worker-{uuid4()}",
     )
@@ -122,6 +123,11 @@ async def test_postgres_runtime_write_worker_search_invalidate_roundtrip():
             and row.get("used_fact_ids") == [added["fact_id"]]
             for row in usage
         )
+        search_usage = next(
+            row for row in usage if row.get("search_id") == search["search_id"]
+        )
+        assert search_usage["query"] is None
+        assert len(search_usage["query_hash"]) == 64
 
         other_actor = actor.model_copy(update={"organization_id": uuid4()})
         other_token = current_actor.set(other_actor)

@@ -94,6 +94,9 @@ class PostgresAppServices:
         await self._health_callback()
 
     async def close(self) -> None:
+        telemetry_close = getattr(self.telemetry, "close", None)
+        if telemetry_close is not None:
+            await telemetry_close()
         graph = getattr(self.search_index, "graph", None)
         if graph is not None and hasattr(graph, "close"):
             await graph.close()

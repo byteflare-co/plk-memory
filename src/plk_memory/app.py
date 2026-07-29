@@ -114,6 +114,7 @@ def create_app(settings: Settings | None = None, graph=None, promotion_backend=N
                 t.cancel()
             if git_services._bg_tasks:
                 await asyncio.gather(*git_services._bg_tasks, return_exceptions=True)
+            await git_services.usage.close()
             await git_services.feedback.close()
 
     app = FastAPI(lifespan=_combine_lifespans(app_lifespan, mcp_app.lifespan))
