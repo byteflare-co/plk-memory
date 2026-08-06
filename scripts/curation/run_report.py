@@ -14,8 +14,10 @@ from plk_memory.facts import FactService
 from plk_memory.gitstore import GitStore
 from plk_memory.settings import Settings
 
-KILL = ("4 週連続で動線経由 plk_search の引用が週 3 回未満、または保守が週 30 分超過 →"
-        " グラフ層凍結・常駐解除（設計書 §11）")
+KILL = (
+    "検索→最終判断の計測が揃った4完了週で、行動変更・誤り防止への強い貢献が"
+    "週3回未満、または保守が週30分超過 → graph層凍結を審査"
+)
 
 
 def main() -> int:

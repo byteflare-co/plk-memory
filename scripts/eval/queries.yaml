@@ -1,90 +1,86 @@
-# Phase 1 検索評価セット（20 クエリ・日本語・言い換え/口語）
+# 現行 active corpus の検索評価セット（20クエリ・2026-07-31更新）
 #
-# 各クエリはナレッジコーパス（~/.plk/data-repo/knowledge/domains/**/*.md）の
-# active ファクトを実利用に近い言い回しで問い合わせる。statement やファイル名の
-# 表現をそのまま使わず、意味を保ったまま口語・言い換えにしている。
-#
-# freee 事業所の矛盾系列（active: freee-jigyosho-byteflare-from-may /
-# invalidated: freee-jigyosho-koto-until-may）は 2 本（Q1・Q2）で扱い、
-# expected は active 側 fact id のみ。invalidated 側は索引に含まれない想定なので
-# expected に入れない。
+# statementをそのまま複写せず、実際の依頼で使う口語・言い換えにしている。
+# run_eval.py は expected がmissing / invalidatedの場合に評価前にfail closedする。
+# corpus変更時は、期待factを機械的に差し替えるのではなく、同じ判断場面が
+# active factで引き続き表現されているかをレビューしてから更新する。
 
-- query: "経理の事業所、いつからByteflare名義に切り替わったんだっけ"
-  expected: ["01KWGM7ZH366AZSB442K5YSTAV"]
-  note: "freee事業所切替（矛盾系列・active側）／言い換え"
+- query: "高性能モデルの時間が足りない。設計や最終判断だけ残して、調査と実装をどう分担する"
+  expected: ["01KWX54J3ZET10A137KWCT0A67"]
+  note: "モデル階層別の委譲"
 
-- query: "freeeで日付ごとに会社を出し分ける処理、境目の日はいつにすればいい"
-  expected: ["01KWGM7ZH366AZSB442K5YSTAV"]
-  note: "freee事業所切替（矛盾系列・active側）／口語・別角度"
+- query: "外部APIの挙動がよく分からないまま実装を始めてよいか"
+  expected: ["01KWX54J3ZET10A137KWCT0A68"]
+  note: "公式資料・実機仕様の先行確認"
 
-- query: "補助金って個人事業と法人どっちで出した方が通りやすいの"
-  expected: ["01KWGM7ZM0PMX4HQRJPFGA7EXQ"]
-  note: "持続化補助金の申請主体／口語"
+- query: "最初に思いついた対応案をそのまま採用せず、破綻条件を先に確かめたい"
+  expected: ["01KWX54J3ZET10A137KWCT0A69"]
+  note: "採用前の能動的反証"
 
-- query: "スタバのレシートみたいに毎回freeeに入れなくていい店を弾く仕組みある"
-  expected: ["01KWGM7ZFKKHYX7CD2CZX4SFC9"]
-  note: "領収書ブラックリスト／具体例からの言い換え"
+- query: "重要なアーキテクチャを確定する前に、別の視点で検証してもらう基準は"
+  expected: ["01KWX54J3ZET10A137KWCT0A6A"]
+  note: "重要判断の独立レビュー"
 
-- query: "領収書を集めるときメール検索だけだと取りこぼすよね"
-  expected: ["01KWGM7ZNHJR5XY04FMFPYMKCM"]
-  note: "領収書のマルチソース収集／口語"
+- query: "修正中に別のリファクタも見つけた。今のPRへ一緒に入れるべき"
+  expected: ["01KWX54J3ZET10A137KWCT0A6B"]
+  note: "1変更1関心事"
 
-- query: "会社の確定した数値ってどこを正にすべき、あちこちに書き写していい"
+- query: "MVPで最終形の機能を一通り小さく作るより、何を優先すればいい"
+  expected: ["01KWX54J3ZET10A137KWCT0A6C"]
+  note: "MVPは仮説検証範囲に限定"
+
+- query: "評価ツールや索引が本番コードの必須依存にならないモジュール構造にしたい"
+  expected: ["01KWX54J3ZET10A137KWCT0A6D"]
+  note: "安定資産へ向けた一方向依存"
+
+- query: "稼働中の仕組みを新実装へ切り替えるとき、一括置換以外の安全な進め方は"
+  expected: ["01KWX54J3ZET10A137KWCT0A6E"]
+  note: "shadow・canary・段階移行"
+
+- query: "大きく作り始める前に、最も怪しい技術仮説だけ安く試したい"
+  expected: ["01KWX54J3ZET10A137KWCT0A6F"]
+  note: "最大不確実性のスパイク"
+
+- query: "似た障害がいくつも出た。症状ごとに直す前にどう整理する"
+  expected: ["01KWX54J3ZET10A137KWCT0A6G"]
+  note: "根本原因で分類して修正"
+
+- query: "複雑な検索方式を採用したいが、単純な方式との比較は必要"
+  expected: ["01KWX54J3ZET10A137KWCT0A6H"]
+  note: "素朴なベースラインとの対照評価"
+
+- query: "機能は完成したのに誰も呼ばない。成果物として何が不足している"
+  expected: ["01KWX54J3ZET10A137KWCT0A6K"]
+  note: "利用動線を機能より先に作る"
+
+- query: "同じ目的なら外部へ書き込む方法と読み取りだけの方法のどちらを選ぶ"
+  expected: ["01KWX54J3ZET10A137KWCT0A6P"]
+  note: "副作用の最小化"
+
+- query: "継続費用がかかる仕組みを始める前に、撤退判断をどう決める"
+  expected: ["01KXCXBNSMC30K4SQX3QXEN9E9"]
+  note: "観測可能な撤退・凍結条件"
+
+- query: "複数のChromeプロファイルがある外部サービスを操作するとき最初に何を確認する"
+  expected: ["01KXCXBH4KDRMVGKTDQMMERY90"]
+  note: "account・workspaceとprofileの一致確認"
+
+- query: "月次の領収書収集をメールだけで完了してよいか、ローカル側も見るべきか"
+  expected: ["01KXCXBWWSZ6N3W7NKF8KM1ND2"]
+  note: "Gmailとローカル保存先の両方を検索"
+
+- query: "会社の確定した数字を複数の文書へコピーせず参照するなら、どこを正にする"
   expected: ["01KWGM7ZQ0VV8R01YP2VXAAJ2P"]
-  note: "法人ファクトDBを唯一のSoTにする／言い換え"
+  note: "Byteflare会社ファクトのNotion SoT"
 
-- query: "新しいNotionページってどこに作る決まりだったっけ"
+- query: "Notionに新規ページを作るとき、Wikiの直下に置いてよいか"
   expected: ["01KWGM7ZRG22SPSVMNZPPFH3CZ"]
-  note: "Notionハブ方式のページ配置ルール／口語"
+  note: "Notionハブ方式の配置"
 
-- query: "graphitiでドメインごとに知識を別グラフに分けて後で消したいときは"
-  expected: ["01KWGM7Z8FSN0WWG69TZKKNM0F"]
-  note: "group_id が物理グラフ分離／clear_data／言い換え"
+- query: "uv管理のリポジトリを別ディレクトリへ移したらpytestが起動しなくなった"
+  expected: ["01KWKZCW2VBRE0NF0MPS4THZH3"]
+  note: "移動後のvenvシバン復旧"
 
-- query: "graphitiの日本語の重複除去って当てにしていいの"
-  expected: ["01KWGM7Z9V4FZKT04YQE6QAM9E"]
-  note: "日本語MinHash重複排除が機能不全／口語"
-
-- query: "graphitiのエピソード抽出、日本語だと質が落ちる問題があった気がする"
-  expected: ["01KWGM7ZB9J7QPP97CSRSSAZR5"]
-  note: "add_episode プロンプトが英語専用／言い換え"
-
-- query: "MCPのPython SDKってバージョン固定しないとまずいんだっけ"
-  expected: ["01KWGM7ZCQX90Q7PP7D8QYV3B3"]
-  note: "mcp<2 のピン留めが必要／口語"
-
-- query: "バリデータが規約用のmarkdownまでファクト扱いで弾くのを防ぐには"
-  expected: ["01KWGM7ZE5DFW8HH0DF71H0E9T"]
-  note: "plk-validate の SKIP_NAMES／言い換え"
-
-- query: "株主総会の議事録って何年とっておく義務があるの"
-  expected: ["01KWGM7YZT4B6BCXEA1D0F5KRJ"]
-  note: "議事録10年備置義務／口語"
-
-- query: "Macでマイナカードのスマホ署名だけで法人の届出をまとめて出せる"
-  expected: ["01KWGM7YYB2VMET2HH8KPN7XW4"]
-  note: "ワンストップサービスのスマホQR署名／言い換え"
-
-- query: "役員の報酬を変えるとき毎回総会で決議しないとダメなの"
-  expected: ["01KWGM7Z196FSMZ94CRZW927XH"]
-  note: "役員報酬は株主総会決議で確定／口語"
-
-- query: "社長ひとりだけの会社でも社会保険は強制加入になる"
-  expected: ["01KWGM7Z47WQD8WAPFE6X2870J"]
-  note: "法人は健保厚年の強制適用／言い換え"
-
-- query: "扶養を外す手続きを代行業者に頼んだら年金側が漏れることある"
-  expected: ["01KWGM7Z5NFNNMV0WN24APSXP6"]
-  note: "被扶養者訂正で国民年金が漏れるリスク／口語"
-
-- query: "年金の保険料をほったらかすと最後は差し押さえまでいくの"
-  expected: ["01KWGM7Z726ZSM8WFDYQVX6JJR"]
-  note: "国民年金未納放置で延滞金・差押え／口語"
-
-- query: "青色申告の承認申請っていつまでに出すの、会社を作ってから"
-  expected: ["01KWGM7YT2S5CAS37F9DQ44Z2R"]
-  note: "青色申告承認は設立3か月／言い換え"
-
-- query: "源泉税を毎月じゃなく年2回まとめて納めるやつの申請ってあった"
-  expected: ["01KWGM7YVH2NHMGQKJRSK65GBR"]
-  note: "源泉所得税の納期の特例／口語"
+- query: "無料枠のある外部リソースを設計に入れる前に、呼び出し量をどう確認する"
+  expected: ["01KYNNNAQE063QBB7HDHWGBX97"]
+  note: "日次・月次使用量と現行上限の突合"

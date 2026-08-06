@@ -1,5 +1,11 @@
 # plk-memory 移行ガイド（Byteflare Mac 版 → 組織展開 stg）
 
+> [!WARNING]
+> 本書はGit-primaryをECSへ持ち上げる旧移行案の履歴であり、現在の組織runtimeの手順SoTではない。
+> current / targetの境界は [`BLUEPRINT.md`](BLUEPRINT.md)、PostgreSQL-primaryの切替手順と
+> production gateは [`design/2026-07-10-postgres-primary-architecture.md`](design/2026-07-10-postgres-primary-architecture.md)
+> を参照する。Git backendを複数writer運用へ拡張しない。
+
 対象: 組織展開 の担当者が半日で staging に plk-memory を立てるための手順と、
 Byteflare 固有の前提を 組織展開 前提へ置き換える差分。設計書 §10/§11 の逆輸入マッピングの実装版。
 

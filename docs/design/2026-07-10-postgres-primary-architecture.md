@@ -2,6 +2,8 @@
 
 > Status: runtime implemented, production deployment gates remain
 > Decision date: 2026-07-10
+> Current live profile: Git backend。current / targetの全体図は
+> [`../BLUEPRINT.md`](../BLUEPRINT.md)を参照。
 
 ## 1. 結論
 

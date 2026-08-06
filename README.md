@@ -4,13 +4,24 @@ ByteflareのAIエージェントとサービスが、組織の知識を安全に
 税務・社会保険・法務・事業判断・社内ノウハウを、将来のセッションや別サービスから再利用できる形で管理します。
 
 > [!IMPORTANT]
-> 複数人・複数サービス向けのアーキテクチャは、PostgreSQLを更新可能な正本とする設計です。
-> Git backendは既存Mac環境との互換性のために残しています。現在の実装状況とproduction gateは
-> [PostgreSQL-primary設計書](docs/design/2026-07-10-postgres-primary-architecture.md)を参照してください。
+> **現在のByteflare常駐運用はGit backend**です。PostgreSQL backendは複数writer・tenant運用への
+> 拡張先として実装されていますが、production cutover済みではありません。
+> current / target / historicalを分けた正本は[現行ブループリント](docs/BLUEPRINT.md)、
+> 理想状態・数値目標・運用ループは[実運用モデル](docs/OPERATING_MODEL.md)を参照してください。
+
+## 現在動いている構成
+
+2026-07-31時点では、macOS launchd上の単一プロセスが`127.0.0.1:8735`で常駐し、
+Git/Markdownを正本、Graphiti/FalkorDBを派生検索索引として動いています。client別Bearer token、
+検索→最終判断telemetry、localhost Web UI、reviewed writesが有効です。
+
+PostgreSQLはstorage-neutralな同じMCP surfaceの別backendで、immutable revision、tenant RLS、
+transactional outbox、専用index workerを実装済みです。現在のローカル実用性を証明する前に
+DBへ切り替えるのではなく、Metricsの実運用ゲートで計測定着・判断貢献・検索品質を先に検証します。
 
 ## 全体像
 
-設計の中心は、次の4点です。
+複数人・複数サービス向けのtarget architectureは、次の4点を中心にします。
 
 - **正本はPostgreSQL**: factの変更をimmutable revisionとして保持し、RLSでorganizationを分離する
 - **検索indexは派生物**: Graphiti/FalkorDBは候補検索だけを担い、結果は必ずDBのcurrent revisionで再検証する
@@ -218,9 +229,11 @@ production deployment前には、次の検証が必要です。
 
 | 目的 | 参照先 |
 |---|---|
+| current / target / historicalを分けた全体構成、依存関係、ツール | [Blueprint](docs/BLUEPRINT.md) |
+| 理想状態、数値目標、週次・月次PDCA、継続・凍結条件 | [Operating model](docs/OPERATING_MODEL.md) |
 | PostgreSQL-primaryの設計判断とproduction gate | [Architecture](docs/design/2026-07-10-postgres-primary-architecture.md) |
 | セットアップ、起動、運用、縮退動作 | [Operations](docs/OPERATIONS.md) |
-| GitからPostgreSQLへの移行手順 | [Migration](docs/MIGRATION.md) |
+| 旧Git-primary staging移行案（historical） | [Legacy migration notes](docs/MIGRATION.md) |
 | 実測結果、既知の制約、設計変更履歴 | [Lessons](docs/LESSONS.md) |
 | クライアント接続設定 | [Clients](clients/) |
 | 過去のPhase記録と実装計画 | [History](docs/history/) |

@@ -1,7 +1,9 @@
 # plk-memory メトリクスダッシュボード設計（Phase 1）
 
 日付: 2026-07-15
-ステータス: 設計承認待ち（codex レビュー指摘反映済み: 2026-07-15）
+ステータス: historical Phase 1 design（実装済み）。Phase 2相当は`plk_cite`ではなく
+`plk_record_decision`として実装され、現行の指標契約は
+[`../OPERATING_MODEL.md`](../OPERATING_MODEL.md)と`src/plk_memory/metrics.py`を正とする。
 関連: [2026-07-02 設計書 §9/§11](2026-07-02-plk-memory-design.md)、[scripts/curation/run_report.py](../../scripts/curation/run_report.py)、[scripts/eval/run_eval.py](../../scripts/eval/run_eval.py)
 
 ## 1. 背景と目的

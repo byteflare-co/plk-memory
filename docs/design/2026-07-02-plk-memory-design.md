@@ -1,7 +1,8 @@
 # Byteflare 版 PLK メモリ基盤（plk-memory）設計書 v1.0
 
 > 日付: 2026-07-02
-> 状態: 敵対的レビュー反映済み（7視点 52 指摘 → must-fix 3 / should-fix 26 を反映）。ユーザーレビュー待ち。
+> 状態: historical design snapshot。現行構成は [`../BLUEPRINT.md`](../BLUEPRINT.md)、
+> 実運用目標は [`../OPERATING_MODEL.md`](../OPERATING_MODEL.md) を正とする。
 > 前提資料: 組織展開「全社 AI エージェント・メモリ基盤」（社内設計資料 社内設計資料）／個人版 v3 設計書（同ディレクトリ 2026-06-27-personal-cross-agent-memory-design-v3.md）
 
 ## 1. 目的と位置づけ

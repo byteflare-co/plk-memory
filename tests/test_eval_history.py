@@ -52,13 +52,46 @@ def test_compute_summary_matches_rendered_aggregate(run_eval_module) -> None:
     assert "| embed | 2/2 | 1.00 | 0.625 |" in rendered
 
 
+def test_eval_contract_rejects_missing_invalidated_and_duplicate_queries(
+    run_eval_module,
+) -> None:
+    facts = [
+        SimpleNamespace(fact_id="fact-a", status="active"),
+        SimpleNamespace(fact_id="fact-b", status="invalidated"),
+    ]
+    queries = [
+        {"query": "same", "expected": ["fact-a"]},
+        {"query": "same", "expected": ["fact-b", "fact-missing"]},
+    ]
+
+    with pytest.raises(ValueError) as error:
+        run_eval_module.validate_eval_contract(queries, facts)
+
+    message = str(error.value)
+    assert "query が重複" in message
+    assert "invalidated expected fact: fact-b" in message
+    assert "missing expected fact: fact-missing" in message
+
+
+def test_eval_contract_accepts_active_expected_facts(run_eval_module) -> None:
+    facts = [
+        SimpleNamespace(fact_id="fact-a", status="active"),
+        SimpleNamespace(fact_id="fact-b", status="active"),
+    ]
+
+    run_eval_module.validate_eval_contract(_queries(), facts)
+
+
 def test_history_records_include_shared_provenance(run_eval_module, tmp_path, monkeypatch) -> None:
     settings = SimpleNamespace(
         data_repo_path=tmp_path / "repo",
         embedder_model="bge-m3",
         llm_model="gpt-oss:20b",
     )
-    facts = [SimpleNamespace(status="active"), SimpleNamespace(status="invalidated")]
+    facts = [
+        SimpleNamespace(fact_id="fact-a", status="active"),
+        SimpleNamespace(fact_id="fact-old", status="invalidated"),
+    ]
     results = {
         "rg": {"alpha": ["fact-a"], "beta": []},
         "embed": {"alpha": ["fact-a"], "beta": ["fact-b"]},
@@ -112,7 +145,10 @@ def _stub_main(monkeypatch, module, tmp_path: Path):
         llm_model="gpt-oss:20b",
         eval_history_path=history_path,
     )
-    facts = [SimpleNamespace(status="active")]
+    facts = [
+        SimpleNamespace(fact_id="fact-a", status="active"),
+        SimpleNamespace(fact_id="fact-b", status="active"),
+    ]
     monkeypatch.setattr(module, "Settings", lambda: settings)
     monkeypatch.setattr(module, "load_queries", lambda _path: _queries())
     monkeypatch.setattr(module, "load_facts", lambda _settings: facts)

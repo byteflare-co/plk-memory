@@ -85,6 +85,47 @@ def load_queries(path: Path) -> list[dict]:
     return data
 
 
+def validate_eval_contract(queries: list[dict], facts: list[Fact]) -> None:
+    """Fail closed when the benchmark points at missing or invalidated facts."""
+    active_ids = {fact.fact_id for fact in facts if fact.status == "active"}
+    known_ids = {fact.fact_id for fact in facts}
+    errors: list[str] = []
+    seen_queries: set[str] = set()
+    for index, item in enumerate(queries, start=1):
+        query = item.get("query")
+        expected = item.get("expected")
+        if not isinstance(query, str) or not query.strip():
+            errors.append(f"Q{index}: query が空または文字列ではありません")
+            continue
+        if query in seen_queries:
+            errors.append(f"Q{index}: query が重複しています: {query}")
+        seen_queries.add(query)
+        if (
+            not isinstance(expected, list)
+            or not expected
+            or not all(isinstance(fact_id, str) for fact_id in expected)
+        ):
+            errors.append(f"Q{index}: expected は1件以上のfact ID配列が必要です")
+            continue
+        missing = [fact_id for fact_id in expected if fact_id not in known_ids]
+        invalidated = [
+            fact_id
+            for fact_id in expected
+            if fact_id in known_ids and fact_id not in active_ids
+        ]
+        if missing:
+            errors.append(f"Q{index}: missing expected fact: {', '.join(missing)}")
+        if invalidated:
+            errors.append(
+                f"Q{index}: invalidated expected fact: {', '.join(invalidated)}"
+            )
+    if errors:
+        raise ValueError(
+            "評価セットが現在のactive corpusと一致しません:\n- "
+            + "\n- ".join(errors)
+        )
+
+
 # --------------------------------------------------------------------------
 # 指標
 # --------------------------------------------------------------------------
@@ -392,6 +433,7 @@ def main() -> None:
     settings = Settings()
     queries = load_queries(args.queries)
     facts = load_facts(settings)
+    validate_eval_contract(queries, facts)
     runners = [r.strip() for r in args.runners.split(",") if r.strip()]
 
     runner_results: dict[str, dict[str, list[str]]] = {}

@@ -4,7 +4,8 @@ PLK メモリ基盤 — Git互換backend / PostgreSQL組織backend + Graphiti派
 
 ## 全体像
 
-> 基盤全体のアーキテクチャ・規約・現在地は [`../README.md`](../README.md) を参照。
+> current / target / historicalを分けた全体構成は [`BLUEPRINT.md`](BLUEPRINT.md)、
+> 数値目標と運用ループは [`OPERATING_MODEL.md`](OPERATING_MODEL.md) を参照。
 
 plk-memory は個人互換modeでは **Git**、複数writerの組織modeでは **PostgreSQL** を正本とし、
 graphiti/FalkorDB を再構築可能な派生索引とする組織メモリの MCP サーバー。エージェント（Claude Code / Codex / Hermes / 自作）が `plk_search` で
@@ -12,7 +13,7 @@ graphiti/FalkorDB を再構築可能な派生索引とする組織メモリの M
 昇格させる。
 
 - **データの実体**: Git backendは `agent-organization/knowledge/`、PostgreSQL backendはtenant RLS配下のimmutable revision。
-- **アーキテクチャ / 設計判断**: 設計書（SoT）は [`design/`](design/)（入口は [`../README.md`](../README.md)）を参照。
+- **現行アーキテクチャ**: [`BLUEPRINT.md`](BLUEPRINT.md)を正とする。`design/`は日付時点の設計判断履歴。
 - **組織展開**: 移行手順は [`MIGRATION.md`](MIGRATION.md)、実測・判断は [`LESSONS.md`](LESSONS.md)。
 - **ポート境界**: FactStore(Git) / GraphIndex(graphiti) / WriteSerializer(flock) / PromotionBackend
   (GitHub PR・Slack スタブ) / AuthProvider(Bearer・JWT) / LogSink(JSONL)。各境界は設定または
