@@ -357,8 +357,146 @@ def test_kill_criteria_three_verdicts_and_ignores_current_week():
     ok_usage += [usage_at(datetime(2026, 7, 13, tzinfo=JST), hits=10,
                           outcome="ok", reason="auto-guideline")]
     ok = build_metrics(ok_usage, [], [], now=NOW, tz=JST)["kill_criteria"]
-    assert ok["verdict"] == "observed_ok"
+    assert ok["verdict"] == "observed_breached"
     assert all(row["week"] != "2026-07-13" for row in ok["weeks"])
+    sustained = build_metrics(
+        _four_completed_weeks([3, 3, 3, 3]), [], [], now=NOW, tz=JST
+    )
+    assert sustained["kill_criteria"]["verdict"] == "observed_ok"
+
+
+def test_decision_value_requires_four_complete_on_target_weeks():
+    observation_start = datetime(2026, 6, 1, tzinfo=JST)
+    sustained = build_metrics(
+        _four_completed_weeks([3, 3, 3, 3]),
+        [],
+        [],
+        now=NOW,
+        tz=JST,
+        observation_started_at=observation_start,
+    )["decision_value"]
+    assert sustained["status"] == "observed_sustained"
+    assert sustained["four_week"] == {
+        "required_weeks": 4,
+        "evaluable_weeks": 4,
+        "target_met_weeks": 4,
+        "weekly_target": 3,
+    }
+
+    below = build_metrics(
+        _four_completed_weeks([0, 1, 3, 0]),
+        [],
+        [],
+        now=NOW,
+        tz=JST,
+        observation_started_at=observation_start,
+    )["decision_value"]
+    assert below["status"] == "target_not_met"
+    assert below["primary_reason_code"] == "weekly_target_missed"
+    assert below["four_week"]["target_met_weeks"] == 1
+
+
+def test_decision_value_treats_measurement_gap_as_insufficient_not_zero():
+    usage = _four_completed_weeks([3, 3, 3, 3])
+    usage = [
+        record for record in usage
+        if record.get("decision_id") != "marker-decision-1"
+    ]
+    value = build_metrics(
+        usage,
+        [],
+        [],
+        now=NOW,
+        tz=JST,
+        observation_started_at=datetime(2026, 6, 1, tzinfo=JST),
+    )["decision_value"]
+    assert value["status"] == "insufficient_data"
+    assert value["primary_reason_code"] == "measurement_gap"
+    assert value["four_week"]["evaluable_weeks"] == 3
+    affected = next(row for row in value["weekly"] if not row["evaluable"])
+    assert "measurement_gap" in affected["unevaluable_reasons"]
+    assert affected["strong_decisions"] == 3
+
+
+def test_decision_value_attributes_strong_effect_only_to_used_auto_fact_cohort():
+    week = datetime(2026, 6, 29, 9, tzinfo=JST)
+    usage = _four_completed_weeks([0, 0, 0, 0])
+    usage.extend([
+        usage_at(
+            week,
+            search_id="AUTO-USED",
+            client="codex",
+            hits=1,
+            outcome="ok",
+            reason="auto-guideline",
+            fact_ids=["FA"],
+        ),
+        usage_at(
+            week + timedelta(days=7),
+            search_id="AUTO-UNUSED-LATER",
+            client="codex",
+            hits=1,
+            outcome="ok",
+            reason="auto-guideline",
+            fact_ids=["FB"],
+        ),
+        {
+            "tool": "plk_record_decision",
+            "ts": (week + timedelta(days=7, minutes=1)).isoformat(),
+            "client": "codex",
+            "decision_id": "COHORT",
+            "search_ids": ["AUTO-USED", "AUTO-UNUSED-LATER"],
+            "used_fact_ids": ["FA"],
+            "effect": "changed_action",
+            "outcome": "recorded",
+        },
+    ])
+    value = build_metrics(
+        usage,
+        [],
+        [],
+        now=NOW,
+        tz=JST,
+        observation_started_at=datetime(2026, 6, 1, tzinfo=JST),
+    )["decision_value"]
+    rows = {row["week"]: row for row in value["weekly"]}
+    assert rows["2026-06-29"]["changed_action_decisions"] == 1
+    assert rows["2026-07-06"]["changed_action_decisions"] == 0
+
+
+def test_decision_value_fails_closed_on_conflicting_duplicate_ids():
+    usage = _four_completed_weeks([3, 3, 3, 3])
+    original = next(record for record in usage if record.get("search_id") == "marker-1")
+    usage.append({**original, "hits": 2})
+    value = build_metrics(
+        usage,
+        [],
+        [],
+        now=NOW,
+        tz=JST,
+        observation_started_at=datetime(2026, 6, 1, tzinfo=JST),
+    )["decision_value"]
+    assert value["status"] == "insufficient_data"
+    assert value["primary_reason_code"] == "invalid_records"
+    assert value["data_quality"]["global_blockers"]["duplicate_search_id"] == 1
+
+
+def test_decision_value_distinguishes_pre_observation_from_no_search_week():
+    value = build_metrics(
+        [],
+        [],
+        [],
+        now=NOW,
+        tz=JST,
+        observation_started_at=datetime(2026, 7, 1, 12, tzinfo=JST),
+    )["decision_value"]
+    assert value["status"] == "insufficient_data"
+    assert value["primary_reason_code"] == "no_eligible_searches"
+    assert value["next_action"]["code"] == "verify_auto_search_flow"
+    assert any(
+        "pre_observation" in row["unevaluable_reasons"]
+        for row in value["weekly"]
+    )
 
 
 def test_eval_grouping_sorts_and_keeps_queries_hash():
@@ -469,3 +607,108 @@ def test_contribution_ignores_invalid_or_cross_client_decision_records():
     assert contribution["unresolved_hit_searches"] == 1
     assert contribution["decisions"] == 0
     assert contribution["strong_contribution_decisions"] == 0
+
+
+def test_operational_readiness_separates_passes_from_missing_value_evidence():
+    usage = []
+    for index in range(10):
+        search_id = f"S{index}"
+        ts = NOW - timedelta(hours=index)
+        usage.extend(
+            [
+                usage_at(
+                    ts,
+                    search_id=search_id,
+                    client="codex",
+                    hits=1,
+                    outcome="ok",
+                    latency_ms=500,
+                    fact_ids=["F"],
+                    reason="auto-guideline",
+                ),
+                {
+                    "tool": "plk_record_decision",
+                    "ts": ts.isoformat(),
+                    "client": "codex",
+                    "decision_id": f"D{index}",
+                    "search_ids": [search_id],
+                    "used_fact_ids": ["F"],
+                    "effect": "confirmed",
+                    "outcome": "recorded",
+                },
+            ]
+        )
+    history = [
+        {
+            "ts": NOW.isoformat(),
+            "run_id": "R1",
+            "runner": "embed",
+            "hit5_rate": 0.9,
+            "mrr": 0.8,
+            "queries_hash": "sha256:a",
+        },
+        {
+            "ts": NOW.isoformat(),
+            "run_id": "R1",
+            "runner": "graph(triplet)",
+            "hit5_rate": 0.95,
+            "mrr": 0.85,
+            "queries_hash": "sha256:a",
+        },
+    ]
+
+    readiness = build_metrics(usage, [], history, now=NOW, tz=JST)[
+        "operational_readiness"
+    ]
+    gates = {item["id"]: item for item in readiness["gates"]}
+
+    assert readiness["status"] == "insufficient_data"
+    assert readiness["passed_gates"] == 4
+    assert readiness["total_gates"] == 5
+    assert gates["measurement"]["status"] == "pass"
+    assert gates["client_coverage"]["status"] == "pass"
+    assert gates["reliability"]["status"] == "pass"
+    assert gates["retrieval_eval"]["status"] == "pass"
+    assert gates["observed_value"]["status"] == "insufficient"
+
+
+def test_operational_readiness_fails_closed_on_low_measurement_and_stale_eval():
+    usage = [
+        usage_at(
+            NOW - timedelta(hours=index),
+            search_id=f"S{index}",
+            client="codex",
+            hits=1,
+            outcome="ok",
+            latency_ms=6_000,
+            fact_ids=["F"],
+        )
+        for index in range(10)
+    ]
+    history = [
+        {
+            "ts": (NOW - timedelta(days=31)).isoformat(),
+            "run_id": "R1",
+            "runner": "embed",
+            "hit5_rate": 1.0,
+            "mrr": 1.0,
+        },
+        {
+            "ts": (NOW - timedelta(days=31)).isoformat(),
+            "run_id": "R1",
+            "runner": "graph(triplet)",
+            "hit5_rate": 1.0,
+            "mrr": 1.0,
+        },
+    ]
+
+    readiness = build_metrics(usage, [], history, now=NOW, tz=JST)[
+        "operational_readiness"
+    ]
+    gates = {item["id"]: item for item in readiness["gates"]}
+
+    assert readiness["status"] == "needs_work"
+    assert gates["measurement"]["status"] == "fail"
+    assert gates["client_coverage"]["status"] == "fail"
+    assert gates["reliability"]["status"] == "fail"
+    assert gates["retrieval_eval"]["status"] == "stale"

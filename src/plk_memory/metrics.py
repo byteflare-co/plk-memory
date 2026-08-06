@@ -13,6 +13,17 @@ from plk_memory.usage_records import parse_ts, referenced_fact_ids
 WEEKS = 12
 KILL_WEEKS = 4
 KILL_THRESHOLD_WEEKLY_HITS = 3
+READINESS_WINDOW_DAYS = 7
+READINESS_MIN_SEARCHES = 10
+READINESS_MEASUREMENT_TARGET = 0.90
+READINESS_ACTIVE_CLIENT_MIN_SEARCHES = 3
+READINESS_FAILURE_RATE_TARGET = 0.01
+READINESS_LATENCY_P95_TARGET_MS = 5_000
+READINESS_EVAL_MAX_AGE_DAYS = 30
+DECISION_VALUE_OBSERVATION_STARTED_AT = datetime(
+    2026, 7, 27, tzinfo=timezone(timedelta(hours=9))
+)
+DECISION_VALUE_FUTURE_TOLERANCE = timedelta(minutes=5)
 
 
 def _week_start(value: datetime, tz: ZoneInfo) -> date:
@@ -568,12 +579,12 @@ def _kill_criteria(usage: list[dict], now: datetime, tz: ZoneInfo) -> dict:
     ):
         verdict = "inconclusive"
     elif all(
-        row["auto_strong_contribution_decisions"] < KILL_THRESHOLD_WEEKLY_HITS
+        row["auto_strong_contribution_decisions"] >= KILL_THRESHOLD_WEEKLY_HITS
         for row in values
     ):
-        verdict = "observed_breached"
-    else:
         verdict = "observed_ok"
+    else:
+        verdict = "observed_breached"
     for row in values:
         row.pop("_auto_searches")
         row.pop("_resolved_searches")
@@ -582,6 +593,349 @@ def _kill_criteria(usage: list[dict], now: datetime, tz: ZoneInfo) -> dict:
         "threshold_weekly_hits": KILL_THRESHOLD_WEEKLY_HITS,
         "verdict": verdict,
         "weeks": values,
+    }
+
+
+def _decision_value(
+    usage: list[dict],
+    now: datetime,
+    tz: ZoneInfo,
+    *,
+    observation_started_at: datetime,
+) -> dict:
+    """Build the fail-closed decision-value cohort used by the focused UI."""
+    now_utc = now.astimezone(timezone.utc)
+    future_limit = now_utc + DECISION_VALUE_FUTURE_TOLERANCE
+    current_week = _week_start(now, tz)
+    starts = [
+        current_week - timedelta(weeks=offset)
+        for offset in reversed(range(1, KILL_WEEKS + 1))
+    ]
+    observation_local = observation_started_at.astimezone(tz)
+    observation_week = _week_start(observation_local, tz)
+    observation_week_start = datetime.combine(
+        observation_week, datetime.min.time(), tzinfo=tz
+    )
+    first_observation_week = (
+        observation_week
+        if observation_local == observation_week_start
+        else observation_week + timedelta(weeks=1)
+    )
+
+    weekly_issues: dict[date, Counter[str]] = {
+        start: Counter() for start in starts
+    }
+    issue_counts: Counter[str] = Counter()
+
+    def record_issue(code: str, weeks: set[date] | None = None) -> None:
+        issue_counts[code] += 1
+        for week in weeks or set():
+            if week in weekly_issues:
+                weekly_issues[week][code] += 1
+
+    candidate_searches = [
+        record
+        for record in _searches(usage)
+        if _outcome(record) == "ok"
+        and _hits(record) > 0
+        and isinstance(record.get("search_id"), str)
+    ]
+    searches_grouped: dict[str, list[dict]] = {}
+    for record in candidate_searches:
+        searches_grouped.setdefault(record["search_id"], []).append(record)
+
+    searches_by_id: dict[str, dict] = {}
+    search_times: dict[str, datetime] = {}
+    for search_id, records in searches_grouped.items():
+        first = records[0]
+        if any(record != first for record in records[1:]):
+            weeks = {
+                _week_start(ts, tz)
+                for record in records
+                if (ts := parse_ts(record.get("ts"))) is not None
+            }
+            record_issue("duplicate_search_id", weeks)
+            continue
+        ts = parse_ts(first.get("ts"))
+        if ts is None:
+            record_issue("invalid_timestamp")
+            continue
+        if ts.astimezone(timezone.utc) > future_limit:
+            record_issue("future_timestamp", {_week_start(ts, tz)})
+            continue
+        searches_by_id[search_id] = first
+        search_times[search_id] = ts
+
+    candidate_decisions = [
+        record
+        for record in usage
+        if record.get("tool") == "plk_record_decision"
+        and record.get("outcome") == "recorded"
+        and isinstance(record.get("decision_id"), str)
+    ]
+    decisions_grouped: dict[str, list[dict]] = {}
+    for record in candidate_decisions:
+        decisions_grouped.setdefault(record["decision_id"], []).append(record)
+
+    normalized_decisions: list[dict] = []
+    for _decision_id, records in decisions_grouped.items():
+        first = records[0]
+        linked_weeks = {
+            _week_start(search_times[search_id], tz)
+            for record in records
+            for search_id in record.get("search_ids", [])
+            if isinstance(search_id, str) and search_id in search_times
+        }
+        if any(record != first for record in records[1:]):
+            record_issue("duplicate_decision_id", linked_weeks)
+            continue
+        ts = parse_ts(first.get("ts"))
+        if ts is None:
+            record_issue("invalid_timestamp", linked_weeks)
+            continue
+        if ts.astimezone(timezone.utc) > future_limit:
+            record_issue("future_timestamp", linked_weeks)
+            continue
+        normalized_decisions.append(first)
+
+    valid_decisions = _validated_decisions(normalized_decisions, searches_by_id)
+    valid_decision_ids = {
+        decision["decision_id"] for decision in valid_decisions
+    }
+    for decision in normalized_decisions:
+        if decision["decision_id"] in valid_decision_ids:
+            continue
+        linked_weeks = {
+            _week_start(search_times[search_id], tz)
+            for search_id in decision.get("search_ids", [])
+            if isinstance(search_id, str) and search_id in search_times
+        }
+        record_issue("invalid_decision", linked_weeks)
+
+    resolved_ids = {
+        search_id
+        for decision in valid_decisions
+        for search_id in decision.get("search_ids", [])
+        if isinstance(search_id, str)
+    }
+
+    weekly_searches: dict[date, list[dict]] = {start: [] for start in starts}
+    for search_id, record in searches_by_id.items():
+        if record.get("reason") != "auto-guideline":
+            continue
+        week = _week_start(search_times[search_id], tz)
+        if week in weekly_searches:
+            weekly_searches[week].append(record)
+
+    weekly_effects: dict[date, dict[str, set[str]]] = {
+        start: {"changed_action": set(), "prevented_error": set()}
+        for start in starts
+    }
+    for decision in valid_decisions:
+        effect = decision.get("effect")
+        if effect not in {"changed_action", "prevented_error"}:
+            continue
+        decision_ts = parse_ts(decision.get("ts"))
+        if decision_ts is None:
+            continue
+        used = {
+            fact_id
+            for fact_id in decision.get("used_fact_ids", [])
+            if isinstance(fact_id, str)
+        }
+        candidates: list[tuple[datetime, dict]] = []
+        for search_id in decision.get("search_ids", []):
+            if not isinstance(search_id, str) or search_id not in searches_by_id:
+                continue
+            search = searches_by_id[search_id]
+            search_ts = search_times[search_id]
+            returned = {
+                fact_id
+                for fact_id in search.get("fact_ids", [])
+                if isinstance(fact_id, str)
+            }
+            if (
+                search.get("reason") == "auto-guideline"
+                and used.intersection(returned)
+                and search_ts <= decision_ts
+            ):
+                candidates.append((search_ts, search))
+        if not candidates:
+            continue
+        cohort_week = _week_start(max(candidates, key=lambda item: item[0])[0], tz)
+        if cohort_week in weekly_effects:
+            weekly_effects[cohort_week][effect].add(decision["decision_id"])
+
+    rows = []
+    for start in starts:
+        searches = weekly_searches[start]
+        measurable_ids = {
+            record["search_id"] for record in searches
+            if isinstance(record.get("search_id"), str)
+        }
+        resolved = len(measurable_ids.intersection(resolved_ids))
+        changed = len(weekly_effects[start]["changed_action"])
+        prevented = len(weekly_effects[start]["prevented_error"])
+        reasons: list[str] = []
+        if start < first_observation_week:
+            reasons.append("pre_observation")
+        elif not measurable_ids:
+            reasons.append("no_eligible_searches")
+        if measurable_ids and resolved != len(measurable_ids):
+            reasons.append("measurement_gap")
+        reasons.extend(sorted(weekly_issues[start]))
+        evaluable = (
+            start >= first_observation_week
+            and bool(measurable_ids)
+            and resolved == len(measurable_ids)
+            and not weekly_issues[start]
+        )
+        strong = changed + prevented
+        rows.append({
+            "week": start.isoformat(),
+            "in_progress": False,
+            "auto_measurable_searches": len(measurable_ids),
+            "auto_resolved_searches": resolved,
+            "auto_measurement_rate": resolved / len(measurable_ids)
+            if measurable_ids else None,
+            "changed_action_decisions": changed,
+            "prevented_error_decisions": prevented,
+            "strong_decisions": strong,
+            "target": KILL_THRESHOLD_WEEKLY_HITS,
+            "target_met": evaluable and strong >= KILL_THRESHOLD_WEEKLY_HITS,
+            "evaluable": evaluable,
+            "unevaluable_reasons": reasons,
+            "data_quality_blockers": sum(weekly_issues[start].values()),
+        })
+
+    evaluable_weeks = sum(1 for row in rows if row["evaluable"])
+    target_met_weeks = sum(1 for row in rows if row["target_met"])
+    if evaluable_weeks < KILL_WEEKS:
+        status = "insufficient_data"
+    elif target_met_weeks == KILL_WEEKS:
+        status = "observed_sustained"
+    else:
+        status = "target_not_met"
+
+    recent_cutoff = now_utc - timedelta(days=READINESS_WINDOW_DAYS)
+    recent_searches = [
+        record for search_id, record in searches_by_id.items()
+        if recent_cutoff <= search_times[search_id].astimezone(timezone.utc) <= now_utc
+    ]
+    recent_ids = {
+        record["search_id"] for record in recent_searches
+        if isinstance(record.get("search_id"), str)
+    }
+    recent_resolved = len(recent_ids.intersection(resolved_ids))
+
+    blockers: list[dict] = []
+    data_quality_count = sum(
+        count for code, count in issue_counts.items()
+        if code in {
+            "duplicate_search_id", "duplicate_decision_id", "invalid_decision",
+            "invalid_timestamp", "future_timestamp",
+        }
+    )
+    if data_quality_count:
+        blockers.append({"code": "invalid_records", "count": data_quality_count, "target": None})
+    missing_searches = sum(
+        max(0, row["auto_measurable_searches"] - row["auto_resolved_searches"])
+        for row in rows if "pre_observation" not in row["unevaluable_reasons"]
+    )
+    if missing_searches:
+        blockers.append({"code": "measurement_gap", "count": missing_searches, "target": None})
+    pre_observation = sum(
+        1 for row in rows if "pre_observation" in row["unevaluable_reasons"]
+    )
+    if pre_observation:
+        blockers.append({"code": "insufficient_history", "count": pre_observation, "target": None})
+    no_search_weeks = sum(
+        1 for row in rows if "no_eligible_searches" in row["unevaluable_reasons"]
+    )
+    if no_search_weeks:
+        blockers.append({"code": "no_eligible_searches", "count": no_search_weeks, "target": None})
+    missed_weeks = sum(
+        1 for row in rows if row["evaluable"] and not row["target_met"]
+    )
+    if evaluable_weeks == KILL_WEEKS and missed_weeks:
+        blockers.append({"code": "weekly_target_missed", "count": missed_weeks, "target": KILL_THRESHOLD_WEEKLY_HITS})
+    if not blockers:
+        blockers.append({"code": "complete", "count": 0, "target": None})
+
+    priority = [
+        "invalid_records", "measurement_gap", "no_eligible_searches",
+        "insufficient_history", "weekly_target_missed", "complete",
+    ]
+    primary = next(code for code in priority if any(row["code"] == code for row in blockers))
+
+    if primary == "invalid_records":
+        next_action = {
+            "code": "repair_invalid_records", "count": data_quality_count,
+            "record_type": "usage", "destination": "data_quality",
+        }
+    elif primary == "measurement_gap":
+        unresolved_clients = Counter(
+            str(record.get("client") or "unknown")
+            for record in searches_by_id.values()
+            if record.get("reason") == "auto-guideline"
+            and record.get("search_id") not in resolved_ids
+        )
+        client = unresolved_clients.most_common(1)[0][0] if unresolved_clients else "unknown"
+        next_action = {
+            "code": "record_missing_decisions", "count": missing_searches,
+            "client": client, "destination": "decision_measurement",
+        }
+    elif primary == "no_eligible_searches":
+        next_action = {
+            "code": "verify_auto_search_flow", "weeks": no_search_weeks,
+            "observation_started_at": observation_started_at.isoformat(),
+            "destination": "decision_measurement",
+        }
+    elif primary == "insufficient_history":
+        next_action = {
+            "code": "observe_more_weeks", "weeks_remaining": pre_observation,
+            "destination": "decision_value",
+        }
+    elif primary == "weekly_target_missed":
+        missed = next(row for row in rows if row["evaluable"] and not row["target_met"])
+        next_action = {
+            "code": "inspect_below_target_week", "week": missed["week"],
+            "strong_decisions": missed["strong_decisions"],
+            "target": KILL_THRESHOLD_WEEKLY_HITS,
+            "destination": "decision_breakdown",
+        }
+    else:
+        next_action = {"code": "none", "destination": None}
+
+    return {
+        "status": status,
+        "primary_reason_code": primary,
+        "blockers": blockers,
+        "scope": {
+            "recent_coverage": "all_hit_searches",
+            "weekly_value": "auto_guideline_only",
+        },
+        "observation_started_at": observation_started_at.isoformat(),
+        "recent": {
+            "days": READINESS_WINDOW_DAYS,
+            "measurable_searches": len(recent_ids),
+            "resolved_searches": recent_resolved,
+            "measurement_rate": recent_resolved / len(recent_ids)
+            if recent_ids else None,
+            "minimum_searches": READINESS_MIN_SEARCHES,
+            "target_rate": READINESS_MEASUREMENT_TARGET,
+        },
+        "four_week": {
+            "required_weeks": KILL_WEEKS,
+            "evaluable_weeks": evaluable_weeks,
+            "target_met_weeks": target_met_weeks,
+            "weekly_target": KILL_THRESHOLD_WEEKLY_HITS,
+        },
+        "weekly": rows,
+        "next_action": next_action,
+        "data_quality": {
+            "global_blockers": dict(sorted(issue_counts.items())),
+        },
     }
 
 
@@ -603,6 +957,279 @@ def _eval_stats(eval_history: list[dict]) -> dict[str, list[dict]]:
     return grouped
 
 
+def _operational_readiness(
+    usage: list[dict],
+    eval_history: list[dict],
+    *,
+    now: datetime,
+    kill_criteria: dict,
+) -> dict:
+    """Summarize whether the local PLK has enough evidence for routine operation.
+
+    This is an evidence scorecard, not a production certification.  Contribution
+    remains agent self-report and the search-quality gate compares only runners
+    evaluated in the same recorded run.
+    """
+    now_utc = now.astimezone(timezone.utc)
+    cutoff = now_utc - timedelta(days=READINESS_WINDOW_DAYS)
+    window_searches = []
+    for record in _searches(usage):
+        ts = parse_ts(record.get("ts"))
+        if ts is not None and cutoff <= ts.astimezone(timezone.utc) <= now_utc:
+            window_searches.append(record)
+
+    measurable = [
+        record
+        for record in window_searches
+        if _outcome(record) == "ok"
+        and _hits(record) > 0
+        and isinstance(record.get("search_id"), str)
+    ]
+    all_searches_by_id = {
+        record["search_id"]: record
+        for record in _searches(usage)
+        if _outcome(record) == "ok"
+        and _hits(record) > 0
+        and isinstance(record.get("search_id"), str)
+    }
+    decisions = _validated_decisions(usage, all_searches_by_id)
+    resolved_ids = {
+        search_id
+        for decision in decisions
+        for search_id in decision.get("search_ids", [])
+        if isinstance(search_id, str)
+    }
+    resolved = [
+        record for record in measurable if record.get("search_id") in resolved_ids
+    ]
+    measurement_rate = len(resolved) / len(measurable) if measurable else None
+
+    client_counts: dict[str, dict[str, int]] = {}
+    for record in measurable:
+        client = record.get("client")
+        if not isinstance(client, str):
+            client = "unknown"
+        row = client_counts.setdefault(client, {"measurable": 0, "resolved": 0})
+        row["measurable"] += 1
+        if record.get("search_id") in resolved_ids:
+            row["resolved"] += 1
+    active_clients = [
+        {
+            "client": client,
+            **counts,
+            "measurement_rate": counts["resolved"] / counts["measurable"],
+        }
+        for client, counts in sorted(client_counts.items())
+        if counts["measurable"] >= READINESS_ACTIVE_CLIENT_MIN_SEARCHES
+    ]
+    compliant_clients = [
+        row
+        for row in active_clients
+        if row["measurement_rate"] >= READINESS_MEASUREMENT_TARGET
+    ]
+    client_coverage = (
+        len(compliant_clients) / len(active_clients) if active_clients else None
+    )
+
+    failures = sum(
+        1 for record in window_searches if _outcome(record) in {"degraded", "error"}
+    )
+    failure_rate = failures / len(window_searches) if window_searches else None
+    latency_values = [
+        value
+        for record in window_searches
+        if isinstance((value := record.get("latency_ms")), int)
+        and not isinstance(value, bool)
+        and value >= 0
+    ]
+    latency_p95 = _nearest_rank(latency_values, 0.95)
+
+    valid_eval_rows = [
+        (record, ts)
+        for record in eval_history
+        if (ts := parse_ts(record.get("ts"))) is not None
+    ]
+    eval_detail: dict = {
+        "status": "insufficient",
+        "latest_ts": None,
+        "age_days": None,
+        "graph_hit5_rate": None,
+        "embed_hit5_rate": None,
+        "same_run_comparison": False,
+    }
+    if valid_eval_rows:
+        latest_record, latest_ts = max(valid_eval_rows, key=lambda item: item[1])
+        run_id = latest_record.get("run_id")
+        if isinstance(run_id, str):
+            run_rows = [
+                record for record, _ts in valid_eval_rows
+                if record.get("run_id") == run_id
+            ]
+        else:
+            latest_hash = latest_record.get("queries_hash")
+            run_rows = [
+                record for record, ts in valid_eval_rows
+                if ts == latest_ts and record.get("queries_hash") == latest_hash
+            ]
+        graph_rows = [
+            record
+            for record in run_rows
+            if isinstance(record.get("runner"), str)
+            and record["runner"].startswith("graph(")
+        ]
+        embed_rows = [record for record in run_rows if record.get("runner") == "embed"]
+        age_days = max(0, (now_utc - latest_ts.astimezone(timezone.utc)).days)
+        eval_detail.update({
+            "latest_ts": latest_ts.isoformat(),
+            "age_days": age_days,
+        })
+        if graph_rows and embed_rows:
+            graph_row = graph_rows[-1]
+            embed_row = embed_rows[-1]
+            graph_hit5 = graph_row.get("hit5_rate")
+            embed_hit5 = embed_row.get("hit5_rate")
+            graph_mrr = graph_row.get("mrr")
+            embed_mrr = embed_row.get("mrr")
+            comparable = all(
+                isinstance(value, (int, float)) and not isinstance(value, bool)
+                for value in (graph_hit5, embed_hit5, graph_mrr, embed_mrr)
+            )
+            eval_detail.update({
+                "graph_hit5_rate": graph_hit5,
+                "embed_hit5_rate": embed_hit5,
+                "same_run_comparison": comparable,
+            })
+            if age_days > READINESS_EVAL_MAX_AGE_DAYS:
+                eval_detail["status"] = "stale"
+            elif comparable:
+                assert isinstance(graph_hit5, (int, float))
+                assert isinstance(embed_hit5, (int, float))
+                assert isinstance(graph_mrr, (int, float))
+                assert isinstance(embed_mrr, (int, float))
+                eval_detail["status"] = (
+                    "pass"
+                    if graph_hit5 >= embed_hit5 and graph_mrr >= embed_mrr
+                    else "fail"
+                )
+
+    def gate(
+        gate_id: str,
+        label: str,
+        status: str,
+        current: str,
+        target: str,
+    ) -> dict:
+        return {
+            "id": gate_id,
+            "label": label,
+            "status": status,
+            "current": current,
+            "target": target,
+        }
+
+    enough_measurement = len(measurable) >= READINESS_MIN_SEARCHES
+    measurement_status = (
+        "insufficient"
+        if not enough_measurement
+        else "pass"
+        if measurement_rate is not None
+        and measurement_rate >= READINESS_MEASUREMENT_TARGET
+        else "fail"
+    )
+    client_status = (
+        "insufficient"
+        if not active_clients
+        else "pass"
+        if client_coverage == 1.0
+        else "fail"
+    )
+    enough_reliability = len(window_searches) >= READINESS_MIN_SEARCHES
+    reliability_status = (
+        "insufficient"
+        if not enough_reliability or latency_p95 is None or failure_rate is None
+        else "pass"
+        if failure_rate <= READINESS_FAILURE_RATE_TARGET
+        and latency_p95 <= READINESS_LATENCY_P95_TARGET_MS
+        else "fail"
+    )
+    value_status = {
+        "observed_ok": "pass",
+        "observed_breached": "fail",
+        "inconclusive": "insufficient",
+    }.get(str(kill_criteria.get("verdict")), "insufficient")
+
+    gates = [
+        gate(
+            "measurement",
+            "検索から最終判断までの計測",
+            measurement_status,
+            f"{len(resolved)}/{len(measurable)}"
+            + (
+                f" ({measurement_rate:.0%})"
+                if measurement_rate is not None
+                else ""
+            ),
+            f"直近{READINESS_WINDOW_DAYS}日で{READINESS_MEASUREMENT_TARGET:.0%}以上"
+            f"（最低{READINESS_MIN_SEARCHES}検索）",
+        ),
+        gate(
+            "client_coverage",
+            "利用中クライアントの計測定着",
+            client_status,
+            f"{len(compliant_clients)}/{len(active_clients)} clients",
+            f"各client {READINESS_MEASUREMENT_TARGET:.0%}以上"
+            f"（最低{READINESS_ACTIVE_CLIENT_MIN_SEARCHES}検索/client）",
+        ),
+        gate(
+            "observed_value",
+            "強い意思決定貢献",
+            value_status,
+            str(kill_criteria.get("verdict", "inconclusive")),
+            f"4完了週で毎週{KILL_THRESHOLD_WEEKLY_HITS}件以上、計測欠損なし",
+        ),
+        gate(
+            "reliability",
+            "検索の信頼性",
+            reliability_status,
+            f"failure {failure_rate:.1%}, p95 {latency_p95} ms"
+            if failure_rate is not None and latency_p95 is not None
+            else "データ不足",
+            f"failure ≤ {READINESS_FAILURE_RATE_TARGET:.0%}, "
+            f"p95 ≤ {READINESS_LATENCY_P95_TARGET_MS} ms",
+        ),
+        gate(
+            "retrieval_eval",
+            "検索品質の対照評価",
+            str(eval_detail["status"]),
+            (
+                f"graph {eval_detail['graph_hit5_rate']:.0%}, "
+                f"embed {eval_detail['embed_hit5_rate']:.0%}"
+                if isinstance(eval_detail["graph_hit5_rate"], (int, float))
+                and isinstance(eval_detail["embed_hit5_rate"], (int, float))
+                else "同一runのgraph/embed評価なし"
+            ),
+            f"{READINESS_EVAL_MAX_AGE_DAYS}日以内、graphがembed以上",
+        ),
+    ]
+    passed = sum(1 for item in gates if item["status"] == "pass")
+    if passed == len(gates):
+        status = "ready"
+    elif any(item["status"] == "fail" for item in gates):
+        status = "needs_work"
+    else:
+        status = "insufficient_data"
+    return {
+        "status": status,
+        "passed_gates": passed,
+        "total_gates": len(gates),
+        "window_days": READINESS_WINDOW_DAYS,
+        "gates": gates,
+        "active_clients": active_clients,
+        "eval": eval_detail,
+        "note": "観測可能性と運用価値のゲート。因果効果や本番認証・復旧試験の証明ではありません。",
+    }
+
+
 def build_metrics(
     usage: list[dict],
     posts: list[dict],
@@ -610,16 +1237,30 @@ def build_metrics(
     *,
     now: datetime,
     tz: ZoneInfo,
+    observation_started_at: datetime = DECISION_VALUE_OBSERVATION_STARTED_AT,
 ) -> dict:
     """Build the complete metrics response without reading external state."""
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
+    kill_criteria = _kill_criteria(usage, now, tz)
     return {
         "generated_at": now.astimezone(tz).isoformat(timespec="seconds"),
         "search": _search_stats(usage, now, tz),
         "contribution": _contribution_stats(usage),
+        "decision_value": _decision_value(
+            usage,
+            now,
+            tz,
+            observation_started_at=observation_started_at,
+        ),
         "zero_hit": _zero_hit_queries(usage),
         "corpus": _corpus_stats(posts, usage, now, tz),
-        "kill_criteria": _kill_criteria(usage, now, tz),
+        "kill_criteria": kill_criteria,
+        "operational_readiness": _operational_readiness(
+            usage,
+            eval_history,
+            now=now,
+            kill_criteria=kill_criteria,
+        ),
         "eval": _eval_stats(eval_history),
     }

@@ -86,6 +86,8 @@ async def test_metrics_missing_sources_returns_empty_structure(open_uiclient):
     assert body["search"]["total"] == 0
     assert body["zero_hit"] == [] and body["eval"] == {}
     assert body["corpus"]["available"] is True
+    assert body["decision_value"]["status"] == "insufficient_data"
+    assert len(body["decision_value"]["weekly"]) == 4
 
 
 async def test_metrics_skips_broken_jsonl_and_malformed_fact(
@@ -175,9 +177,11 @@ async def test_metrics_frontend_uses_clear_labels(uiclient):
     page = await uiclient.get("/")
     script = await uiclient.get("/static/app.js")
     visible_copy = page.text + script.text
-    assert "継続判断の参考値" in visible_copy
-    assert "登録データの状態" in visible_copy
-    assert "上位 5 件の正解率" in page.text
+    assert "判断価値" in page.text
+    assert "検索品質" in page.text
+    assert "データ状態" in page.text
+    assert "週ごとの強い影響の報告" in page.text
+    assert "検索方式の対照評価" in page.text
     assert "キル基準" not in visible_copy
     assert "コーパス" not in visible_copy
     assert "proxy OK" not in visible_copy
@@ -186,19 +190,21 @@ async def test_metrics_frontend_uses_clear_labels(uiclient):
 async def test_metrics_frontend_explains_status_and_next_action(uiclient):
     page = await uiclient.get("/")
     script = await uiclient.get("/static/app.js")
-    assert 'id="metricsSummaryTitle"' in page.text
-    assert 'id="metricsActionSummary"' in page.text
-    assert "使われているか" in page.text
-    assert "判断に貢献したか" in page.text
-    assert "未計測の検索は未使用として扱いません" in page.text
-    assert "見方:" in page.text
-    assert "結果が 0 件だった ${noResult} 回の検索を見直す" in script.text
-    assert "完了週の前週比" in script.text
+    assert 'id="decisionValueTitle"' in page.text
+    assert 'id="decisionNextActionTitle"' in page.text
+    assert 'id="decisionValueStats"' in page.text
+    assert "判定可能な完了週" in script.text
+    assert "未計測や観測開始前の週を0件として扱わず" in script.text
+    assert "因果効果や判断の正しさは示しません" in page.text
+    assert 'role="tablist" aria-label="利用状況の詳細"' in page.text
+    assert "ArrowRight" in script.text and "Home" in script.text
 
 
 async def test_metrics_frontend_uses_readable_type_sizes(uiclient):
     page = await uiclient.get("/")
     assert "font-size: 15.5px" in page.text
+    assert "@media (max-width: 720px)" in page.text
+    assert "min-width: 0" in page.text
     assert ".stat-value { margin-top: 9px; font-size: 30px" in page.text
     assert ".metric-card h2 { margin: 0; font-size: 17px" in page.text
 

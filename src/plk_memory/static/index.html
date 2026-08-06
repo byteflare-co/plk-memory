@@ -307,10 +307,40 @@
   .metrics-table { min-width: 620px; }
   .metrics-table tbody tr { cursor: default; }
   .metrics-table td:first-child { max-width: 520px; white-space: normal; overflow-wrap: anywhere; }
+  .metrics-table td.success-text { color: var(--success); font-weight: 700; }
+  .metrics-table td.danger-text { color: var(--warning); font-weight: 700; }
   .metrics-table .mono { font-family: var(--font-mono); font-size: 12.5px; color: var(--text-muted); }
   .metrics-note { margin-top: 12px; padding: 11px 13px; border-radius: var(--radius-sm); background: var(--warning-bg); color: var(--warning); font-size: 13px; }
   .metrics-kill { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .metrics-kill .status-pill { font-size: 13px; }
+  .metrics-subtabs {
+    display: inline-flex; gap: 3px; padding: 3px; margin: 0 0 18px;
+    border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface);
+  }
+  .metrics-subtabs button {
+    min-height: 44px; padding: 8px 16px; border: 0; border-radius: 4px;
+    background: transparent; color: var(--text-muted); font-size: 13px; font-weight: 650; cursor: pointer;
+  }
+  .metrics-subtabs button[aria-selected="true"] { background: var(--accent); color: var(--accent-fg); }
+  .metrics-panel[hidden] { display: none; }
+  .decision-stat-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .decision-value-note { margin-top: 12px; color: var(--text-muted); font-size: 12.5px; }
+  .decision-chart { overflow-x: hidden; }
+  .decision-chart svg { min-width: 0; }
+  .decision-action {
+    display: flex; align-items: center; justify-content: space-between; gap: 18px;
+    border-left: 4px solid var(--accent); background: var(--surface); border-radius: var(--radius);
+  }
+  .decision-action-copy h2 { margin-bottom: 5px; }
+  .decision-action-copy p { margin: 0; color: var(--text-muted); }
+  .decision-action button {
+    flex: none; min-height: 44px; padding: 9px 14px; border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm); background: var(--surface-2); cursor: pointer;
+  }
+  .decision-action button:hover { border-color: var(--accent); }
+  .metrics-disclosure { margin-top: 16px; }
+  .metrics-disclosure summary { min-height: 44px; padding: 10px 0; cursor: pointer; color: var(--text-muted); font-weight: 650; }
+  .metrics-disclosure[open] summary { color: var(--text); }
 
   @media (max-width: 720px) {
     #detail { width: 100vw; }
@@ -320,10 +350,14 @@
     .view-tabs { margin-left: auto; }
     .ro-badge { display: none; }
     #main { padding-inline: 14px; }
-    .summary-points, .stat-grid, .metrics-grid { grid-template-columns: 1fr; }
+    .summary-points, .stat-grid, .metrics-grid, .decision-stat-grid { grid-template-columns: 1fr; }
     .summary-point + .summary-point { border-left: 0; border-top: 1px solid var(--border); padding-left: 0; margin-top: 14px; }
     .metrics-summary { padding: 18px; }
     .metric-card.wide { grid-column: auto; }
+    .metrics-subtabs { display: flex; width: 100%; }
+    .metrics-subtabs button { flex: 1; padding-inline: 8px; }
+    .decision-action { align-items: stretch; flex-direction: column; }
+    .decision-action button { width: 100%; }
   }
 </style>
 </head>
@@ -393,41 +427,65 @@
 
   <section id="metricsView" role="tabpanel" aria-labelledby="metricsTab" hidden>
     <div class="metrics-heading">
-      <div><h1>利用状況</h1><p>検索から最終判断までの計測・登録データの状態・検索精度</p></div>
+      <div><h1>意思決定への貢献</h1><p>PLK検索後に報告された影響と、その観測の確かさを確認します</p></div>
       <button class="metrics-refresh" id="metricsRefresh" type="button">更新</button>
     </div>
     <div class="metrics-status" id="metricsStatus" role="status" aria-live="polite"></div>
-    <section class="metrics-summary" id="metricsSummary" aria-labelledby="metricsSummaryTitle">
-      <div class="summary-eyebrow">いまの状態</div>
-      <h2 id="metricsSummaryTitle">データを読み込んでいます</h2>
-      <p class="summary-lead" id="metricsSummaryLead">利用状況を集計し、改善の進み具合をまとめます。</p>
-      <div class="summary-points">
-        <div class="summary-point"><h3>使われているか</h3><p id="metricsUsageSummary">—</p></div>
-        <div class="summary-point"><h3>判断に貢献したか</h3><p id="metricsValueSummary">—</p></div>
-        <div class="summary-point"><h3>次に改善すること</h3><p id="metricsActionSummary">—</p></div>
+    <div class="metrics-subtabs" role="tablist" aria-label="利用状況の詳細">
+      <button id="decisionValueTab" type="button" role="tab" aria-selected="true" aria-controls="decisionValuePanel">判断価値</button>
+      <button id="searchQualityTab" type="button" role="tab" aria-selected="false" aria-controls="searchQualityPanel" tabindex="-1">検索品質</button>
+      <button id="dataStateTab" type="button" role="tab" aria-selected="false" aria-controls="dataStatePanel" tabindex="-1">データ状態</button>
+    </div>
+
+    <section id="decisionValuePanel" class="metrics-panel" role="tabpanel" aria-labelledby="decisionValueTab">
+      <section class="metrics-summary" id="decisionValueSummary" aria-labelledby="decisionValueTitle">
+        <div class="summary-eyebrow">直近4完了週の価値観測</div>
+        <h2 id="decisionValueTitle">データを読み込んでいます</h2>
+        <p class="summary-lead" id="decisionValueReason">週次の観測状態を集計しています。</p>
+        <p class="decision-value-note">PLKを使ったことと影響をエージェントが記録した観測値です。因果効果や判断の正しさは示しません。</p>
+      </section>
+      <div class="stat-grid decision-stat-grid" id="decisionValueStats"></div>
+      <section class="metric-card wide">
+        <h2>週ごとの強い影響の報告</h2>
+        <p class="subhead">行動変更・誤り防止の報告と、週ごとの観測カバレッジ</p>
+        <div class="chart decision-chart" id="decisionValueChart"></div>
+        <details class="metrics-disclosure"><summary>データ表を表示</summary><div class="table-wrap"><table class="metrics-table"><thead><tr><th>完了週</th><th>対象検索</th><th>計測済み</th><th>カバレッジ</th><th>行動変更</th><th>誤り防止</th><th>週次判定</th></tr></thead><tbody id="decisionValueRows"></tbody></table></div></details>
+      </section>
+      <section class="metric-card wide decision-action" id="decisionNextAction">
+        <div class="decision-action-copy"><h2 id="decisionNextActionTitle">次に行うこと</h2><p id="decisionNextActionText">集計後に最優先の行動を表示します。</p></div>
+        <button id="decisionNextActionButton" type="button" hidden>詳細を見る</button>
+      </section>
+      <details class="metrics-disclosure" id="decisionBreakdownDetails"><summary>判断価値の内訳</summary><div class="metrics-grid">
+        <section class="metric-card"><h2>意思決定への影響</h2><p class="subhead">計測済み判断の自己申告内訳</p><div class="chart" id="effectChart"></div></section>
+        <section class="metric-card"><h2>不採用の理由</h2><p class="subhead">未計測とは分けて集計</p><div class="chart" id="noUseReasonChart"></div></section>
+        <section class="metric-card wide"><h2>呼び出し元別の計測状況</h2><div class="table-wrap"><table class="metrics-table"><thead><tr><th>呼び出し元</th><th>計測対象</th><th>計測済み</th><th>計測率</th><th>強い影響</th></tr></thead><tbody id="measurementClientRows"></tbody></table></div></section>
+      </div></details>
+    </section>
+
+    <section id="searchQualityPanel" class="metrics-panel" role="tabpanel" aria-labelledby="searchQualityTab" hidden>
+      <div class="metrics-grid">
+        <section class="metric-card wide"><h2>運用品質の詳細</h2><p class="subhead">判断価値とは分けて、検索基盤と検索方式を確認</p><div class="metrics-kill" id="readinessStatus"></div><div class="table-wrap"><table class="metrics-table"><thead><tr><th>ゲート</th><th>判定</th><th>現在値</th><th>目標</th></tr></thead><tbody id="readinessRows"></tbody></table></div><div class="metrics-note" id="readinessNote"></div></section>
+        <section class="metric-card wide"><h2>週別検索数</h2><p class="subhead">自動検索 / 手動検索 / 障害</p><div class="chart" id="weeklySearchChart"></div></section>
+        <section class="metric-card"><h2>週別結果返却率</h2><p class="subhead">正常検索のうち結果が1件以上返った割合</p><div class="chart" id="returnRateChart"></div></section>
+        <section class="metric-card"><h2>検索方式の対照評価</h2><p class="subhead">Graph / Embed / rgを同一runで比較</p><div class="chart" id="evalChart"></div></section>
+        <section class="metric-card wide"><h2>結果が0件だった検索</h2><p class="subhead">再発と直近発生を確認</p><div class="table-wrap"><table class="metrics-table"><thead><tr><th>検索内容</th><th>回数</th><th>最終発生</th><th>呼び出し元</th></tr></thead><tbody id="zeroHitRows"></tbody></table></div></section>
       </div>
     </section>
-    <div class="stat-grid" id="metricsStats"></div>
-    <div class="metrics-grid">
-      <section class="metric-card wide"><h2>週別検索数</h2><p class="subhead">自動検索 / 手動検索の内訳</p><p class="metric-guide"><strong>見方:</strong> 検索数が継続していれば、日常の判断で使われています。赤い障害線は 0 件が理想です。</p><div class="chart" id="weeklySearchChart"></div></section>
-      <section class="metric-card"><h2>週別結果返却率</h2><p class="subhead">正常検索のうち結果が 1 件以上返った割合</p><p class="metric-guide"><strong>見方:</strong> 高いほど、探した情報が見つかっています。前週より下がったら「結果が 0 件だった検索」を確認します。</p><div class="chart" id="returnRateChart"></div></section>
-      <section class="metric-card"><h2>検索精度</h2><p class="subhead">上位 5 件の正解率 / 検索順位スコア（検索方式・評価条件別）</p><p class="metric-guide"><strong>見方:</strong> 同じ評価条件で前回より上がれば、検索改善の効果が出ています。未評価の場合は改善を客観比較できません。</p><div class="chart" id="evalChart"></div></section>
-      <section class="metric-card"><h2>分類別の有効ファクト数</h2><p class="subhead">件数の多い順</p><p class="metric-guide"><strong>見方:</strong> 登録内容の偏りを確認します。よく検索する分野の件数が少なければ、情報不足の可能性があります。</p><div class="chart" id="namespaceChart"></div></section>
-      <section class="metric-card"><h2>呼び出し元別の検索数</h2><p class="subhead">全期間の上位 10 件</p><p class="metric-guide"><strong>見方:</strong> どのツールで定着しているかを確認します。利用元が増えれば、活用範囲が広がっています。</p><div class="chart" id="clientChart"></div></section>
-      <section class="metric-card"><h2>意思決定への影響</h2><p class="subhead">計測済みの最終判断を影響別に集計</p><p class="metric-guide"><strong>見方:</strong> 「行動を変更」「誤りを防止」は強い貢献、「確認を補強」は採用、「不採用」は理由を確認します。</p><div class="chart" id="effectChart"></div></section>
-      <section class="metric-card"><h2>不採用の理由</h2><p class="subhead">検索結果を使わなかった判断の内訳</p><p class="metric-guide"><strong>活用方法:</strong> 古い・矛盾・不十分が多い場合は、該当ファクトを修正します。未計測はここへ混ぜません。</p><div class="chart" id="noUseReasonChart"></div></section>
-      <section class="metric-card wide"><h2>呼び出し元別の計測状況</h2><p class="subhead">結果が返った検索のうち、最終判断まで記録された割合</p><div class="table-wrap"><table class="metrics-table"><thead><tr><th>呼び出し元</th><th>計測対象</th><th>計測済み</th><th>計測率</th><th>強い貢献</th></tr></thead><tbody id="measurementClientRows"></tbody></table></div></section>
-      <section class="metric-card wide"><h2>ファクト別の観測貢献</h2><p class="subhead">検索結果に出た回数と、最終判断で使われた回数（最大 50 件）</p><p class="metric-guide"><strong>注意:</strong> エージェントの自己申告に基づく観測値です。未計測の検索は未使用として扱いません。</p><div class="table-wrap"><table class="metrics-table"><thead><tr><th>ファクト ID</th><th>結果返却</th><th>採用判断</th><th>強い貢献</th><th>観測採用率</th></tr></thead><tbody id="contributionFactRows"></tbody></table></div></section>
-      <section class="metric-card wide"><h2>継続判断の参考値</h2><p class="subhead">直近 4 完了週に、自動検索が行動変更または誤り防止へ貢献した判断数</p><p class="metric-guide"><strong>見方:</strong> 毎週 3 回以上の強い貢献が観測されたかを見る参考値です。4週分の計測がそろうまでは、継続可否を確定しません。</p><div id="killCriteria"></div></section>
-      <section class="metric-card wide"><h2>結果が 0 件だった検索</h2><p class="subhead">正常に完了した検索のみ・直近発生順</p><p class="metric-guide"><strong>活用方法:</strong> ここが具体的な改善リストです。必要な情報が未登録なのか、検索語が登録内容と合っていないのかを切り分けます。</p><div class="table-wrap"><table class="metrics-table"><thead><tr><th>検索内容</th><th>回数</th><th>最終発生</th><th>呼び出し元</th></tr></thead><tbody id="zeroHitRows"></tbody></table></div><div class="metrics-note">実行結果が記録されていない古いデータは正常扱いのため、障害時の記録が含まれる場合があります。</div></section>
-      <section class="metric-card wide"><h2>検索結果に出ていないファクト</h2><p class="subhead">検索結果に一度も含まれていない有効なファクト（最大 30 件）</p><p class="metric-guide"><strong>活用方法:</strong> 件数が多い場合は、検索される価値がある内容か、検索しやすい表現になっているかを見直します。</p><div class="table-wrap"><table class="metrics-table"><thead><tr><th>内容</th><th>分類</th><th>ファクト ID</th></tr></thead><tbody id="unreturnedRows"></tbody></table></div></section>
-    </div>
+
+    <section id="dataStatePanel" class="metrics-panel" role="tabpanel" aria-labelledby="dataStateTab" hidden>
+      <div class="metrics-grid">
+        <section class="metric-card"><h2>分類別の有効ファクト数</h2><p class="subhead">登録内容の偏り</p><div class="chart" id="namespaceChart"></div></section>
+        <section class="metric-card"><h2>呼び出し元別の検索数</h2><p class="subhead">全期間の参考値</p><div class="chart" id="clientChart"></div></section>
+        <section class="metric-card wide"><h2>ファクト別の観測利用</h2><p class="subhead">件数は異なる単位のため、率へ丸めず表示</p><div class="table-wrap"><table class="metrics-table"><thead><tr><th>ファクト ID</th><th>結果返却</th><th>利用報告</th><th>強い影響</th></tr></thead><tbody id="contributionFactRows"></tbody></table></div></section>
+        <section class="metric-card wide"><h2>検索結果に出ていないファクト</h2><p class="subhead">有効ファクトのうち未返却のもの（最大30件）</p><div class="table-wrap"><table class="metrics-table"><thead><tr><th>内容</th><th>分類</th><th>ファクト ID</th></tr></thead><tbody id="unreturnedRows"></tbody></table></div></section>
+      </div>
+    </section>
   </section>
 </div>
 
 <div id="scrim"></div>
 <div id="detail" role="dialog" aria-label="fact 詳細"></div>
 
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v=20260806-contribution-2"></script>
 </body>
 </html>

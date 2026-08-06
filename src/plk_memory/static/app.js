@@ -13,6 +13,9 @@ const state = { ns: '', kind: '', status: 'active', q: '', sortDir: 'desc', csrf
 let currentFacts = [];
 let currentDetailId = null;
 let metricsLoaded = false;
+let metricsLastSuccessAt = null;
+let metricsStaleTimer = null;
+let activeMetricsPanel = 'decisionValuePanel';
 
 function formatDate(iso) {
   if (!iso) return '—';
@@ -846,6 +849,195 @@ function addStatTile(host, label, value, note, valueClass = '') {
   host.appendChild(tile);
 }
 
+function renderDecisionValueChart(weekly) {
+  const host = document.getElementById('decisionValueChart');
+  if (!weekly.length) {
+    renderChartEmpty(host, '4完了週の観測データがまだありません。');
+    return;
+  }
+  const svg = makeChart(host, '直近4完了週の強い影響報告と観測カバレッジ', 760, 270);
+  const description = svgElement('desc');
+  description.textContent = '行動変更と誤り防止の報告数を週別に積み上げ、週3件の目標線と観測カバレッジを表示します。';
+  svg.appendChild(description);
+  const left = 52; const top = 18; const width = 680; const height = 170;
+  const target = Math.max(1, ...weekly.map(row => numberOrNull(row.target) || 0));
+  const maxValue = Math.max(target + 1, ...weekly.map(row => numberOrNull(row.strong_decisions) || 0));
+  drawGrid(svg, { left, top, width, height, maxValue, formatter: value => String(Math.round(value)) });
+  const slot = width / weekly.length;
+  const barWidth = Math.min(70, slot * .48);
+  weekly.forEach((row, index) => {
+    const changed = Math.max(0, numberOrNull(row.changed_action_decisions) || 0);
+    const prevented = Math.max(0, numberOrNull(row.prevented_error_decisions) || 0);
+    const x = left + slot * index + (slot - barWidth) / 2;
+    const changedHeight = height * changed / maxValue;
+    const preventedHeight = height * prevented / maxValue;
+    const opacity = row.evaluable ? 1 : .38;
+    const changedRect = svgElement('rect', {
+      x, y: top + height - changedHeight, width: barWidth, height: changedHeight,
+      rx: 3, fill: CHART_COLORS[0], opacity,
+    });
+    const changedTitle = svgElement('title');
+    changedTitle.textContent = `${row.week}: 行動変更 ${changed}件`;
+    changedRect.appendChild(changedTitle);
+    svg.appendChild(changedRect);
+    const preventedRect = svgElement('rect', {
+      x, y: top + height - changedHeight - preventedHeight, width: barWidth,
+      height: preventedHeight, rx: 3, fill: CHART_COLORS[1], opacity,
+    });
+    const preventedTitle = svgElement('title');
+    preventedTitle.textContent = `${row.week}: 誤り防止 ${prevented}件`;
+    preventedRect.appendChild(preventedTitle);
+    svg.appendChild(preventedRect);
+    svgText(svg, compactWeek(row.week), {
+      x: x + barWidth / 2, y: 216, fill: 'var(--text-muted)', 'font-size': 12, 'text-anchor': 'middle',
+    });
+    const coverage = numberOrNull(row.auto_measurement_rate);
+    svgText(svg, row.evaluable ? `計測 ${percent(coverage)}` : '判定不能', {
+      x: x + barWidth / 2, y: 238,
+      fill: row.evaluable ? 'var(--success)' : 'var(--warning)',
+      'font-size': 11, 'font-weight': 650, 'text-anchor': 'middle',
+    });
+  });
+  const targetY = top + height * (1 - target / maxValue);
+  svg.appendChild(svgElement('line', {
+    x1: left, y1: targetY, x2: left + width, y2: targetY,
+    stroke: CHART_COLORS[2], 'stroke-width': 2, 'stroke-dasharray': '6 5',
+  }));
+  svgText(svg, `目標 ${target}件`, {
+    x: left + width, y: targetY - 6, fill: CHART_COLORS[2],
+    'font-size': 11, 'text-anchor': 'end',
+  });
+  appendLegend(host, [
+    { label: '行動を変更', color: CHART_COLORS[0] },
+    { label: '誤りを防止', color: CHART_COLORS[1] },
+    { label: '週次目標', color: CHART_COLORS[2] },
+  ]);
+}
+
+function renderDecisionValueRows(weekly) {
+  const tbody = document.getElementById('decisionValueRows');
+  clearElement(tbody);
+  if (!weekly.length) {
+    emptyTableRow(tbody, 7, '4完了週の観測データがありません。');
+    return;
+  }
+  weekly.forEach(row => {
+    const tr = document.createElement('tr');
+    const status = row.evaluable
+      ? (row.target_met ? '目標達成' : '目標未達')
+      : `判定不能（${(row.unevaluable_reasons || []).join(', ') || 'データ不足'}）`;
+    [
+      row.week || '—',
+      numberOrNull(row.auto_measurable_searches) || 0,
+      numberOrNull(row.auto_resolved_searches) || 0,
+      percent(row.auto_measurement_rate),
+      numberOrNull(row.changed_action_decisions) || 0,
+      numberOrNull(row.prevented_error_decisions) || 0,
+      status,
+    ].forEach((value, index) => {
+      const td = document.createElement('td');
+      td.textContent = String(value);
+      if (index === 6) td.className = row.target_met ? 'success-text' : 'danger-text';
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
+}
+
+function nextActionCopy(action) {
+  const code = String(action.code || 'none');
+  const copies = {
+    repair_invalid_records: [`不正な計測記録 ${action.count || 0}件を確認`, '週次判定から除外された重複・不正記録を修復します。', 'データ状態を見る'],
+    record_missing_decisions: [`未計測 ${action.count || 0}件を確認`, `${action.client || '対象client'}の検索後に最終判断を記録し、判定可能な週を増やします。`, '計測内訳を見る'],
+    verify_auto_search_flow: ['自動検索の動線を確認', `観測開始後 ${action.weeks || 0}週で対象検索がありません。`, '検索品質を見る'],
+    observe_more_weeks: ['観測を継続', `4週判定まで、あと${action.weeks_remaining || 0}完了週の観測が必要です。`, null],
+    inspect_below_target_week: [`${action.week || '対象週'}の未達要因を確認`, `強い影響の報告は${action.strong_decisions || 0}件、目標は${action.target || 0}件です。`, '判断内訳を見る'],
+    none: ['現在、優先対応はありません', '同じ基準で週次観測を継続します。', null],
+  };
+  return copies[code] || ['観測状態を確認', '詳細データを確認してください。', '詳細を見る'];
+}
+
+function switchMetricsPanel(panelId, focusTab = false) {
+  const panels = ['decisionValuePanel', 'searchQualityPanel', 'dataStatePanel'];
+  const tabs = ['decisionValueTab', 'searchQualityTab', 'dataStateTab'];
+  activeMetricsPanel = panels.includes(panelId) ? panelId : panels[0];
+  panels.forEach((id, index) => {
+    const selected = id === activeMetricsPanel;
+    document.getElementById(id).hidden = !selected;
+    const tab = document.getElementById(tabs[index]);
+    tab.setAttribute('aria-selected', String(selected));
+    tab.tabIndex = selected ? 0 : -1;
+    if (selected && focusTab) tab.focus();
+  });
+}
+
+function renderDecisionValue(value) {
+  const summary = document.getElementById('decisionValueSummary');
+  const title = document.getElementById('decisionValueTitle');
+  const reason = document.getElementById('decisionValueReason');
+  const status = String(value.status || 'insufficient_data');
+  const fourWeek = value.four_week || {};
+  const evaluable = numberOrNull(fourWeek.evaluable_weeks) || 0;
+  const targetMet = numberOrNull(fourWeek.target_met_weeks) || 0;
+  const required = numberOrNull(fourWeek.required_weeks) || 4;
+  const labels = {
+    observed_sustained: '4週価値目標を達成（観測上）',
+    target_not_met: '4週価値目標は未達',
+    insufficient_data: 'データ不足 — 判定保留',
+  };
+  title.textContent = labels[status] || labels.insufficient_data;
+  summary.dataset.tone = status === 'observed_sustained' ? 'good' : 'attention';
+  if (status === 'observed_sustained') {
+    reason.textContent = `4完了週すべてで、強い影響の報告が週${fourWeek.weekly_target || 3}件以上あり、計測欠損もありません。`;
+  } else if (status === 'target_not_met') {
+    reason.textContent = `${required}完了週は計測できましたが、価値目標を満たしたのは${targetMet}週です。`;
+  } else {
+    reason.textContent = `判定可能な完了週は${evaluable}/${required}週です。未計測や観測開始前の週を0件として扱わず、判定を保留しています。`;
+  }
+
+  const stats = document.getElementById('decisionValueStats');
+  clearElement(stats);
+  const recent = value.recent || {};
+  const recentRate = numberOrNull(recent.measurement_rate);
+  const recentTarget = numberOrNull(recent.target_rate);
+  addStatTile(
+    stats,
+    `直近${recent.days || 7}日の観測カバレッジ`,
+    percent(recent.measurement_rate),
+    `${numberOrNull(recent.resolved_searches) || 0} / ${numberOrNull(recent.measurable_searches) || 0}検索`,
+    recentRate !== null && recentTarget !== null && recentRate >= recentTarget ? 'ok' : 'warn',
+  );
+  addStatTile(stats, '判定可能な完了週', `${evaluable} / ${required}週`, `判定不能 ${Math.max(0, required - evaluable)}週`, evaluable === required ? 'ok' : 'warn');
+  const weekly = Array.isArray(value.weekly) ? value.weekly : [];
+  const latest = weekly.at(-1) || {};
+  addStatTile(
+    stats,
+    '直近完了週の強い影響報告',
+    `${numberOrNull(latest.strong_decisions) || 0}件`,
+    latest.evaluable ? `基準 ${numberOrNull(latest.target) || 3}件` : '計測不足のため週次判定は保留',
+    latest.evaluable && latest.target_met ? 'ok' : 'warn',
+  );
+  renderDecisionValueChart(weekly);
+  renderDecisionValueRows(weekly);
+
+  const action = value.next_action || {};
+  const [actionTitle, actionText, buttonText] = nextActionCopy(action);
+  document.getElementById('decisionNextActionTitle').textContent = actionTitle;
+  document.getElementById('decisionNextActionText').textContent = actionText;
+  const button = document.getElementById('decisionNextActionButton');
+  button.hidden = !buttonText;
+  button.textContent = buttonText || '';
+  button.onclick = () => {
+    const destination = action.destination;
+    if (destination === 'search_quality') switchMetricsPanel('searchQualityPanel', true);
+    else if (destination === 'data_quality') switchMetricsPanel('dataStatePanel', true);
+    else {
+      const details = document.getElementById('decisionBreakdownDetails');
+      if (details) details.open = true;
+    }
+  };
+}
+
 function last7dReturnRate(search) {
   const direct = numberOrNull(search.last7d_return_rate);
   if (direct !== null) return direct;
@@ -960,6 +1152,20 @@ function renderStats(data) {
     observed_ok: ['基準内', 'ok'], observed_breached: ['基準未達', 'bad'], inconclusive: ['データ不足', 'warn'],
   }[verdict] || [verdict, 'warn'];
   addStatTile(host, '継続判断の参考値', verdictMeta[0], '強い貢献の観測数による参考判定', verdictMeta[1]);
+  const readiness = data.operational_readiness || {};
+  const readinessStatus = String(readiness.status || 'insufficient_data');
+  const readinessMeta = {
+    ready: ['運用証拠が充足', 'ok'],
+    needs_work: ['改善が必要', 'bad'],
+    insufficient_data: ['観測中', 'warn'],
+  }[readinessStatus] || [readinessStatus, 'warn'];
+  addStatTile(
+    host,
+    '実運用ゲート',
+    `${numberOrNull(readiness.passed_gates) || 0}/${numberOrNull(readiness.total_gates) || 0}`,
+    readinessMeta[0],
+    readinessMeta[1],
+  );
 }
 
 function emptyTableRow(tbody, columns, message) {
@@ -979,7 +1185,7 @@ function renderZeroHits(rows) {
     emptyTableRow(tbody, 4, '結果が 0 件だった検索はありません。');
     return;
   }
-  rows.forEach(row => {
+  rows.slice(0, 10).forEach(row => {
     const tr = document.createElement('tr');
     const query = document.createElement('td');
     query.textContent = row.query || '（空のクエリ）';
@@ -1007,7 +1213,7 @@ function renderUnreturned(unreturned, corpusAvailable) {
     emptyTableRow(tbody, 3, '検索結果に出ていない有効なファクトはありません。');
     return;
   }
-  rows.forEach(row => {
+  rows.slice(0, 10).forEach(row => {
     const tr = document.createElement('tr');
     const statement = document.createElement('td');
     statement.textContent = row.statement || '（内容なし）';
@@ -1052,6 +1258,52 @@ function renderKillCriteria(criteria) {
   host.appendChild(note);
 }
 
+function renderOperationalReadiness(readiness) {
+  const statusHost = document.getElementById('readinessStatus');
+  const tbody = document.getElementById('readinessRows');
+  const note = document.getElementById('readinessNote');
+  clearElement(statusHost);
+  clearElement(tbody);
+  const status = String(readiness.status || 'insufficient_data');
+  const labels = {
+    ready: '運用証拠が充足',
+    needs_work: '改善が必要',
+    insufficient_data: '観測中',
+  };
+  const pill = document.createElement('span');
+  pill.className = `status-pill ${status === 'ready' ? 'active' : 'invalidated'}`;
+  const dot = document.createElement('span');
+  dot.className = 'dot';
+  pill.append(dot, document.createTextNode(labels[status] || status));
+  const count = document.createElement('span');
+  count.textContent = `${numberOrNull(readiness.passed_gates) || 0} / ${numberOrNull(readiness.total_gates) || 0} ゲート達成`;
+  statusHost.append(pill, count);
+
+  const gateLabels = {
+    pass: '達成',
+    fail: '未達',
+    insufficient: 'データ不足',
+    stale: '評価期限切れ',
+  };
+  const gates = Array.isArray(readiness.gates) ? readiness.gates : [];
+  if (!gates.length) {
+    emptyTableRow(tbody, 4, '実運用ゲートを集計できません。');
+  } else {
+    gates.forEach(gate => {
+      const tr = document.createElement('tr');
+      [gate.label || gate.id || '—', gateLabels[gate.status] || gate.status || '—',
+        gate.current || '—', gate.target || '—'].forEach((value, index) => {
+        const td = document.createElement('td');
+        td.textContent = String(value);
+        if (index === 1) td.className = gate.status === 'pass' ? 'success-text' : 'danger-text';
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+  }
+  note.textContent = readiness.note || '';
+}
+
 function renderMeasurementClients(rows) {
   const tbody = document.getElementById('measurementClientRows');
   clearElement(tbody);
@@ -1059,7 +1311,7 @@ function renderMeasurementClients(rows) {
     emptyTableRow(tbody, 5, '最終判断まで計測できる検索がありません。');
     return;
   }
-  rows.forEach(row => {
+  rows.slice(0, 10).forEach(row => {
     const tr = document.createElement('tr');
     [row.client || 'unknown', numberOrNull(row.measurable) || 0, numberOrNull(row.resolved) || 0,
       percent(row.measurement_rate), numberOrNull(row.strong) || 0].forEach((value, index) => {
@@ -1076,14 +1328,13 @@ function renderContributionFacts(rows) {
   const tbody = document.getElementById('contributionFactRows');
   clearElement(tbody);
   if (!rows.length) {
-    emptyTableRow(tbody, 5, '貢献を集計できるファクトがありません。');
+    emptyTableRow(tbody, 4, '観測利用を集計できるファクトがありません。');
     return;
   }
-  rows.forEach(row => {
+  rows.slice(0, 10).forEach(row => {
     const tr = document.createElement('tr');
     [row.fact_id || '—', numberOrNull(row.returned_searches) || 0,
-      numberOrNull(row.used_decisions) || 0, numberOrNull(row.strong_decisions) || 0,
-      percent(row.observed_use_rate)].forEach((value, index) => {
+      numberOrNull(row.used_decisions) || 0, numberOrNull(row.strong_decisions) || 0].forEach((value, index) => {
       const td = document.createElement('td');
       td.textContent = String(value);
       if (index === 0) td.className = 'mono';
@@ -1098,8 +1349,8 @@ function renderMetrics(data) {
   const weekly = Array.isArray(search.weekly) ? search.weekly : [];
   const corpus = data.corpus || {};
   const contribution = data.contribution || {};
-  renderMetricsSummary(data);
-  renderStats(data);
+  renderDecisionValue(data.decision_value || {});
+  renderOperationalReadiness(data.operational_readiness || {});
   renderWeeklySearch(weekly);
   renderReturnRate(weekly);
   renderEval(data.eval || {});
@@ -1128,12 +1379,18 @@ function renderMetrics(data) {
   renderHorizontalBars('noUseReasonChart', reasonRows, 'count', 'label', '不採用の記録はありません。');
   renderMeasurementClients(Array.isArray(contribution.clients) ? contribution.clients : []);
   renderContributionFacts(Array.isArray(contribution.facts) ? contribution.facts : []);
-  renderKillCriteria(data.kill_criteria || {});
   renderZeroHits(Array.isArray(data.zero_hit) ? data.zero_hit : []);
   renderUnreturned(corpus.unreturned || {}, corpus.available);
   const generated = document.getElementById('metricsStatus');
   generated.className = 'metrics-status';
   generated.textContent = data.generated_at ? `集計日時: ${formatDateTime(data.generated_at)}` : '集計完了';
+  metricsLastSuccessAt = Date.now();
+  if (metricsStaleTimer) window.clearTimeout(metricsStaleTimer);
+  metricsStaleTimer = window.setTimeout(() => {
+    if (!metricsLastSuccessAt || Date.now() - metricsLastSuccessAt < 15 * 60 * 1000) return;
+    generated.className = 'metrics-status error';
+    generated.textContent = `15分以上更新されていません。最終成功: ${new Date(metricsLastSuccessAt).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })}`;
+  }, 15 * 60 * 1000 + 250);
 }
 
 async function loadMetrics(force = false) {
@@ -1151,7 +1408,10 @@ async function loadMetrics(force = false) {
     metricsLoaded = true;
   } catch (error) {
     status.className = 'metrics-status error';
-    status.textContent = `メトリクスを取得できませんでした: ${error.message}`;
+    const lastSuccess = metricsLastSuccessAt
+      ? ` 最終成功: ${new Date(metricsLastSuccessAt).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })}`
+      : '';
+    status.textContent = `更新失敗: ${error.message}.${lastSuccess}`;
   } finally {
     refresh.disabled = false;
   }
@@ -1196,6 +1456,25 @@ async function init() {
   document.getElementById('factsTab').addEventListener('click', () => switchView('facts'));
   document.getElementById('metricsTab').addEventListener('click', () => switchView('metrics'));
   document.getElementById('metricsRefresh').addEventListener('click', () => loadMetrics(true));
+  const metricsTabs = [
+    ['decisionValueTab', 'decisionValuePanel'],
+    ['searchQualityTab', 'searchQualityPanel'],
+    ['dataStateTab', 'dataStatePanel'],
+  ];
+  metricsTabs.forEach(([tabId, panelId], index) => {
+    const tab = document.getElementById(tabId);
+    tab.addEventListener('click', () => switchMetricsPanel(panelId));
+    tab.addEventListener('keydown', event => {
+      let next = null;
+      if (event.key === 'ArrowRight') next = (index + 1) % metricsTabs.length;
+      if (event.key === 'ArrowLeft') next = (index - 1 + metricsTabs.length) % metricsTabs.length;
+      if (event.key === 'Home') next = 0;
+      if (event.key === 'End') next = metricsTabs.length - 1;
+      if (next === null) return;
+      event.preventDefault();
+      switchMetricsPanel(metricsTabs[next][1], true);
+    });
+  });
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape' && document.getElementById('detail').classList.contains('open')) closeDetailPanel();
   });
