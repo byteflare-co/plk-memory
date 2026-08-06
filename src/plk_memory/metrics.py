@@ -362,7 +362,12 @@ def _corpus_stats(posts: list[dict], usage: list[dict], now: datetime, tz: ZoneI
     }
 
 
-def _contribution_stats(usage: list[dict]) -> dict:
+def _contribution_stats(usage: list[dict], posts: list[dict] | None = None) -> dict:
+    statements = {
+        post["id"]: post["statement"]
+        for post in (posts or [])
+        if isinstance(post.get("id"), str) and isinstance(post.get("statement"), str)
+    }
     searches = [
         record
         for record in _searches(usage)
@@ -472,6 +477,7 @@ def _contribution_stats(usage: list[dict]) -> dict:
     facts = [
         {
             **row,
+            "statement": statements.get(str(row["fact_id"])),
             "observed_use_rate": int(row["used_decisions"])
             / int(row["returned_searches"])
             if int(row["returned_searches"])
@@ -1246,7 +1252,7 @@ def build_metrics(
     return {
         "generated_at": now.astimezone(tz).isoformat(timespec="seconds"),
         "search": _search_stats(usage, now, tz),
-        "contribution": _contribution_stats(usage),
+        "contribution": _contribution_stats(usage, posts),
         "decision_value": _decision_value(
             usage,
             now,

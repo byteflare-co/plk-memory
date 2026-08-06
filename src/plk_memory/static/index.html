@@ -298,8 +298,8 @@
   .metric-card .subhead { margin: 4px 0 8px; color: var(--text-muted); font-size: 13.5px; }
   .metric-guide { margin: 0 0 14px; color: var(--text); font-size: 13.5px; line-height: 1.6; }
   .metric-guide strong { color: var(--accent); }
-  .chart { min-height: 240px; overflow-x: auto; }
-  .chart svg { display: block; width: 100%; min-width: 520px; height: 240px; overflow: visible; }
+  .chart { min-height: 240px; }
+  .chart svg { display: block; width: 100%; overflow: visible; }
   .chart-empty { display: flex; min-height: 200px; align-items: center; justify-content: center; color: var(--text-muted); font-size: 14px; text-align: center; padding: 24px; }
   .chart-legend { display: flex; flex-wrap: wrap; gap: 10px 16px; margin-top: 10px; color: var(--text-muted); font-size: 13px; }
   .legend-item { display: inline-flex; align-items: center; gap: 5px; }
@@ -325,8 +325,7 @@
   .metrics-panel[hidden] { display: none; }
   .decision-stat-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .decision-value-note { margin-top: 12px; color: var(--text-muted); font-size: 12.5px; }
-  .decision-chart { overflow-x: hidden; }
-  .decision-chart svg { min-width: 0; }
+  .chart-caption { display: block; margin-top: 8px; color: var(--text-faint); font-size: 12px; font-family: var(--font-mono); }
   .decision-action {
     display: flex; align-items: center; justify-content: space-between; gap: 18px;
     border-left: 4px solid var(--accent); background: var(--surface); border-radius: var(--radius);
@@ -476,7 +475,7 @@
       <div class="metrics-grid">
         <section class="metric-card"><h2>分類別の有効ファクト数</h2><p class="subhead">登録内容の偏り</p><div class="chart" id="namespaceChart"></div></section>
         <section class="metric-card"><h2>呼び出し元別の検索数</h2><p class="subhead">全期間の参考値</p><div class="chart" id="clientChart"></div></section>
-        <section class="metric-card wide"><h2>ファクト別の観測利用</h2><p class="subhead">件数は異なる単位のため、率へ丸めず表示</p><div class="table-wrap"><table class="metrics-table"><thead><tr><th>ファクト ID</th><th>結果返却</th><th>利用報告</th><th>強い影響</th></tr></thead><tbody id="contributionFactRows"></tbody></table></div></section>
+        <section class="metric-card wide"><h2>ファクト別の観測利用</h2><p class="subhead">件数は異なる単位のため、率へ丸めず表示</p><div class="table-wrap"><table class="metrics-table"><thead><tr><th>内容</th><th>結果返却</th><th>利用報告</th><th>強い影響</th></tr></thead><tbody id="contributionFactRows"></tbody></table></div></section>
         <section class="metric-card wide"><h2>検索結果に出ていないファクト</h2><p class="subhead">有効ファクトのうち未返却のもの（最大30件）</p><div class="table-wrap"><table class="metrics-table"><thead><tr><th>内容</th><th>分類</th><th>ファクト ID</th></tr></thead><tbody id="unreturnedRows"></tbody></table></div></section>
       </div>
     </section>
@@ -486,6 +485,6 @@
 <div id="scrim"></div>
 <div id="detail" role="dialog" aria-label="fact 詳細"></div>
 
-<script src="/static/app.js?v=20260806-contribution-2"></script>
+<script src="/static/app.js?v=20260806-uiux-1"></script>
 </body>
 </html>

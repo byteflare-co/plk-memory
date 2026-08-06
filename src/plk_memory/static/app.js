@@ -16,6 +16,17 @@ let metricsLoaded = false;
 let metricsLastSuccessAt = null;
 let metricsStaleTimer = null;
 let activeMetricsPanel = 'decisionValuePanel';
+let lastMetricsData = null;
+let chartRerenderTimer = null;
+
+// 隠れたパネル内のチャートは幅0で描かれるため、表示状態が変わったら実幅で描き直す
+function scheduleChartRerender() {
+  if (!lastMetricsData) return;
+  if (chartRerenderTimer) window.clearTimeout(chartRerenderTimer);
+  chartRerenderTimer = window.setTimeout(() => {
+    if (state.view === 'metrics' && lastMetricsData) renderMetricsCharts(lastMetricsData);
+  }, 120);
+}
 
 function formatDate(iso) {
   if (!iso) return '—';
@@ -576,11 +587,23 @@ function svgText(parent, value, attrs = {}) {
   return textEl;
 }
 
-function makeChart(host, label, width = 760, height = 240) {
+// ホストの実幅で描くことで、preserveAspectRatio による中央寄せ・左右余白を避ける
+function chartWidth(host, fallback = 760) {
+  const width = host.clientWidth;
+  return width > 80 ? width : fallback;
+}
+
+function makeChart(host, label, height = 240) {
   clearElement(host);
+  const width = chartWidth(host);
   const svg = svgElement('svg', { viewBox: `0 0 ${width} ${height}`, role: 'img', 'aria-label': label });
+  svg.style.height = `${height}px`;
   host.appendChild(svg);
-  return svg;
+  return { svg, width };
+}
+
+function everyNthLabel(count, plotWidth, minSlot = 64) {
+  return Math.max(1, Math.ceil(count / Math.max(1, Math.floor(plotWidth / minSlot))));
 }
 
 function renderChartEmpty(host, message) {
@@ -651,12 +674,13 @@ function renderWeeklySearch(weekly) {
     renderChartEmpty(host, '週次集計できる検索ログがありません。plk_search の利用後に表示されます。');
     return;
   }
-  const svg = makeChart(host, '週別検索数の積み上げ棒グラフ');
-  const left = 48; const top = 12; const width = 694; const height = 180;
+  const { svg, width: hostWidth } = makeChart(host, '週別検索数の積み上げ棒グラフ');
+  const left = 48; const top = 12; const width = hostWidth - left - 18; const height = 180;
   const maxValue = Math.max(1, ...weekly.map(row => (numberOrNull(row.auto) || 0) + (numberOrNull(row.manual) || 0)));
   drawGrid(svg, { left, top, width, height, maxValue, formatter: value => String(Math.round(value)) });
   const slot = width / weekly.length;
-  const barWidth = Math.max(8, Math.min(38, slot * .58));
+  const barWidth = Math.max(8, Math.min(44, slot * .58));
+  const labelEvery = everyNthLabel(weekly.length, width);
   weekly.forEach((row, index) => {
     const auto = Math.max(0, numberOrNull(row.auto) || 0);
     const manual = Math.max(0, numberOrNull(row.manual) || 0);
@@ -673,9 +697,11 @@ function renderWeeklySearch(weekly) {
     manualTitle.textContent = `${String(row.week || '')}: 手動検索 ${manual}`;
     manualRect.appendChild(manualTitle);
     svg.appendChild(manualRect);
-    svgText(svg, compactWeek(row.week) + (row.in_progress ? '*' : ''), {
-      x: x + barWidth / 2, y: 220, fill: 'var(--text-muted)', 'font-size': 11, 'text-anchor': 'middle',
-    });
+    if (index % labelEvery === 0 || index === weekly.length - 1) {
+      svgText(svg, compactWeek(row.week) + (row.in_progress ? '*' : ''), {
+        x: x + barWidth / 2, y: 220, fill: 'var(--text-muted)', 'font-size': 11, 'text-anchor': 'middle',
+      });
+    }
   });
   let failurePath = '';
   weekly.forEach((row, index) => {
@@ -716,10 +742,11 @@ function renderReturnRate(weekly) {
     renderChartEmpty(host, '正常検索の観測がまだありません。');
     return;
   }
-  const svg = makeChart(host, '週別結果返却率の折れ線グラフ', 600, 240);
-  const left = 48; const top = 12; const width = 532; const height = 180;
+  const { svg, width: hostWidth } = makeChart(host, '週別結果返却率の折れ線グラフ');
+  const left = 48; const top = 12; const width = hostWidth - left - 18; const height = 180;
   drawGrid(svg, { left, top, width, height, maxValue: 1, formatter: value => `${Math.round(value * 100)}%` });
   const step = points.length > 1 ? width / (points.length - 1) : 0;
+  const labelEvery = everyNthLabel(points.length, width);
   const paths = [];
   let path = '';
   points.forEach((point, index) => {
@@ -736,9 +763,11 @@ function renderReturnRate(weekly) {
     title.textContent = `${String(point.week || '')}: ${percent(point.rate)}`;
     circle.appendChild(title);
     svg.appendChild(circle);
-    svgText(svg, compactWeek(point.week) + (point.inProgress ? '*' : ''), {
-      x, y: 220, fill: 'var(--text-muted)', 'font-size': 11, 'text-anchor': 'middle',
-    });
+    if (index % labelEvery === 0 || index === points.length - 1) {
+      svgText(svg, compactWeek(point.week) + (point.inProgress ? '*' : ''), {
+        x, y: 220, fill: 'var(--text-muted)', 'font-size': 11, 'text-anchor': 'middle',
+      });
+    }
   });
   if (path) paths.push(path);
   const firstPoint = svg.querySelector('circle');
@@ -752,24 +781,34 @@ function renderReturnRate(weekly) {
   legend.appendChild(progressNote);
 }
 
-function renderHorizontalBars(hostId, rows, valueKey, labelKey, emptyMessage) {
+function renderHorizontalBars(hostId, rows, valueKey, labelKey, emptyMessage, colorFor = null) {
   const host = document.getElementById(hostId);
   if (!rows.length) {
     renderChartEmpty(host, emptyMessage);
     return;
   }
   const shown = rows.slice(0, 10);
-  const height = Math.max(240, shown.length * 32 + 28);
-  const svg = makeChart(host, `${hostId} 横棒グラフ`, 600, height);
-  svg.style.height = `${height}px`;
-  const left = 170; const width = 390;
+  const rowH = 32;
+  const height = shown.length * rowH + 16;
+  const { svg, width: hostWidth } = makeChart(host, `${hostId} 横棒グラフ`, height);
+  const left = Math.min(230, Math.max(120, Math.round(hostWidth * .28)));
+  const width = hostWidth - left - 56;
+  const maxLabelChars = Math.max(6, Math.floor((left - 14) / 9));
   const maxValue = Math.max(1, ...shown.map(row => numberOrNull(row[valueKey]) || 0));
   shown.forEach((row, index) => {
     const value = Math.max(0, numberOrNull(row[valueKey]) || 0);
-    const y = 14 + index * 32;
-    svgText(svg, row[labelKey] || '—', { x: left - 10, y: y + 15, fill: 'var(--text-muted)', 'font-size': 12, 'text-anchor': 'end' });
-    svg.appendChild(svgElement('rect', { x: left, y, width: width * value / maxValue, height: 20, rx: 3, fill: CHART_COLORS[index % CHART_COLORS.length] }));
-    svgText(svg, value, { x: left + width * value / maxValue + 7, y: y + 15, fill: 'var(--text)', 'font-size': 12 });
+    const y = 10 + index * rowH;
+    const rawLabel = String(row[labelKey] || '—');
+    const labelText = rawLabel.length > maxLabelChars ? `${rawLabel.slice(0, maxLabelChars - 1)}…` : rawLabel;
+    const labelEl = svgText(svg, labelText, { x: left - 10, y: y + 15, fill: 'var(--text-muted)', 'font-size': 12, 'text-anchor': 'end' });
+    if (labelText !== rawLabel) {
+      const title = svgElement('title');
+      title.textContent = rawLabel;
+      labelEl.appendChild(title);
+    }
+    const fill = colorFor ? colorFor(row, index) : CHART_COLORS[0];
+    svg.appendChild(svgElement('rect', { x: left, y, width: Math.max(2, width * value / maxValue), height: 20, rx: 3, fill }));
+    svgText(svg, value, { x: left + Math.max(2, width * value / maxValue) + 8, y: y + 15, fill: 'var(--text)', 'font-size': 12 });
   });
 }
 
@@ -797,14 +836,15 @@ function renderEval(evalData) {
     renderChartEmpty(host, '評価は未実行です。uv run python scripts/eval/run_eval.py で計測できます。');
     return;
   }
-  const svg = makeChart(host, '上位5件の正解率と検索順位スコアの折れ線グラフ', 600, 240);
-  const left = 48; const top = 12; const width = 532; const height = 180;
+  const { svg, width: hostWidth } = makeChart(host, '上位5件の正解率と検索順位スコアの折れ線グラフ');
+  const left = 48; const top = 12; const width = hostWidth - left - 18; const height = 180;
   drawGrid(svg, { left, top, width, height, maxValue: 1, formatter: value => `${Math.round(value * 100)}%` });
   const timestamps = [...new Set(series.flatMap(item => item.points.map(point => String(point.ts || ''))))].sort();
   const xFor = ts => timestamps.length > 1 ? left + width * timestamps.indexOf(String(ts || '')) / (timestamps.length - 1) : left + width / 2;
-  const legend = [];
-  series.forEach((item, seriesIndex) => {
-    const baseColor = CHART_COLORS[seriesIndex % CHART_COLORS.length];
+  const runners = [...new Set(series.map(item => item.runner))];
+  const colorForRunner = runner => CHART_COLORS[runners.indexOf(runner) % CHART_COLORS.length];
+  series.forEach(item => {
+    const baseColor = colorForRunner(item.runner);
     [['hit5_rate', false], ['mrr', true]].forEach(([field, dashed]) => {
       let path = '';
       item.points.forEach(point => {
@@ -813,10 +853,10 @@ function renderEval(evalData) {
         const x = xFor(point.ts);
         const y = top + height * (1 - Math.max(0, Math.min(1, value)));
         path += `${path ? ' L' : 'M'} ${x} ${y}`;
-        const circle = svgElement('circle', { cx: x, cy: y, r: 2.8, fill: baseColor });
+        const circle = svgElement('circle', { cx: x, cy: y, r: 3.2, fill: dashed ? 'var(--surface)' : baseColor, stroke: baseColor, 'stroke-width': 1.6 });
         const title = svgElement('title');
         const scoreName = field === 'hit5_rate' ? '上位5件の正解率' : '検索順位スコア';
-        title.textContent = `${item.runner} / ${item.hash} / ${scoreName}: ${percent(value)}`;
+        title.textContent = `${item.runner} / ${scoreName}: ${percent(value)}（${item.hash}）`;
         circle.appendChild(title);
         svg.appendChild(circle);
       });
@@ -825,12 +865,21 @@ function renderEval(evalData) {
         if (dashed) attrs['stroke-dasharray'] = '5 4';
         svg.insertBefore(svgElement('path', attrs), svg.querySelector('circle'));
       }
-      legend.push({ label: `${item.runner} · ${item.hash} · ${field === 'hit5_rate' ? '上位5件の正解率' : '検索順位スコア'}`, color: baseColor });
     });
   });
   const labels = timestamps.length > 5 ? timestamps.filter((_, index) => index % Math.ceil(timestamps.length / 5) === 0) : timestamps;
   labels.forEach(ts => svgText(svg, formatDate(ts), { x: xFor(ts), y: 220, fill: 'var(--text-muted)', 'font-size': 11, 'text-anchor': 'middle' }));
-  appendLegend(host, legend);
+  const legend = appendLegend(host, runners.map(runner => ({ label: runner, color: colorForRunner(runner) })));
+  const styleNote = document.createElement('span');
+  styleNote.textContent = '実線: 上位5件の正解率 / 破線: 検索順位スコア';
+  legend.appendChild(styleNote);
+  const hashes = [...new Set(series.map(item => item.hash))];
+  const hashNote = document.createElement('span');
+  hashNote.className = 'chart-caption';
+  hashNote.textContent = hashes.length === 1
+    ? `評価セット: ${hashes[0].replace(/^sha256:/, '').slice(0, 12)}…`
+    : `評価セット ${hashes.length} 種（点にマウスを重ねると詳細）`;
+  host.appendChild(hashNote);
 }
 
 function addStatTile(host, label, value, note, valueClass = '') {
@@ -855,11 +904,11 @@ function renderDecisionValueChart(weekly) {
     renderChartEmpty(host, '4完了週の観測データがまだありません。');
     return;
   }
-  const svg = makeChart(host, '直近4完了週の強い影響報告と観測カバレッジ', 760, 270);
+  const { svg, width: hostWidth } = makeChart(host, '直近4完了週の強い影響報告と観測カバレッジ', 270);
   const description = svgElement('desc');
   description.textContent = '行動変更と誤り防止の報告数を週別に積み上げ、週3件の目標線と観測カバレッジを表示します。';
   svg.appendChild(description);
-  const left = 52; const top = 18; const width = 680; const height = 170;
+  const left = 52; const top = 18; const width = hostWidth - left - 28; const height = 170;
   const target = Math.max(1, ...weekly.map(row => numberOrNull(row.target) || 0));
   const maxValue = Math.max(target + 1, ...weekly.map(row => numberOrNull(row.strong_decisions) || 0));
   drawGrid(svg, { left, top, width, height, maxValue, formatter: value => String(Math.round(value)) });
@@ -869,6 +918,13 @@ function renderDecisionValueChart(weekly) {
     const changed = Math.max(0, numberOrNull(row.changed_action_decisions) || 0);
     const prevented = Math.max(0, numberOrNull(row.prevented_error_decisions) || 0);
     const x = left + slot * index + (slot - barWidth) / 2;
+    if (!row.evaluable) {
+      // 判定不能週は0件と見分けが付くよう、列全体を淡い帯で示す
+      svg.appendChild(svgElement('rect', {
+        x: left + slot * index + slot * .08, y: top, width: slot * .84, height,
+        rx: 4, fill: 'var(--surface-2)', opacity: .6,
+      }));
+    }
     const changedHeight = height * changed / maxValue;
     const preventedHeight = height * prevented / maxValue;
     const opacity = row.evaluable ? 1 : .38;
@@ -969,6 +1025,7 @@ function switchMetricsPanel(panelId, focusTab = false) {
     tab.tabIndex = selected ? 0 : -1;
     if (selected && focusTab) tab.focus();
   });
+  scheduleChartRerender();
 }
 
 function renderDecisionValue(value) {
@@ -1017,7 +1074,6 @@ function renderDecisionValue(value) {
     latest.evaluable ? `基準 ${numberOrNull(latest.target) || 3}件` : '計測不足のため週次判定は保留',
     latest.evaluable && latest.target_met ? 'ok' : 'warn',
   );
-  renderDecisionValueChart(weekly);
   renderDecisionValueRows(weekly);
 
   const action = value.next_action || {};
@@ -1036,136 +1092,6 @@ function renderDecisionValue(value) {
       if (details) details.open = true;
     }
   };
-}
-
-function last7dReturnRate(search) {
-  const direct = numberOrNull(search.last7d_return_rate);
-  if (direct !== null) return direct;
-  const bucket = search.last7d || {};
-  const bucketRate = numberOrNull(bucket.return_rate);
-  if (bucketRate !== null) return bucketRate;
-  const okTotal = numberOrNull(bucket.ok_total);
-  return okTotal > 0 ? Number(bucket.returned || 0) / okTotal : null;
-}
-
-function weeklySearchCount(row) {
-  return (numberOrNull(row.auto) || 0) + (numberOrNull(row.manual) || 0);
-}
-
-function weeklyReturnRate(row) {
-  const total = numberOrNull(row.ok_total);
-  return total > 0 ? Number(row.returned || 0) / total : null;
-}
-
-function signedCount(value, unit) {
-  const rounded = Math.round(value);
-  return `${rounded > 0 ? '+' : ''}${rounded}${unit}`;
-}
-
-function renderMetricsSummary(data) {
-  const summary = document.getElementById('metricsSummary');
-  const title = document.getElementById('metricsSummaryTitle');
-  const lead = document.getElementById('metricsSummaryLead');
-  const usageSummary = document.getElementById('metricsUsageSummary');
-  const valueSummary = document.getElementById('metricsValueSummary');
-  const actionSummary = document.getElementById('metricsActionSummary');
-  const search = data.search || {};
-  const contribution = data.contribution || {};
-  const weekly = Array.isArray(search.weekly) ? search.weekly : [];
-  const last7 = search.last7d || {};
-  const okTotal = numberOrNull(last7.ok_total) || 0;
-  const returned = numberOrNull(last7.returned) || 0;
-  const noResult = Math.max(0, okTotal - returned);
-  const failures = weekly.reduce((sum, row) => sum + (numberOrNull(row.failures) || 0), 0);
-  const total = numberOrNull(search.total) || 0;
-  const current = weekly.findLast(row => row.in_progress) || weekly.at(-1) || {};
-  const completed = weekly.filter(row => !row.in_progress && weeklyReturnRate(row) !== null);
-  const latest = completed.at(-1);
-  const previous = completed.at(-2);
-  const evalAvailable = Object.keys(data.eval || {}).length > 0;
-
-  const measurable = numberOrNull(contribution.measurable_hit_searches) || 0;
-  const resolved = numberOrNull(contribution.resolved_hit_searches) || 0;
-  const strong = numberOrNull(contribution.strong_contribution_decisions) || 0;
-  const adopted = numberOrNull(contribution.adopted_decisions) || 0;
-  const unresolved = numberOrNull(contribution.unresolved_hit_searches) || 0;
-
-  if (okTotal === 0) {
-    summary.dataset.tone = 'attention';
-    title.textContent = '改善を判断するための検索データがまだありません';
-    lead.textContent = '検索が記録されると、利用量・結果返却率・前週からの変化をここに表示します。';
-  } else if (measurable > 0 && resolved === 0) {
-    summary.dataset.tone = 'attention';
-    title.textContent = '検索は使われていますが、最終判断への貢献はまだ未計測です';
-    lead.textContent = '結果が返った検索の後に plk_record_decision を記録すると、採用と強い貢献を分けて確認できます。';
-  } else if (noResult === 0 && failures === 0 && unresolved === 0) {
-    summary.dataset.tone = 'good';
-    title.textContent = '検索から最終判断まで計測できています';
-    lead.textContent = '自己申告の観測値として、採用された判断と行動変更・誤り防止への貢献を確認できます。';
-  } else {
-    summary.dataset.tone = 'attention';
-    title.textContent = '検索の利用は進んでいます。未計測または結果 0 件の検索に改善余地があります';
-    lead.textContent = '検索結果の返却と最終判断への貢献を分けて確認します。';
-  }
-
-  const currentCount = weeklySearchCount(current);
-  usageSummary.textContent = `全期間で ${total} 回、${current.in_progress ? '今週' : '直近週'}は ${currentCount} 回検索されています。`;
-
-  let trendText = '完了週が 2 週たまると、前週からの変化を表示します。';
-  if (latest && previous) {
-    const searchDelta = weeklySearchCount(latest) - weeklySearchCount(previous);
-    const rateDelta = (weeklyReturnRate(latest) - weeklyReturnRate(previous)) * 100;
-    trendText = `完了週の前週比は、検索数 ${signedCount(searchDelta, ' 回')}、結果返却率 ${signedCount(rateDelta, ' ポイント')}です。`;
-  }
-  valueSummary.textContent = `計測対象 ${measurable} 回中 ${resolved} 回を最終判断まで記録しました（${percent(contribution.measurement_rate)}）。採用 ${adopted} 件、うち行動変更・誤り防止 ${strong} 件です。`;
-
-  const actions = [];
-  if (unresolved > 0) actions.push(`未計測の ${unresolved} 回で最終判断を記録する`);
-  if (noResult > 0) actions.push(`結果が 0 件だった ${noResult} 回の検索を見直す`);
-  if (!evalAvailable) actions.push('検索精度の定期評価を実行する');
-  if (failures > 0) actions.push(`${failures} 件の障害原因を確認する`);
-  if (!actions.length) actions.push('現在の状態を維持し、週ごとの変化を確認する');
-  actionSummary.textContent = `${actions.join('。')}。`;
-}
-
-function renderStats(data) {
-  const host = document.getElementById('metricsStats');
-  clearElement(host);
-  const search = data.search || {};
-  const contribution = data.contribution || {};
-  const clients = Array.isArray(search.clients) ? search.clients : [];
-  const weekly = Array.isArray(search.weekly) ? search.weekly : [];
-  const total = numberOrNull(search.total) ?? clients.reduce((sum, row) => sum + (numberOrNull(row.count) || 0), 0);
-  const failures = weekly.reduce((sum, row) => sum + (numberOrNull(row.failures) || 0), 0);
-  const latency = search.latency || {};
-  const last7dLatency = latency.last7d || {};
-  addStatTile(host, '総検索数', String(total), `直近 12 週の障害 ${failures} 件`);
-  addStatTile(host, '最終判断の計測率', percent(contribution.measurement_rate), `未計測 ${numberOrNull(contribution.unresolved_hit_searches) || 0} 回`);
-  addStatTile(host, '採用された判断', String(numberOrNull(contribution.adopted_decisions) || 0), '確認補強を含む観測値');
-  addStatTile(host, '強い貢献', String(numberOrNull(contribution.strong_contribution_decisions) || 0), '行動変更 + 誤り防止');
-  addStatTile(host, '直近 7 日の結果返却率', percent(last7dReturnRate(search)), `応答時間の中央値 ${numberOrNull(last7dLatency.p50) ?? '—'} ms`);
-  const corpus = data.corpus || {};
-  const active = corpus.available === false ? '—' : String(numberOrNull((corpus.status || {}).active) ?? 0);
-  addStatTile(host, '有効なファクト', active, corpus.available === false ? '現在の保存方式では集計できません' : `読み込めなかったファイル ${numberOrNull(corpus.skipped_files) || 0} 件`);
-  const verdict = String((data.kill_criteria || {}).verdict || 'inconclusive');
-  const verdictMeta = {
-    observed_ok: ['基準内', 'ok'], observed_breached: ['基準未達', 'bad'], inconclusive: ['データ不足', 'warn'],
-  }[verdict] || [verdict, 'warn'];
-  addStatTile(host, '継続判断の参考値', verdictMeta[0], '強い貢献の観測数による参考判定', verdictMeta[1]);
-  const readiness = data.operational_readiness || {};
-  const readinessStatus = String(readiness.status || 'insufficient_data');
-  const readinessMeta = {
-    ready: ['運用証拠が充足', 'ok'],
-    needs_work: ['改善が必要', 'bad'],
-    insufficient_data: ['観測中', 'warn'],
-  }[readinessStatus] || [readinessStatus, 'warn'];
-  addStatTile(
-    host,
-    '実運用ゲート',
-    `${numberOrNull(readiness.passed_gates) || 0}/${numberOrNull(readiness.total_gates) || 0}`,
-    readinessMeta[0],
-    readinessMeta[1],
-  );
 }
 
 function emptyTableRow(tbody, columns, message) {
@@ -1225,37 +1151,6 @@ function renderUnreturned(unreturned, corpusAvailable) {
     tr.append(statement, namespace, id);
     tbody.appendChild(tr);
   });
-}
-
-function renderKillCriteria(criteria) {
-  const host = document.getElementById('killCriteria');
-  clearElement(host);
-  const verdict = String(criteria.verdict || 'inconclusive');
-  const labels = { observed_ok: '基準内', observed_breached: '基準未達', inconclusive: 'データ不足' };
-  const row = document.createElement('div');
-  row.className = 'metrics-kill';
-  const pill = document.createElement('span');
-  const statusClass = verdict === 'observed_ok' ? 'active' : 'invalidated';
-  pill.className = `status-pill ${statusClass}`;
-  const dot = document.createElement('span');
-  dot.className = 'dot';
-  pill.append(dot, document.createTextNode(labels[verdict] || verdict));
-  const threshold = document.createElement('span');
-  threshold.textContent = `閾値: 週 ${numberOrNull(criteria.threshold_weekly_hits) ?? '—'} 回`;
-  row.append(pill, threshold);
-  host.appendChild(row);
-  const weeks = Array.isArray(criteria.weeks) ? criteria.weeks : [];
-  if (weeks.length) {
-    const chart = document.createElement('div');
-    chart.className = 'chart';
-    chart.id = 'killWeeksChart';
-    host.appendChild(chart);
-    renderHorizontalBars('killWeeksChart', weeks, 'auto_strong_contribution_decisions', 'week', '完了週の観測がありません。');
-  }
-  const note = document.createElement('div');
-  note.className = 'metrics-note';
-  note.textContent = 'エージェントが最終判断時に申告した観測値です。因果効果の証明ではなく、未計測の検索は判定へ含めません。';
-  host.appendChild(note);
 }
 
 function renderOperationalReadiness(readiness) {
@@ -1333,28 +1228,46 @@ function renderContributionFacts(rows) {
   }
   rows.slice(0, 10).forEach(row => {
     const tr = document.createElement('tr');
-    [row.fact_id || '—', numberOrNull(row.returned_searches) || 0,
-      numberOrNull(row.used_decisions) || 0, numberOrNull(row.strong_decisions) || 0].forEach((value, index) => {
+    const statementTd = document.createElement('td');
+    if (row.statement) {
+      statementTd.textContent = row.statement;
+      statementTd.title = row.fact_id || '';
+    } else {
+      statementTd.textContent = row.fact_id || '—';
+      statementTd.className = 'mono';
+    }
+    tr.appendChild(statementTd);
+    [numberOrNull(row.returned_searches) || 0,
+      numberOrNull(row.used_decisions) || 0, numberOrNull(row.strong_decisions) || 0].forEach(value => {
       const td = document.createElement('td');
       td.textContent = String(value);
-      if (index === 0) td.className = 'mono';
       tr.appendChild(td);
     });
     tbody.appendChild(tr);
   });
 }
 
-function renderMetrics(data) {
+// チャートだけを再描画する（リサイズ・タブ切替・disclosure展開で呼ばれる）
+function renderMetricsCharts(data) {
   const search = data.search || {};
   const weekly = Array.isArray(search.weekly) ? search.weekly : [];
   const corpus = data.corpus || {};
   const contribution = data.contribution || {};
-  renderDecisionValue(data.decision_value || {});
-  renderOperationalReadiness(data.operational_readiness || {});
+  const decisionWeekly = Array.isArray((data.decision_value || {}).weekly) ? data.decision_value.weekly : [];
+  renderDecisionValueChart(decisionWeekly);
   renderWeeklySearch(weekly);
   renderReturnRate(weekly);
   renderEval(data.eval || {});
-  renderHorizontalBars('namespaceChart', Array.isArray(corpus.namespaces) ? corpus.namespaces : [], 'count', 'namespace', corpus.available === false ? '現在の保存方式では、登録データの状態を集計できません。' : '有効なファクトがありません。');
+  const namespaceRows = (Array.isArray(corpus.namespaces) ? corpus.namespaces : []).map(row => ({
+    ...row, label: nsLabel(row.namespace),
+  }));
+  renderHorizontalBars(
+    'namespaceChart',
+    namespaceRows,
+    'count', 'label',
+    corpus.available === false ? '現在の保存方式では、登録データの状態を集計できません。' : '有効なファクトがありません。',
+    row => nsColorVar(row.namespace),
+  );
   renderHorizontalBars('clientChart', Array.isArray(search.clients) ? search.clients : [], 'count', 'client', '検索ログがありません。');
   const effectLabels = {
     changed_action: '行動を変更',
@@ -1377,6 +1290,15 @@ function renderMetrics(data) {
     label: reasonLabels[row.reason] || row.reason, count: row.count,
   }));
   renderHorizontalBars('noUseReasonChart', reasonRows, 'count', 'label', '不採用の記録はありません。');
+}
+
+function renderMetrics(data) {
+  lastMetricsData = data;
+  const corpus = data.corpus || {};
+  const contribution = data.contribution || {};
+  renderDecisionValue(data.decision_value || {});
+  renderOperationalReadiness(data.operational_readiness || {});
+  renderMetricsCharts(data);
   renderMeasurementClients(Array.isArray(contribution.clients) ? contribution.clients : []);
   renderContributionFacts(Array.isArray(contribution.facts) ? contribution.facts : []);
   renderZeroHits(Array.isArray(data.zero_hit) ? data.zero_hit : []);
@@ -1431,6 +1353,7 @@ function switchView(view) {
   if (isMetrics) {
     closeDetailPanel();
     loadMetrics();
+    scheduleChartRerender();
   }
 }
 
@@ -1478,6 +1401,9 @@ async function init() {
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape' && document.getElementById('detail').classList.contains('open')) closeDetailPanel();
   });
+  window.addEventListener('resize', scheduleChartRerender);
+  const breakdown = document.getElementById('decisionBreakdownDetails');
+  if (breakdown) breakdown.addEventListener('toggle', scheduleChartRerender);
 
   // 既存の HttpOnly cookie セッションが有効なら、ログイン画面を出さず一覧を直接表示する
   const session = await fetch('/ui/session');

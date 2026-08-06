@@ -548,7 +548,10 @@ def test_contribution_separates_unmeasured_adoption_and_strong_effects():
             "outcome": "recorded",
         },
     ]
-    contribution = build_metrics(usage, [], [], now=NOW, tz=JST)["contribution"]
+    posts = [
+        {"id": "F2", "statement": "F2の主張", "status": "active", "namespace": "plk.domain.dev", "kind": "logic"},
+    ]
+    contribution = build_metrics(usage, posts, [], now=NOW, tz=JST)["contribution"]
     assert contribution["hit_searches"] == 3
     assert contribution["resolved_hit_searches"] == 2
     assert contribution["unresolved_hit_searches"] == 1
@@ -569,6 +572,8 @@ def test_contribution_separates_unmeasured_adoption_and_strong_effects():
     assert facts["F2"]["returned_searches"] == 2
     assert facts["F2"]["used_decisions"] == 1
     assert facts["F2"]["strong_decisions"] == 1
+    assert facts["F2"]["statement"] == "F2の主張"
+    assert facts["F1"]["statement"] is None
 
 
 def test_contribution_ignores_invalid_or_cross_client_decision_records():

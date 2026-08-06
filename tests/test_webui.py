@@ -170,7 +170,9 @@ async def test_metrics_frontend_uses_safe_dom_and_metrics_endpoint(uiclient):
     assert response.text.count("innerHTML") == 1
     assert "body.innerHTML = data.body_html" in response.text
     assert "title.textContent" in response.text
-    assert "直近 12 週の障害 ${failures}" in response.text
+    # チャートはホスト実幅で描画し、letterbox（中央寄せの左右余白）を避ける
+    assert "chartWidth(host" in response.text
+    assert "renderMetricsCharts(lastMetricsData)" in response.text
 
 
 async def test_metrics_frontend_uses_clear_labels(uiclient):
