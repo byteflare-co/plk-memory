@@ -572,7 +572,30 @@ async function renderFeedbackJobs(el, factId, meta) {
 }
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
-const CHART_COLORS = ['#3b82f6', '#22c55e', '#f59e0b', '#a78bfa', '#ec4899', '#06b6d4', '#f87171', '#84cc16'];
+// 図版は ink を主系列に置き、必要な分だけアクセントを足す。
+// 罫線・軸・注記は hairline / mute に寄せ、面で色を主張しない。
+const INK = 'var(--chart-ink)';
+const BLUE = 'var(--chart-accent)';
+const VIOLET = 'var(--chart-violet)';
+const AMBER = 'var(--chart-amber)';
+const MUTE = 'var(--chart-mute)';
+const FAINT = 'var(--chart-faint)';
+const RULE = 'var(--chart-rule)';
+const RULE_SOFT = 'var(--chart-rule-soft)';
+const RULE_STRONG = 'var(--chart-rule-strong)';
+const CHART_COLORS = [INK, BLUE, VIOLET, MUTE, AMBER, 'var(--chart-cyan)', 'var(--chart-pink)', RULE_STRONG];
+
+// 軸の刻みは 1/2/5×10^n に丸める。上端は刻みの倍数まで“切り上げ”に留め、
+// 目盛り数を固定して無駄な余白（最大26なのに軸が40）を作らない。
+function niceScale(rawMax, preferredTicks = 4) {
+  const max = Math.max(1, rawMax);
+  const rough = max / preferredTicks;
+  const magnitude = 10 ** Math.floor(Math.log10(rough));
+  const normalized = rough / magnitude;
+  const step = (normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10) * magnitude;
+  const top = Math.ceil(max / step) * step;
+  return { max: top, step, ticks: Math.max(1, Math.round(top / step)) };
+}
 
 function svgElement(tag, attrs = {}) {
   const el = document.createElementNS(SVG_NS, tag);
@@ -593,11 +616,16 @@ function chartWidth(host, fallback = 760) {
   return width > 80 ? width : fallback;
 }
 
-function makeChart(host, label, height = 240) {
+function makeChart(host, label, height = 224) {
   clearElement(host);
   const width = chartWidth(host);
-  const svg = svgElement('svg', { viewBox: `0 0 ${width} ${height}`, role: 'img', 'aria-label': label });
+  const svg = svgElement('svg', {
+    viewBox: `0 0 ${width} ${height}`, role: 'img', 'aria-label': label,
+    // 描画時と表示時で幅がずれても中央に浮かせず、左端を揃えたまま縮める
+    preserveAspectRatio: 'xMinYMid meet',
+  });
   svg.style.height = `${height}px`;
+  host.dataset.drawnWidth = String(width);
   host.appendChild(svg);
   return { svg, width };
 }
@@ -644,7 +672,7 @@ function appendLegend(host, items) {
     const row = document.createElement('span');
     row.className = 'legend-item';
     const swatch = document.createElement('span');
-    swatch.className = 'legend-swatch';
+    swatch.className = `legend-swatch${item.outlined ? ' outlined' : ''}`;
     swatch.style.background = item.color;
     const label = document.createElement('span');
     label.textContent = item.label;
@@ -655,12 +683,17 @@ function appendLegend(host, items) {
   return legend;
 }
 
+// 目盛り線は最下段だけ hairline、中間は更に淡くして数字を邪魔しない
 function drawGrid(svg, { left, top, width, height, ticks = 4, maxValue = 1, formatter = String }) {
   for (let i = 0; i <= ticks; i += 1) {
     const y = top + (height * i / ticks);
-    svg.appendChild(svgElement('line', { x1: left, y1: y, x2: left + width, y2: y, stroke: 'var(--border)', 'stroke-width': 1 }));
+    const baseline = i === ticks;
+    svg.appendChild(svgElement('line', {
+      x1: left, y1: y, x2: left + width, y2: y,
+      stroke: baseline ? RULE : RULE_SOFT, 'stroke-width': 1, 'shape-rendering': 'crispEdges',
+    }));
     svgText(svg, formatter(maxValue * (ticks - i) / ticks), {
-      x: left - 8, y: y + 4, fill: 'var(--text-muted)', 'font-size': 12, 'text-anchor': 'end',
+      x: left - 10, y: y + 4, fill: FAINT, 'font-size': 11, 'text-anchor': 'end',
     });
   }
 }
@@ -675,11 +708,12 @@ function renderWeeklySearch(weekly) {
     return;
   }
   const { svg, width: hostWidth } = makeChart(host, '週別検索数の積み上げ棒グラフ');
-  const left = 48; const top = 12; const width = hostWidth - left - 18; const height = 180;
-  const maxValue = Math.max(1, ...weekly.map(row => (numberOrNull(row.auto) || 0) + (numberOrNull(row.manual) || 0)));
-  drawGrid(svg, { left, top, width, height, maxValue, formatter: value => String(Math.round(value)) });
+  const left = 40; const top = 12; const width = hostWidth - left - 18; const height = 180;
+  const scale = niceScale(Math.max(1, ...weekly.map(row => (numberOrNull(row.auto) || 0) + (numberOrNull(row.manual) || 0))));
+  const maxValue = scale.max;
+  drawGrid(svg, { left, top, width, height, ticks: scale.ticks, maxValue, formatter: value => String(Math.round(value)) });
   const slot = width / weekly.length;
-  const barWidth = Math.max(8, Math.min(44, slot * .58));
+  const barWidth = Math.max(6, Math.min(24, slot * .42));
   const labelEvery = everyNthLabel(weekly.length, width);
   weekly.forEach((row, index) => {
     const auto = Math.max(0, numberOrNull(row.auto) || 0);
@@ -687,19 +721,19 @@ function renderWeeklySearch(weekly) {
     const autoHeight = height * auto / maxValue;
     const manualHeight = height * manual / maxValue;
     const x = left + slot * index + (slot - barWidth) / 2;
-    const autoRect = svgElement('rect', { x, y: top + height - autoHeight, width: barWidth, height: autoHeight, rx: 2, fill: CHART_COLORS[0] });
+    const autoRect = svgElement('rect', { x, y: top + height - autoHeight, width: barWidth, height: autoHeight, fill: INK });
     const autoTitle = svgElement('title');
     autoTitle.textContent = `${String(row.week || '')}: 自動検索 ${auto}`;
     autoRect.appendChild(autoTitle);
     svg.appendChild(autoRect);
-    const manualRect = svgElement('rect', { x, y: top + height - autoHeight - manualHeight, width: barWidth, height: manualHeight, rx: 2, fill: CHART_COLORS[2] });
+    const manualRect = svgElement('rect', { x, y: top + height - autoHeight - manualHeight, width: barWidth, height: manualHeight, fill: BLUE });
     const manualTitle = svgElement('title');
     manualTitle.textContent = `${String(row.week || '')}: 手動検索 ${manual}`;
     manualRect.appendChild(manualTitle);
     svg.appendChild(manualRect);
     if (index % labelEvery === 0 || index === weekly.length - 1) {
       svgText(svg, compactWeek(row.week) + (row.in_progress ? '*' : ''), {
-        x: x + barWidth / 2, y: 220, fill: 'var(--text-muted)', 'font-size': 11, 'text-anchor': 'middle',
+        x: x + barWidth / 2, y: top + height + 22, fill: MUTE, 'font-size': 11, 'text-anchor': 'middle',
       });
     }
   });
@@ -709,7 +743,7 @@ function renderWeeklySearch(weekly) {
     const x = left + slot * index + slot / 2;
     const y = top + height * (1 - failures / maxValue);
     failurePath += `${failurePath ? ' L' : 'M'} ${x} ${y}`;
-    const marker = svgElement('circle', { cx: x, cy: y, r: 3, fill: CHART_COLORS[6] });
+    const marker = svgElement('circle', { cx: x, cy: y, r: 2.5, fill: AMBER });
     const title = svgElement('title');
     title.textContent = `${String(row.week || '')}: 障害 ${failures}`;
     marker.appendChild(title);
@@ -718,13 +752,13 @@ function renderWeeklySearch(weekly) {
   const firstMarker = svg.querySelector('circle');
   if (failurePath && firstMarker) {
     svg.insertBefore(svgElement('path', {
-      d: failurePath, fill: 'none', stroke: CHART_COLORS[6], 'stroke-width': 2,
+      d: failurePath, fill: 'none', stroke: AMBER, 'stroke-width': 1.5,
     }), firstMarker);
   }
   const legend = appendLegend(host, [
-    { label: '自動検索', color: CHART_COLORS[0] },
-    { label: '手動検索', color: CHART_COLORS[2] },
-    { label: '障害', color: CHART_COLORS[6] },
+    { label: '自動検索', color: INK },
+    { label: '手動検索', color: BLUE },
+    { label: '障害', color: AMBER },
   ]);
   const progressNote = document.createElement('span');
   progressNote.textContent = '* 進行中の週';
@@ -743,7 +777,7 @@ function renderReturnRate(weekly) {
     return;
   }
   const { svg, width: hostWidth } = makeChart(host, '週別結果返却率の折れ線グラフ');
-  const left = 48; const top = 12; const width = hostWidth - left - 18; const height = 180;
+  const left = 40; const top = 12; const width = hostWidth - left - 18; const height = 180;
   drawGrid(svg, { left, top, width, height, maxValue: 1, formatter: value => `${Math.round(value * 100)}%` });
   const step = points.length > 1 ? width / (points.length - 1) : 0;
   const labelEvery = everyNthLabel(points.length, width);
@@ -758,57 +792,71 @@ function renderReturnRate(weekly) {
     const x = points.length > 1 ? left + step * index : left + width / 2;
     const y = top + height * (1 - Math.max(0, Math.min(1, point.rate)));
     path += `${path ? ' L' : 'M'} ${x} ${y}`;
-    const circle = svgElement('circle', { cx: x, cy: y, r: 3.5, fill: CHART_COLORS[1] });
+    const circle = svgElement('circle', { cx: x, cy: y, r: 2.5, fill: INK });
     const title = svgElement('title');
     title.textContent = `${String(point.week || '')}: ${percent(point.rate)}`;
     circle.appendChild(title);
     svg.appendChild(circle);
     if (index % labelEvery === 0 || index === points.length - 1) {
       svgText(svg, compactWeek(point.week) + (point.inProgress ? '*' : ''), {
-        x, y: 220, fill: 'var(--text-muted)', 'font-size': 11, 'text-anchor': 'middle',
+        x, y: top + height + 22, fill: MUTE, 'font-size': 11, 'text-anchor': 'middle',
       });
     }
   });
   if (path) paths.push(path);
   const firstPoint = svg.querySelector('circle');
   paths.forEach(segment => svg.insertBefore(
-    svgElement('path', { d: segment, fill: 'none', stroke: CHART_COLORS[1], 'stroke-width': 2 }),
+    svgElement('path', { d: segment, fill: 'none', stroke: INK, 'stroke-width': 1.5 }),
     firstPoint,
   ));
-  const legend = appendLegend(host, [{ label: '結果返却率', color: CHART_COLORS[1] }]);
+  const legend = appendLegend(host, [{ label: '結果返却率', color: INK }]);
   const progressNote = document.createElement('span');
   progressNote.textContent = '* 進行中の週';
   legend.appendChild(progressNote);
 }
 
-function renderHorizontalBars(hostId, rows, valueKey, labelKey, emptyMessage, colorFor = null) {
+// dotFor を渡すと、棒の直前に分類色のドットを置く。棒自体はアクセント1色に揃え、
+// 彩度の高い面が広く出ないようにする（Geist: 色は図版の小さなアクセントに留める）。
+function renderHorizontalBars(hostId, rows, valueKey, labelKey, emptyMessage, dotFor = null) {
   const host = document.getElementById(hostId);
   if (!rows.length) {
     renderChartEmpty(host, emptyMessage);
     return;
   }
   const shown = rows.slice(0, 10);
-  const rowH = 32;
-  const height = shown.length * rowH + 16;
+  const rowH = 30;
+  const height = shown.length * rowH + 8;
   const { svg, width: hostWidth } = makeChart(host, `${hostId} 横棒グラフ`, height);
-  const left = Math.min(230, Math.max(120, Math.round(hostWidth * .28)));
-  const width = hostWidth - left - 56;
-  const maxLabelChars = Math.max(6, Math.floor((left - 14) / 9));
+  const left = Math.min(210, Math.max(110, Math.round(hostWidth * .26)));
+  const width = hostWidth - left - 48;
+  const dotGap = dotFor ? 14 : 0;
+  const maxLabelChars = Math.max(6, Math.floor((left - 14 - dotGap) / 9));
   const maxValue = Math.max(1, ...shown.map(row => numberOrNull(row[valueKey]) || 0));
   shown.forEach((row, index) => {
     const value = Math.max(0, numberOrNull(row[valueKey]) || 0);
-    const y = 10 + index * rowH;
+    const y = 6 + index * rowH;
+    const barY = y + 4;
+    const barLength = Math.max(2, width * value / maxValue);
     const rawLabel = String(row[labelKey] || '—');
     const labelText = rawLabel.length > maxLabelChars ? `${rawLabel.slice(0, maxLabelChars - 1)}…` : rawLabel;
-    const labelEl = svgText(svg, labelText, { x: left - 10, y: y + 15, fill: 'var(--text-muted)', 'font-size': 12, 'text-anchor': 'end' });
+    const labelEl = svgText(svg, labelText, {
+      x: left - 10 - dotGap, y: barY + 10, fill: MUTE, 'font-size': 12, 'text-anchor': 'end',
+    });
     if (labelText !== rawLabel) {
       const title = svgElement('title');
       title.textContent = rawLabel;
       labelEl.appendChild(title);
     }
-    const fill = colorFor ? colorFor(row, index) : CHART_COLORS[0];
-    svg.appendChild(svgElement('rect', { x: left, y, width: Math.max(2, width * value / maxValue), height: 20, rx: 3, fill }));
-    svgText(svg, value, { x: left + Math.max(2, width * value / maxValue) + 8, y: y + 15, fill: 'var(--text)', 'font-size': 12 });
+    if (dotFor) {
+      svg.appendChild(svgElement('circle', { cx: left - 8, cy: barY + 6, r: 3.5, fill: dotFor(row, index) }));
+    }
+    // 最大値までのトラックを淡く敷き、棒の短さが読み取れるようにする
+    svg.appendChild(svgElement('rect', { x: left, y: barY, width, height: 12, fill: RULE_SOFT }));
+    svg.appendChild(svgElement('rect', { x: left, y: barY, width: barLength, height: 12, fill: INK }));
+    // トラック終端より右の余白に right-align で置く（棒に数字が重ならないようにする）
+    svgText(svg, value, {
+      x: hostWidth - 4, y: barY + 10, fill: MUTE, 'font-size': 12, 'text-anchor': 'end',
+    });
   });
 }
 
@@ -837,7 +885,7 @@ function renderEval(evalData) {
     return;
   }
   const { svg, width: hostWidth } = makeChart(host, '上位5件の正解率と検索順位スコアの折れ線グラフ');
-  const left = 48; const top = 12; const width = hostWidth - left - 18; const height = 180;
+  const left = 40; const top = 12; const width = hostWidth - left - 18; const height = 180;
   drawGrid(svg, { left, top, width, height, maxValue: 1, formatter: value => `${Math.round(value * 100)}%` });
   const timestamps = [...new Set(series.flatMap(item => item.points.map(point => String(point.ts || ''))))].sort();
   const xFor = ts => timestamps.length > 1 ? left + width * timestamps.indexOf(String(ts || '')) / (timestamps.length - 1) : left + width / 2;
@@ -853,7 +901,7 @@ function renderEval(evalData) {
         const x = xFor(point.ts);
         const y = top + height * (1 - Math.max(0, Math.min(1, value)));
         path += `${path ? ' L' : 'M'} ${x} ${y}`;
-        const circle = svgElement('circle', { cx: x, cy: y, r: 3.2, fill: dashed ? 'var(--surface)' : baseColor, stroke: baseColor, 'stroke-width': 1.6 });
+        const circle = svgElement('circle', { cx: x, cy: y, r: 2.6, fill: dashed ? 'var(--canvas-elevated)' : baseColor, stroke: baseColor, 'stroke-width': 1.4 });
         const title = svgElement('title');
         const scoreName = field === 'hit5_rate' ? '上位5件の正解率' : '検索順位スコア';
         title.textContent = `${item.runner} / ${scoreName}: ${percent(value)}（${item.hash}）`;
@@ -861,14 +909,14 @@ function renderEval(evalData) {
         svg.appendChild(circle);
       });
       if (path) {
-        const attrs = { d: path, fill: 'none', stroke: baseColor, 'stroke-width': dashed ? 1.5 : 2.4 };
+        const attrs = { d: path, fill: 'none', stroke: baseColor, 'stroke-width': dashed ? 1.2 : 1.8 };
         if (dashed) attrs['stroke-dasharray'] = '5 4';
         svg.insertBefore(svgElement('path', attrs), svg.querySelector('circle'));
       }
     });
   });
   const labels = timestamps.length > 5 ? timestamps.filter((_, index) => index % Math.ceil(timestamps.length / 5) === 0) : timestamps;
-  labels.forEach(ts => svgText(svg, formatDate(ts), { x: xFor(ts), y: 220, fill: 'var(--text-muted)', 'font-size': 11, 'text-anchor': 'middle' }));
+  labels.forEach(ts => svgText(svg, formatDate(ts), { x: xFor(ts), y: top + height + 22, fill: MUTE, 'font-size': 11, 'text-anchor': 'middle' }));
   const legend = appendLegend(host, runners.map(runner => ({ label: runner, color: colorForRunner(runner) })));
   const styleNote = document.createElement('span');
   styleNote.textContent = '実線: 上位5件の正解率 / 破線: 検索順位スコア';
@@ -882,21 +930,74 @@ function renderEval(evalData) {
   host.appendChild(hashNote);
 }
 
-function addStatTile(host, label, value, note, valueClass = '') {
+function makeTag(text, tone = '') {
+  const tag = document.createElement('span');
+  tag.className = `tag ${tone}`.trim();
+  tag.textContent = text;
+  return tag;
+}
+
+// 数値は常に ink。達成/未達は数字の色ではなく、隣に置く小さなタグで示す。
+// ratio を渡すと 2px のメーターを添える。
+function addStatTile(host, { label, value, unit = '', note = '', ratio = null, tag = null, tone = '' }) {
   const tile = document.createElement('div');
   tile.className = 'stat-tile';
+
   const labelEl = document.createElement('div');
   labelEl.className = 'stat-label';
   labelEl.textContent = label;
+
   const valueEl = document.createElement('div');
-  valueEl.className = `stat-value ${valueClass}`.trim();
+  valueEl.className = 'stat-value';
   valueEl.textContent = value;
-  const noteEl = document.createElement('div');
-  noteEl.className = 'stat-note';
-  noteEl.textContent = note;
-  tile.append(labelEl, valueEl, noteEl);
+  if (unit) {
+    const unitEl = document.createElement('span');
+    unitEl.className = 'unit';
+    unitEl.textContent = unit;
+    valueEl.appendChild(unitEl);
+  }
+  tile.append(labelEl, valueEl);
+
+  if (ratio !== null && Number.isFinite(ratio)) {
+    const meter = document.createElement('div');
+    meter.className = 'stat-meter';
+    const fill = document.createElement('span');
+    fill.style.width = `${Math.round(Math.max(0, Math.min(1, ratio)) * 100)}%`;
+    meter.appendChild(fill);
+    tile.appendChild(meter);
+  }
+
+  const foot = document.createElement('div');
+  foot.className = 'stat-foot';
+  if (tag) foot.appendChild(makeTag(tag, tone));
+  if (note) {
+    const noteEl = document.createElement('span');
+    noteEl.className = 'stat-note';
+    noteEl.textContent = note;
+    foot.appendChild(noteEl);
+  }
+  if (foot.childElementCount) tile.appendChild(foot);
   host.appendChild(tile);
 }
+
+// 判定不能週を「薄く塗る」と 0 件と見分けが付かず、輪郭だけだと積み上げが読めない。
+// 系列色のハッチで塗り、面の存在は保ったまま暫定であることを示す。
+function hatchFill(svg, id, color) {
+  let defs = svg.querySelector('defs');
+  if (!defs) {
+    defs = svgElement('defs');
+    svg.insertBefore(defs, svg.firstChild);
+  }
+  const pattern = svgElement('pattern', {
+    id, width: 5, height: 5, patternUnits: 'userSpaceOnUse', patternTransform: 'rotate(45)',
+  });
+  pattern.appendChild(svgElement('rect', { width: 5, height: 5, fill: 'var(--chart-surface)' }));
+  pattern.appendChild(svgElement('line', { x1: 0, y1: 0, x2: 0, y2: 5, stroke: color, 'stroke-width': 2 }));
+  defs.appendChild(pattern);
+  return `url(#${id})`;
+}
+
+const HATCH_CSS = color => `repeating-linear-gradient(45deg, ${color} 0 2px, var(--chart-surface) 2px 5px)`;
 
 function renderDecisionValueChart(weekly) {
   const host = document.getElementById('decisionValueChart');
@@ -904,70 +1005,85 @@ function renderDecisionValueChart(weekly) {
     renderChartEmpty(host, '4完了週の観測データがまだありません。');
     return;
   }
-  const { svg, width: hostWidth } = makeChart(host, '直近4完了週の強い影響報告と観測カバレッジ', 270);
+  const { svg, width: hostWidth } = makeChart(host, '直近4完了週の強い影響報告と観測カバレッジ', 174);
   const description = svgElement('desc');
-  description.textContent = '行動変更と誤り防止の報告数を週別に積み上げ、週3件の目標線と観測カバレッジを表示します。';
+  description.textContent = '行動変更と誤り防止の報告数を週別に積み上げ、週次目標線と観測カバレッジを表示します。';
   svg.appendChild(description);
-  const left = 52; const top = 18; const width = hostWidth - left - 28; const height = 170;
+  const left = 40; const top = 8; const width = hostWidth - left - 72; const height = 108;
   const target = Math.max(1, ...weekly.map(row => numberOrNull(row.target) || 0));
-  const maxValue = Math.max(target + 1, ...weekly.map(row => numberOrNull(row.strong_decisions) || 0));
-  drawGrid(svg, { left, top, width, height, maxValue, formatter: value => String(Math.round(value)) });
+  const scale = niceScale(Math.max(target, ...weekly.map(row => numberOrNull(row.strong_decisions) || 0)));
+  const maxValue = scale.max;
+  drawGrid(svg, { left, top, width, height, ticks: scale.ticks, maxValue, formatter: value => String(Math.round(value)) });
+
   const slot = width / weekly.length;
-  const barWidth = Math.min(70, slot * .48);
+  const barWidth = Math.min(64, Math.max(18, slot * .34));
+  const hatches = [hatchFill(svg, 'dvHatchInk', INK), hatchFill(svg, 'dvHatchBlue', BLUE)];
   weekly.forEach((row, index) => {
     const changed = Math.max(0, numberOrNull(row.changed_action_decisions) || 0);
     const prevented = Math.max(0, numberOrNull(row.prevented_error_decisions) || 0);
     const x = left + slot * index + (slot - barWidth) / 2;
-    if (!row.evaluable) {
-      // 判定不能週は0件と見分けが付くよう、列全体を淡い帯で示す
-      svg.appendChild(svgElement('rect', {
-        x: left + slot * index + slot * .08, y: top, width: slot * .84, height,
-        rx: 4, fill: 'var(--surface-2)', opacity: .6,
-      }));
+    const solid = Boolean(row.evaluable);
+    const stack = [
+      { value: changed, color: INK, hatch: hatches[0], label: '行動変更' },
+      { value: prevented, color: BLUE, hatch: hatches[1], label: '誤り防止' },
+    ];
+    let cursor = 0;
+    stack.forEach(part => {
+      if (part.value <= 0) return;
+      const barHeight = height * part.value / maxValue;
+      cursor += barHeight;
+      const rect = svgElement('rect', {
+        x, y: top + height - cursor, width: barWidth, height: barHeight,
+        fill: solid ? part.color : part.hatch,
+        stroke: solid ? 'none' : part.color,
+        'stroke-width': solid ? 0 : 1,
+      });
+      const title = svgElement('title');
+      title.textContent = `${row.week}: ${part.label} ${part.value}件${solid ? '' : '（判定不能週）'}`;
+      rect.appendChild(title);
+      svg.appendChild(rect);
+    });
+    if (!solid && changed + prevented === 0) {
+      const placeholderHeight = Math.max(28, height * .18);
+      const pending = svgElement('rect', {
+        x, y: top + height - placeholderHeight, width: barWidth, height: placeholderHeight,
+        fill: hatches[0], stroke: RULE_STRONG, 'stroke-width': 1,
+      });
+      const pendingTitle = svgElement('title');
+      pendingTitle.textContent = `${row.week}: 計測不足のため判定不能`;
+      pending.appendChild(pendingTitle);
+      svg.appendChild(pending);
+      svgText(svg, '判定不能', {
+        x: x + barWidth / 2, y: top + height - placeholderHeight / 2 + 4,
+        fill: MUTE, 'font-size': 10, 'font-weight': 600, 'text-anchor': 'middle',
+      });
     }
-    const changedHeight = height * changed / maxValue;
-    const preventedHeight = height * prevented / maxValue;
-    const opacity = row.evaluable ? 1 : .38;
-    const changedRect = svgElement('rect', {
-      x, y: top + height - changedHeight, width: barWidth, height: changedHeight,
-      rx: 3, fill: CHART_COLORS[0], opacity,
-    });
-    const changedTitle = svgElement('title');
-    changedTitle.textContent = `${row.week}: 行動変更 ${changed}件`;
-    changedRect.appendChild(changedTitle);
-    svg.appendChild(changedRect);
-    const preventedRect = svgElement('rect', {
-      x, y: top + height - changedHeight - preventedHeight, width: barWidth,
-      height: preventedHeight, rx: 3, fill: CHART_COLORS[1], opacity,
-    });
-    const preventedTitle = svgElement('title');
-    preventedTitle.textContent = `${row.week}: 誤り防止 ${prevented}件`;
-    preventedRect.appendChild(preventedTitle);
-    svg.appendChild(preventedRect);
     svgText(svg, compactWeek(row.week), {
-      x: x + barWidth / 2, y: 216, fill: 'var(--text-muted)', 'font-size': 12, 'text-anchor': 'middle',
+      x: x + barWidth / 2, y: top + height + 22, fill: MUTE, 'font-size': 11, 'text-anchor': 'middle',
     });
     const coverage = numberOrNull(row.auto_measurement_rate);
-    svgText(svg, row.evaluable ? `計測 ${percent(coverage)}` : '判定不能', {
-      x: x + barWidth / 2, y: 238,
-      fill: row.evaluable ? 'var(--success)' : 'var(--warning)',
-      'font-size': 11, 'font-weight': 650, 'text-anchor': 'middle',
+    svgText(svg, solid ? percent(coverage) : '判定不能', {
+      x: x + barWidth / 2, y: top + height + 40, fill: FAINT, 'font-size': 11, 'text-anchor': 'middle',
     });
   });
+
+  // 目標線は罫線と同じ格で引き、注記だけをプロット域の外に出す
   const targetY = top + height * (1 - target / maxValue);
   svg.appendChild(svgElement('line', {
     x1: left, y1: targetY, x2: left + width, y2: targetY,
-    stroke: CHART_COLORS[2], 'stroke-width': 2, 'stroke-dasharray': '6 5',
+    stroke: RULE_STRONG, 'stroke-width': 1, 'stroke-dasharray': '4 4', 'shape-rendering': 'crispEdges',
   }));
-  svgText(svg, `目標 ${target}件`, {
-    x: left + width, y: targetY - 6, fill: CHART_COLORS[2],
-    'font-size': 11, 'text-anchor': 'end',
+  svgText(svg, `目標 ${target}`, {
+    x: left + width + 8, y: targetY + 4, fill: MUTE, 'font-size': 11, 'text-anchor': 'start',
   });
-  appendLegend(host, [
-    { label: '行動を変更', color: CHART_COLORS[0] },
-    { label: '誤りを防止', color: CHART_COLORS[1] },
-    { label: '週次目標', color: CHART_COLORS[2] },
-  ]);
+  const legend = [
+    { label: '行動を変更', color: INK },
+    { label: '誤りを防止', color: BLUE },
+  ];
+  if (weekly.some(row => !row.evaluable)) {
+    legend.push({ label: '判定不能週', color: HATCH_CSS(INK), outlined: true });
+  }
+  appendLegend(host, legend);
 }
 
 function renderDecisionValueRows(weekly) {
@@ -979,23 +1095,31 @@ function renderDecisionValueRows(weekly) {
   }
   weekly.forEach(row => {
     const tr = document.createElement('tr');
-    const status = row.evaluable
-      ? (row.target_met ? '目標達成' : '目標未達')
-      : `判定不能（${(row.unevaluable_reasons || []).join(', ') || 'データ不足'}）`;
+    const week = document.createElement('td');
+    week.className = 'mono';
+    week.textContent = row.week || '—';
+    tr.appendChild(week);
     [
-      row.week || '—',
       numberOrNull(row.auto_measurable_searches) || 0,
       numberOrNull(row.auto_resolved_searches) || 0,
       percent(row.auto_measurement_rate),
       numberOrNull(row.changed_action_decisions) || 0,
       numberOrNull(row.prevented_error_decisions) || 0,
-      status,
-    ].forEach((value, index) => {
+    ].forEach(value => {
       const td = document.createElement('td');
+      td.className = 'num';
       td.textContent = String(value);
-      if (index === 6) td.className = row.target_met ? 'success-text' : 'danger-text';
       tr.appendChild(td);
     });
+    const statusTd = document.createElement('td');
+    if (row.evaluable) {
+      statusTd.appendChild(makeTag(row.target_met ? '目標達成' : '目標未達', row.target_met ? 'pass' : 'fail'));
+    } else {
+      statusTd.appendChild(makeTag('判定不能', ''));
+      const why = (row.unevaluable_reasons || []).join(', ');
+      if (why) statusTd.title = why;
+    }
+    tr.appendChild(statusTd);
     tbody.appendChild(tr);
   });
 }
@@ -1042,8 +1166,17 @@ function renderDecisionValue(value) {
     target_not_met: '4週価値目標は未達',
     insufficient_data: 'データ不足 — 判定保留',
   };
+  const verdictLabels = {
+    observed_sustained: ['達成', 'pass'],
+    target_not_met: ['未達', 'fail'],
+    insufficient_data: ['判定保留', ''],
+  };
   title.textContent = labels[status] || labels.insufficient_data;
   summary.dataset.tone = status === 'observed_sustained' ? 'good' : 'attention';
+  const [verdictText, verdictTone] = verdictLabels[status] || verdictLabels.insufficient_data;
+  const verdict = document.getElementById('decisionValueVerdict');
+  verdict.className = `tag ${verdictTone}`.trim();
+  verdict.textContent = verdictText;
   if (status === 'observed_sustained') {
     reason.textContent = `4完了週すべてで、強い影響の報告が週${fourWeek.weekly_target || 3}件以上あり、計測欠損もありません。`;
   } else if (status === 'target_not_met') {
@@ -1057,23 +1190,37 @@ function renderDecisionValue(value) {
   const recent = value.recent || {};
   const recentRate = numberOrNull(recent.measurement_rate);
   const recentTarget = numberOrNull(recent.target_rate);
-  addStatTile(
-    stats,
-    `直近${recent.days || 7}日の観測カバレッジ`,
-    percent(recent.measurement_rate),
-    `${numberOrNull(recent.resolved_searches) || 0} / ${numberOrNull(recent.measurable_searches) || 0}検索`,
-    recentRate !== null && recentTarget !== null && recentRate >= recentTarget ? 'ok' : 'warn',
-  );
-  addStatTile(stats, '判定可能な完了週', `${evaluable} / ${required}週`, `判定不能 ${Math.max(0, required - evaluable)}週`, evaluable === required ? 'ok' : 'warn');
+  const coverageMet = recentRate !== null && recentTarget !== null && recentRate >= recentTarget;
+  addStatTile(stats, {
+    label: `観測カバレッジ / 直近${recent.days || 7}日`,
+    value: percent(recent.measurement_rate),
+    ratio: recentRate,
+    tag: recentRate === null ? null : (coverageMet ? '目標達成' : '目標未達'),
+    tone: coverageMet ? 'pass' : 'fail',
+    note: `${numberOrNull(recent.resolved_searches) || 0} / ${numberOrNull(recent.measurable_searches) || 0} 検索`,
+  });
+  addStatTile(stats, {
+    label: '判定可能な完了週',
+    value: `${evaluable}/${required}`,
+    unit: '週',
+    ratio: required > 0 ? evaluable / required : null,
+    tag: evaluable === required ? '全週計測' : `判定不能 ${Math.max(0, required - evaluable)}週`,
+    tone: evaluable === required ? 'pass' : '',
+    note: `目標達成 ${targetMet}週`,
+  });
   const weekly = Array.isArray(value.weekly) ? value.weekly : [];
   const latest = weekly.at(-1) || {};
-  addStatTile(
-    stats,
-    '直近完了週の強い影響報告',
-    `${numberOrNull(latest.strong_decisions) || 0}件`,
-    latest.evaluable ? `基準 ${numberOrNull(latest.target) || 3}件` : '計測不足のため週次判定は保留',
-    latest.evaluable && latest.target_met ? 'ok' : 'warn',
-  );
+  const latestTarget = numberOrNull(latest.target) || 3;
+  const latestStrong = numberOrNull(latest.strong_decisions) || 0;
+  addStatTile(stats, {
+    // 件数対目標は 100% を超え得るため、頭打ちするメーターは付けない
+    label: '強い影響の報告 / 直近完了週',
+    value: String(latestStrong),
+    unit: '件',
+    tag: latest.evaluable ? (latest.target_met ? '目標達成' : '目標未達') : '判定保留',
+    tone: latest.evaluable && latest.target_met ? 'pass' : (latest.evaluable ? 'fail' : ''),
+    note: latest.evaluable ? `基準 ${latestTarget}件` : '計測不足',
+  });
   renderDecisionValueRows(weekly);
 
   const action = value.next_action || {};
@@ -1116,11 +1263,13 @@ function renderZeroHits(rows) {
     const query = document.createElement('td');
     query.textContent = row.query || '（空のクエリ）';
     const count = document.createElement('td');
+    count.className = 'num';
     count.textContent = String(numberOrNull(row.count) || 0);
     const last = document.createElement('td');
     last.className = 'mono';
     last.textContent = formatDateTime(row.last_ts);
     const clients = document.createElement('td');
+    clients.className = 'mono';
     clients.textContent = Array.isArray(row.clients) ? row.clients.join(', ') : '—';
     tr.append(query, count, last, clients);
     tbody.appendChild(tr);
@@ -1144,7 +1293,8 @@ function renderUnreturned(unreturned, corpusAvailable) {
     const statement = document.createElement('td');
     statement.textContent = row.statement || '（内容なし）';
     const namespace = document.createElement('td');
-    namespace.textContent = row.namespace || '—';
+    namespace.className = 'mono';
+    namespace.textContent = nsLabel(row.namespace);
     const id = document.createElement('td');
     id.className = 'mono';
     id.textContent = row.id || row.fact_id || '—';
@@ -1165,14 +1315,11 @@ function renderOperationalReadiness(readiness) {
     needs_work: '改善が必要',
     insufficient_data: '観測中',
   };
-  const pill = document.createElement('span');
-  pill.className = `status-pill ${status === 'ready' ? 'active' : 'invalidated'}`;
-  const dot = document.createElement('span');
-  dot.className = 'dot';
-  pill.append(dot, document.createTextNode(labels[status] || status));
+  const tone = status === 'ready' ? 'pass' : (status === 'needs_work' ? 'fail' : '');
   const count = document.createElement('span');
+  count.className = 'gate-count';
   count.textContent = `${numberOrNull(readiness.passed_gates) || 0} / ${numberOrNull(readiness.total_gates) || 0} ゲート達成`;
-  statusHost.append(pill, count);
+  statusHost.append(makeTag(labels[status] || status, tone), count);
 
   const gateLabels = {
     pass: '達成',
@@ -1186,13 +1333,20 @@ function renderOperationalReadiness(readiness) {
   } else {
     gates.forEach(gate => {
       const tr = document.createElement('tr');
-      [gate.label || gate.id || '—', gateLabels[gate.status] || gate.status || '—',
-        gate.current || '—', gate.target || '—'].forEach((value, index) => {
-        const td = document.createElement('td');
-        td.textContent = String(value);
-        if (index === 1) td.className = gate.status === 'pass' ? 'success-text' : 'danger-text';
-        tr.appendChild(td);
-      });
+      const label = document.createElement('td');
+      label.textContent = gate.label || gate.id || '—';
+      const verdict = document.createElement('td');
+      verdict.appendChild(makeTag(
+        gateLabels[gate.status] || gate.status || '—',
+        gate.status === 'pass' ? 'pass' : (gate.status === 'fail' ? 'fail' : ''),
+      ));
+      const current = document.createElement('td');
+      current.className = 'mono';
+      current.textContent = gate.current || '—';
+      const target = document.createElement('td');
+      target.className = 'mono';
+      target.textContent = gate.target || '—';
+      tr.append(label, verdict, current, target);
       tbody.appendChild(tr);
     });
   }
@@ -1208,11 +1362,15 @@ function renderMeasurementClients(rows) {
   }
   rows.slice(0, 10).forEach(row => {
     const tr = document.createElement('tr');
-    [row.client || 'unknown', numberOrNull(row.measurable) || 0, numberOrNull(row.resolved) || 0,
-      percent(row.measurement_rate), numberOrNull(row.strong) || 0].forEach((value, index) => {
+    const client = document.createElement('td');
+    client.className = 'mono';
+    client.textContent = row.client || 'unknown';
+    tr.appendChild(client);
+    [numberOrNull(row.measurable) || 0, numberOrNull(row.resolved) || 0,
+      percent(row.measurement_rate), numberOrNull(row.strong) || 0].forEach(value => {
       const td = document.createElement('td');
+      td.className = 'num';
       td.textContent = String(value);
-      if (index === 0) td.className = 'mono';
       tr.appendChild(td);
     });
     tbody.appendChild(tr);
@@ -1240,6 +1398,7 @@ function renderContributionFacts(rows) {
     [numberOrNull(row.returned_searches) || 0,
       numberOrNull(row.used_decisions) || 0, numberOrNull(row.strong_decisions) || 0].forEach(value => {
       const td = document.createElement('td');
+      td.className = value === 0 ? 'num dim' : 'num';
       td.textContent = String(value);
       tr.appendChild(td);
     });
@@ -1404,6 +1563,18 @@ async function init() {
   window.addEventListener('resize', scheduleChartRerender);
   const breakdown = document.getElementById('decisionBreakdownDetails');
   if (breakdown) breakdown.addEventListener('toggle', scheduleChartRerender);
+  // window の resize だけでは、disclosure 展開やスクロールバー出現による
+  // カード幅の変化を拾えず、SVG が旧幅のまま中央に浮いて残る
+  if (window.ResizeObserver) {
+    const observer = new ResizeObserver(entries => {
+      const changed = entries.some(entry => {
+        const drawn = Number(entry.target.dataset.drawnWidth || 0);
+        return drawn > 0 && Math.abs(entry.contentRect.width - drawn) > 1;
+      });
+      if (changed) scheduleChartRerender();
+    });
+    document.querySelectorAll('.chart').forEach(chart => observer.observe(chart));
+  }
 
   // 既存の HttpOnly cookie セッションが有効なら、ログイン画面を出さず一覧を直接表示する
   const session = await fetch('/ui/session');

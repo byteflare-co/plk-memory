@@ -1,4 +1,5 @@
 import asyncio
+import re
 
 import httpx
 import pytest
@@ -124,7 +125,8 @@ async def test_ui_without_password_login_is_noop(open_uiclient):
 async def test_login_form_is_hidden_until_auth_is_required(uiclient):
     r = await uiclient.get("/")
     assert r.status_code == 200
-    assert "display: none; max-width: 340px" in r.text
+    login_rules = r.text.split("#login {", 1)[1].split("}", 1)[0]
+    assert "display: none" in login_rules
 
 
 async def test_ui_login_sets_httponly_cookie_and_lists(uiclient):
@@ -202,13 +204,28 @@ async def test_metrics_frontend_explains_status_and_next_action(uiclient):
     assert "ArrowRight" in script.text and "Home" in script.text
 
 
+def _font_size_px(css: str, selector: str) -> int:
+    """`selector { ... font-size: Npx ... }` の N を返す（宣言順・改行に依存しない）。
+
+    セレクタは規則の先頭に現れるものだけを拾う（`html, body {` を `body` と誤認しない）。
+    """
+    rule = re.compile(r"(?:^|[{}\n])[ \t]*" + re.escape(selector) + r"\s*\{([^}]*)\}", re.M)
+    for match in rule.finditer(css):
+        size = re.search(r"font-size:\s*(\d+(?:\.\d+)?)px", match.group(1))
+        if size:
+            return int(float(size.group(1)))
+    raise AssertionError(f"font-size を特定できない: {selector}")
+
+
 async def test_metrics_frontend_uses_readable_type_sizes(uiclient):
     page = await uiclient.get("/")
-    assert "font-size: 15.5px" in page.text
+    # 具体値ではなく「読める下限」を守る。デザイン変更のたびに壊れないようにする。
+    assert _font_size_px(page.text, "body") >= 14
+    assert _font_size_px(page.text, ".stat-value") >= 28
+    assert _font_size_px(page.text, ".metric-card h2") >= 16
+    assert _font_size_px(page.text, ".metrics-heading h1") >= 24
     assert "@media (max-width: 720px)" in page.text
     assert "min-width: 0" in page.text
-    assert ".stat-value { margin-top: 9px; font-size: 30px" in page.text
-    assert ".metric-card h2 { margin: 0; font-size: 17px" in page.text
 
 
 async def test_ui_login_wrong_password(uiclient):
