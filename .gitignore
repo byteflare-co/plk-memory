@@ -7,3 +7,6 @@ __pycache__/
 *.egg-info/
 .superpowers/
 .ruff_cache/
+# エージェントのローカル設定（絶対パス直書き・個人設定のため共有しない）
+.claude/
+.codex/
