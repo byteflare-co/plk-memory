@@ -52,6 +52,8 @@ async def test_plk_tools_have_agent_facing_descriptions():
         "plk_invalidate",
         "plk_propose_promotion",
         "plk_record_decision",
+        "plk_record_intent",
+        "plk_record_action",
         "plk_search",
         "plk_status",
     }
@@ -63,9 +65,7 @@ async def test_record_decision_description_defines_one_call_and_zero_hit_boundar
         tool.name: tool
         for tool in await build_mcp(cast(Any, DummyServices())).list_tools()
     }
-    description = " ".join(
-        (tools["plk_record_decision"].description or "").split()
-    )
+    description = " ".join((tools["plk_record_decision"].description or "").split())
     assert "call this once" in description
     assert "Zero-hit searches need no record call" in description
     assert "non_blocking=true" in description

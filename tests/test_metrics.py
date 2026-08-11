@@ -14,7 +14,12 @@ def usage_at(local: datetime, **values) -> dict:
 
 def test_week_boundaries_outcomes_legacy_and_missing_ts():
     usage = [
-        usage_at(datetime(2026, 7, 13, 0, tzinfo=JST), hits=1, outcome="ok", reason="auto-guideline"),
+        usage_at(
+            datetime(2026, 7, 13, 0, tzinfo=JST),
+            hits=1,
+            outcome="ok",
+            reason="auto-guideline",
+        ),
         usage_at(datetime(2026, 7, 12, 23, 59, 59, tzinfo=JST), hits=0, outcome="ok"),
         usage_at(datetime(2026, 7, 6, 0, tzinfo=JST), hits=1),  # legacy outcome=ok
         usage_at(datetime(2026, 7, 14, 0, tzinfo=JST), hits=0, outcome="degraded"),
@@ -24,8 +29,13 @@ def test_week_boundaries_outcomes_legacy_and_missing_ts():
     current = result["search"]["weekly"][-1]
     previous = result["search"]["weekly"][-2]
     assert current == {
-        "week": "2026-07-13", "in_progress": True, "auto": 1, "manual": 1,
-        "returned": 1, "ok_total": 1, "failures": 1,
+        "week": "2026-07-13",
+        "in_progress": True,
+        "auto": 1,
+        "manual": 1,
+        "returned": 1,
+        "ok_total": 1,
+        "failures": 1,
     }
     assert previous["week"] == "2026-07-06"
     assert previous["manual"] == 2 and previous["returned"] == 1
@@ -35,8 +45,13 @@ def test_week_boundaries_outcomes_legacy_and_missing_ts():
 
 def test_utc_timestamp_is_bucketed_in_jst_and_latency_uses_nearest_rank():
     usage = [
-        {"tool": "plk_search", "ts": "2026-07-12T15:00:00+00:00", "hits": 1,
-         "latency_ms": value, "outcome": "ok"}
+        {
+            "tool": "plk_search",
+            "ts": "2026-07-12T15:00:00+00:00",
+            "hits": 1,
+            "latency_ms": value,
+            "outcome": "ok",
+        }
         for value in [1, 2, 3, 4, 100]
     ]
     usage.append({"tool": "plk_search", "hits": 0, "latency_ms": 1000})
@@ -49,15 +64,25 @@ def test_utc_timestamp_is_bucketed_in_jst_and_latency_uses_nearest_rank():
 def test_zero_hits_group_all_then_sort_and_exclude_failures():
     base = datetime(2026, 1, 1, tzinfo=timezone.utc)
     usage = [
-        usage_at(base + timedelta(minutes=i), query=f"q{i}", hits=0, outcome="ok", client="codex")
+        usage_at(
+            base + timedelta(minutes=i),
+            query=f"q{i}",
+            hits=0,
+            outcome="ok",
+            client="codex",
+        )
         for i in range(55)
     ]
     usage += [
-        usage_at(base + timedelta(days=10), query="q0", hits=0, outcome="ok", client="claude"),
+        usage_at(
+            base + timedelta(days=10), query="q0", hits=0, outcome="ok", client="claude"
+        ),
         usage_at(base + timedelta(days=20), query="infra", hits=0, outcome="error"),
         usage_at(base + timedelta(days=20), query="has-hit", hits=1, outcome="ok"),
         usage_at(base + timedelta(days=20), query="missing-hits", outcome="ok"),
-        usage_at(base + timedelta(days=20), query="bool-hits", hits=False, outcome="ok"),
+        usage_at(
+            base + timedelta(days=20), query="bool-hits", hits=False, outcome="ok"
+        ),
     ]
     rows = build_metrics(usage, [], [], now=NOW, tz=JST)["zero_hit"]
     assert len(rows) == 50 and rows[0]["query"] == "q0"
@@ -272,12 +297,30 @@ def test_zero_hits_keep_legacy_preview_separate_when_exact_and_long_hashes_exist
 
 def test_corpus_datetime_types_and_unreturned():
     posts = [
-        {"id": "01A", "status": "active", "namespace": "plk.domain.tax", "kind": "logic",
-         "statement": "a", "created_at": datetime(2026, 7, 13, tzinfo=JST)},
-        {"id": "01B", "status": "active", "namespace": "plk.domain.tax", "kind": "knowhow",
-         "statement": "b", "created_at": "2026-07-12T15:00:00+00:00"},
-        {"id": "01C", "status": "invalidated", "namespace": "plk.domain.dev", "kind": "logic",
-         "statement": "c", "created_at": "invalid"},
+        {
+            "id": "01A",
+            "status": "active",
+            "namespace": "plk.domain.tax",
+            "kind": "logic",
+            "statement": "a",
+            "created_at": datetime(2026, 7, 13, tzinfo=JST),
+        },
+        {
+            "id": "01B",
+            "status": "active",
+            "namespace": "plk.domain.tax",
+            "kind": "knowhow",
+            "statement": "b",
+            "created_at": "2026-07-12T15:00:00+00:00",
+        },
+        {
+            "id": "01C",
+            "status": "invalidated",
+            "namespace": "plk.domain.dev",
+            "kind": "logic",
+            "statement": "c",
+            "created_at": "invalid",
+        },
     ]
     usage = [{"tool": "plk_search", "fact_ids": ["01A"]}]
     corpus = build_metrics(usage, posts, [], now=NOW, tz=JST)["corpus"]
@@ -351,11 +394,19 @@ def _four_completed_weeks(counts: list[int]) -> list[dict]:
 def test_kill_criteria_three_verdicts_and_ignores_current_week():
     empty = build_metrics([], [], [], now=NOW, tz=JST)["kill_criteria"]
     assert empty["verdict"] == "inconclusive"
-    breached = build_metrics(_four_completed_weeks([0, 1, 2, 0]), [], [], now=NOW, tz=JST)
+    breached = build_metrics(
+        _four_completed_weeks([0, 1, 2, 0]), [], [], now=NOW, tz=JST
+    )
     assert breached["kill_criteria"]["verdict"] == "observed_breached"
     ok_usage = _four_completed_weeks([0, 1, 3, 0])
-    ok_usage += [usage_at(datetime(2026, 7, 13, tzinfo=JST), hits=10,
-                          outcome="ok", reason="auto-guideline")]
+    ok_usage += [
+        usage_at(
+            datetime(2026, 7, 13, tzinfo=JST),
+            hits=10,
+            outcome="ok",
+            reason="auto-guideline",
+        )
+    ]
     ok = build_metrics(ok_usage, [], [], now=NOW, tz=JST)["kill_criteria"]
     assert ok["verdict"] == "observed_breached"
     assert all(row["week"] != "2026-07-13" for row in ok["weeks"])
@@ -399,8 +450,7 @@ def test_decision_value_requires_four_complete_on_target_weeks():
 def test_decision_value_treats_measurement_gap_as_insufficient_not_zero():
     usage = _four_completed_weeks([3, 3, 3, 3])
     usage = [
-        record for record in usage
-        if record.get("decision_id") != "marker-decision-1"
+        record for record in usage if record.get("decision_id") != "marker-decision-1"
     ]
     value = build_metrics(
         usage,
@@ -421,36 +471,38 @@ def test_decision_value_treats_measurement_gap_as_insufficient_not_zero():
 def test_decision_value_attributes_strong_effect_only_to_used_auto_fact_cohort():
     week = datetime(2026, 6, 29, 9, tzinfo=JST)
     usage = _four_completed_weeks([0, 0, 0, 0])
-    usage.extend([
-        usage_at(
-            week,
-            search_id="AUTO-USED",
-            client="codex",
-            hits=1,
-            outcome="ok",
-            reason="auto-guideline",
-            fact_ids=["FA"],
-        ),
-        usage_at(
-            week + timedelta(days=7),
-            search_id="AUTO-UNUSED-LATER",
-            client="codex",
-            hits=1,
-            outcome="ok",
-            reason="auto-guideline",
-            fact_ids=["FB"],
-        ),
-        {
-            "tool": "plk_record_decision",
-            "ts": (week + timedelta(days=7, minutes=1)).isoformat(),
-            "client": "codex",
-            "decision_id": "COHORT",
-            "search_ids": ["AUTO-USED", "AUTO-UNUSED-LATER"],
-            "used_fact_ids": ["FA"],
-            "effect": "changed_action",
-            "outcome": "recorded",
-        },
-    ])
+    usage.extend(
+        [
+            usage_at(
+                week,
+                search_id="AUTO-USED",
+                client="codex",
+                hits=1,
+                outcome="ok",
+                reason="auto-guideline",
+                fact_ids=["FA"],
+            ),
+            usage_at(
+                week + timedelta(days=7),
+                search_id="AUTO-UNUSED-LATER",
+                client="codex",
+                hits=1,
+                outcome="ok",
+                reason="auto-guideline",
+                fact_ids=["FB"],
+            ),
+            {
+                "tool": "plk_record_decision",
+                "ts": (week + timedelta(days=7, minutes=1)).isoformat(),
+                "client": "codex",
+                "decision_id": "COHORT",
+                "search_ids": ["AUTO-USED", "AUTO-UNUSED-LATER"],
+                "used_fact_ids": ["FA"],
+                "effect": "changed_action",
+                "outcome": "recorded",
+            },
+        ]
+    )
     value = build_metrics(
         usage,
         [],
@@ -494,17 +546,28 @@ def test_decision_value_distinguishes_pre_observation_from_no_search_week():
     assert value["primary_reason_code"] == "no_eligible_searches"
     assert value["next_action"]["code"] == "verify_auto_search_flow"
     assert any(
-        "pre_observation" in row["unevaluable_reasons"]
-        for row in value["weekly"]
+        "pre_observation" in row["unevaluable_reasons"] for row in value["weekly"]
     )
 
 
 def test_eval_grouping_sorts_and_keeps_queries_hash():
     history = [
-        {"runner": "graph", "ts": "2026-07-02T00:00:00Z", "hit5_rate": .8,
-         "mrr": .7, "corpus_active": 2, "queries_hash": "sha256:b"},
-        {"runner": "graph", "ts": "2026-07-01T00:00:00Z", "hit5_rate": .6,
-         "mrr": .5, "corpus_active": 1, "queries_hash": "sha256:a"},
+        {
+            "runner": "graph",
+            "ts": "2026-07-02T00:00:00Z",
+            "hit5_rate": 0.8,
+            "mrr": 0.7,
+            "corpus_active": 2,
+            "queries_hash": "sha256:b",
+        },
+        {
+            "runner": "graph",
+            "ts": "2026-07-01T00:00:00Z",
+            "hit5_rate": 0.6,
+            "mrr": 0.5,
+            "corpus_active": 1,
+            "queries_hash": "sha256:a",
+        },
     ]
     rows = build_metrics([], [], history, now=NOW, tz=JST)["eval"]["graph"]
     assert [row["queries_hash"] for row in rows] == ["sha256:a", "sha256:b"]
@@ -549,7 +612,13 @@ def test_contribution_separates_unmeasured_adoption_and_strong_effects():
         },
     ]
     posts = [
-        {"id": "F2", "statement": "F2の主張", "status": "active", "namespace": "plk.domain.dev", "kind": "logic"},
+        {
+            "id": "F2",
+            "statement": "F2の主張",
+            "status": "active",
+            "namespace": "plk.domain.dev",
+            "kind": "logic",
+        },
     ]
     contribution = build_metrics(usage, posts, [], now=NOW, tz=JST)["contribution"]
     assert contribution["hit_searches"] == 3
@@ -717,3 +786,65 @@ def test_operational_readiness_fails_closed_on_low_measurement_and_stale_eval():
     assert gates["client_coverage"]["status"] == "fail"
     assert gates["reliability"]["status"] == "fail"
     assert gates["retrieval_eval"]["status"] == "stale"
+
+
+def test_operation_trace_metrics_expose_search_gaps_and_action_linkage():
+    usage = [
+        {
+            "tool": "plk_record_intent",
+            "outcome": "recorded",
+            "trace_id": "T1",
+            "client": "codex",
+            "plk_requirement": "required",
+            "side_effect": "external_write",
+        },
+        {
+            "tool": "plk_record_intent",
+            "outcome": "recorded",
+            "trace_id": "T2",
+            "client": "claude-code",
+            "plk_requirement": "required",
+            "side_effect": "read",
+        },
+        {
+            "tool": "plk_search",
+            "trace_id": "T1",
+            "search_id": "S1",
+            "client": "codex",
+            "hits": 1,
+            "outcome": "ok",
+        },
+        {
+            "tool": "plk_record_decision",
+            "trace_id": "T1",
+            "decision_id": "D1",
+            "client": "codex",
+            "effect": "prevented_error",
+            "outcome": "recorded",
+        },
+        {
+            "tool": "plk_record_action",
+            "trace_id": "T1",
+            "action_id": "A1",
+            "phase": "attempted",
+            "outcome": "pending",
+        },
+        {
+            "tool": "plk_record_action",
+            "trace_id": "T1",
+            "action_id": "A1",
+            "phase": "completed",
+            "outcome": "blocked",
+            "decision_id": "D1",
+        },
+    ]
+    result = build_metrics(usage, [], [], now=NOW, tz=JST)["operation_traces"]
+    assert result["plk_required"] == 2
+    assert result["required_searched"] == 1
+    assert result["required_search_rate"] == 0.5
+    assert result["missing_required_search"] == 1
+    assert result["decision_linked_actions"] == 1
+    assert result["effects"] == {"prevented_error": 1}
+    assert result["terminal_outcomes"] == {"blocked": 1}
+    assert result["requirements"] == {"required": 2}
+    assert result["side_effects"] == {"external_write": 1, "read": 1}

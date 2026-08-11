@@ -20,11 +20,22 @@ from plk_memory.admission import CodexAdmissionRunner
 from plk_memory.facts import SKIP_NAMES, FactError, FactNotFound, FactService
 from plk_memory.feedback import FeedbackCoordinator, FeedbackState
 from plk_memory.gitstore import GitStore, WriteConflict
-from plk_memory.promotions import PromotionState, PromotionStore, new_promotion, transition
+from plk_memory.promotions import (
+    PromotionState,
+    PromotionStore,
+    new_promotion,
+    transition,
+)
 from plk_memory.settings import Settings
 from plk_memory.state import StateStore
 from plk_memory.sync import SyncEngine
-from plk_memory.telemetry import DecisionCommand, FactReference, TelemetryError
+from plk_memory.telemetry import (
+    ActionCommand,
+    DecisionCommand,
+    FactReference,
+    IntentCommand,
+    TelemetryError,
+)
 from plk_memory.usage_log import UsageLog
 from pydantic import ValidationError
 
@@ -102,6 +113,7 @@ class AppServices:
         limit: int = 10,
         reason: str | None = None,
         log_usage: bool = True,
+        trace_id: str | None = None,
     ) -> dict:
         client = current_client.get()
         start = time.monotonic()
@@ -128,6 +140,7 @@ class AppServices:
                         reason=reason,
                         fact_refs=fact_refs,
                         outcome=outcome,
+                        trace_id=trace_id,
                     )
                 except Exception:  # noqa: BLE001 - telemetry must never block search
                     logger.exception("PLK search telemetry write failed")
@@ -152,7 +165,9 @@ class AppServices:
                 for uuid in entry.episode_uuids
             }
             pool = max(limit * 5, 50)
-            raw_hits = await self.graph.search(query, group_ids, uuid_to_fact, limit=pool)
+            raw_hits = await self.graph.search(
+                query, group_ids, uuid_to_fact, limit=pool
+            )
             results = []
             for hit in raw_hits:
                 try:
@@ -208,6 +223,7 @@ class AppServices:
         used_fact_ids: list[str],
         effect: str,
         no_use_reason: str | None = None,
+        trace_id: str | None = None,
     ) -> dict:
         client = self._require_client()
         try:
@@ -218,6 +234,7 @@ class AppServices:
                     "used_fact_ids": used_fact_ids,
                     "effect": effect,
                     "no_use_reason": no_use_reason,
+                    "trace_id": trace_id,
                 }
             )
             return await self.usage.record_decision(client=client, command=command)
@@ -230,6 +247,32 @@ class AppServices:
                 "non_blocking": True,
                 "error": f"telemetry unavailable: {error}",
             }
+
+    async def tool_record_intent(self, **values) -> dict:
+        client = self._require_client()
+        try:
+            return await self.usage.record_intent(
+                client=client,
+                command=IntentCommand.model_validate(values),
+            )
+        except (ValidationError, TelemetryError) as error:
+            return {"error": str(error), "recorded": False}
+        except Exception as error:  # noqa: BLE001
+            logger.exception("PLK intent telemetry write failed")
+            return {"recorded": False, "non_blocking": True, "error": str(error)}
+
+    async def tool_record_action(self, **values) -> dict:
+        client = self._require_client()
+        try:
+            return await self.usage.record_action(
+                client=client,
+                command=ActionCommand.model_validate(values),
+            )
+        except (ValidationError, TelemetryError) as error:
+            return {"error": str(error), "recorded": False}
+        except Exception as error:  # noqa: BLE001
+            logger.exception("PLK action telemetry write failed")
+            return {"recorded": False, "non_blocking": True, "error": str(error)}
 
     async def tool_add(
         self,
@@ -255,9 +298,18 @@ class AppServices:
             return {"error": "maintenance 中（reindex 実行中）", "retry": True}
         try:
             fact_id = await self.facts.add(
-                client=client, namespace=namespace, kind=kind, statement=statement,
-                why=why, how_to_apply=how_to_apply, source=source, tags=tags, body=body,
-                slug=slug, source_type=source_type, supersedes=supersedes,
+                client=client,
+                namespace=namespace,
+                kind=kind,
+                statement=statement,
+                why=why,
+                how_to_apply=how_to_apply,
+                source=source,
+                tags=tags,
+                body=body,
+                slug=slug,
+                source_type=source_type,
+                supersedes=supersedes,
             )
         except FactError as e:
             return {"error": str(e)}
@@ -295,10 +347,16 @@ class AppServices:
 
     async def tool_status(self) -> dict:
         status = await self.sync.status()
-        pending = self.promotion_store.by_state(PromotionState.proposed) + \
-            self.promotion_store.by_state(PromotionState.approved)
+        pending = self.promotion_store.by_state(
+            PromotionState.proposed
+        ) + self.promotion_store.by_state(PromotionState.approved)
         status["pending_promotions"] = [
-            {"promotion_id": p.id, "fact_id": p.fact_id, "state": p.state.value, "pr_url": p.pr_url}
+            {
+                "promotion_id": p.id,
+                "fact_id": p.fact_id,
+                "state": p.state.value,
+                "pr_url": p.pr_url,
+            }
             for p in pending
         ]
         return status
@@ -406,7 +464,8 @@ class AppServices:
 
     async def ui_feedback_requests(self, fact_id: str) -> list[dict]:
         return [
-            item.model_dump(mode="json") for item in self.feedback.store.by_fact(fact_id)
+            item.model_dump(mode="json")
+            for item in self.feedback.store.by_fact(fact_id)
         ]
 
     async def ui_apply_feedback(self, request_id: str) -> dict:
@@ -459,9 +518,7 @@ class AppServices:
                 body=proposal.body,
                 source_type="agent",
                 supersedes=[request.fact_id],
-                expected_superseded_hashes={
-                    request.fact_id: request.base_content_hash
-                },
+                expected_superseded_hashes={request.fact_id: request.base_content_hash},
                 change_ref=f"feedback/{request_id}",
             )
         except FactError as error:
@@ -530,7 +587,9 @@ class AppServices:
         del idempotency_key
         self._require_client()
         if self.promotion_backend is None:
-            return {"error": "promotion backend が未設定（enable_github_promotion=True の常駐プロセスのみ有効）"}
+            return {
+                "error": "promotion backend が未設定（enable_github_promotion=True の常駐プロセスのみ有効）"
+            }
         try:
             post, rel = self.facts.get(fact_id)
         except FactNotFound:
@@ -545,20 +604,31 @@ class AppServices:
         # 「重複チェック → upsert」を event loop 上で await 無しの不可分区間にする
         # （同一 fact への並行 propose が重複レコードを作るレースの防止）。
         unpushed = (
-            await asyncio.to_thread(self.store.git, "rev-list", "--count", "origin/main..HEAD")
+            await asyncio.to_thread(
+                self.store.git, "rev-list", "--count", "origin/main..HEAD"
+            )
         ).strip()
         if unpushed != "0":
-            return {"error": f"未 push の commit が {unpushed} 件ある（push 完了後に再試行）"}
+            return {
+                "error": f"未 push の commit が {unpushed} 件ある（push 完了後に再試行）"
+            }
         # 既存の未処理昇格があれば再作成しない（ここから upsert まで await を挟まない）
         for existing in self.promotion_store.by_fact(fact_id):
             if existing.state in (PromotionState.proposed, PromotionState.approved):
-                return {"error": "既に昇格リクエストが存在する", "promotion_id": existing.id}
+                return {
+                    "error": "既に昇格リクエストが存在する",
+                    "promotion_id": existing.id,
+                }
 
         # domains/<d>/<file> -> shared/<file>（CI の check_promotion が要求する rename 形）
         new_rel = f"{self.settings.knowledge_subdir}/shared/" + posixpath.basename(rel)
         pr = new_promotion(
-            fact_id=fact_id, from_namespace=ns, old_path=rel, new_path=new_rel,
-            branch=f"promote/{fact_id}", reason=reason,
+            fact_id=fact_id,
+            from_namespace=ns,
+            old_path=rel,
+            new_path=new_rel,
+            branch=f"promote/{fact_id}",
+            reason=reason,
         )
         self.promotion_store.upsert(pr)
         try:
@@ -590,8 +660,9 @@ class AppServices:
         if self.promotion_backend is None:
             return {"applied": 0, "rejected": 0, "checked": 0}
         applied = rejected = checked = 0
-        for pr in self.promotion_store.by_state(PromotionState.proposed) + \
-                self.promotion_store.by_state(PromotionState.approved):
+        for pr in self.promotion_store.by_state(
+            PromotionState.proposed
+        ) + self.promotion_store.by_state(PromotionState.approved):
             if pr.pr_number is None:
                 continue
             checked += 1
@@ -607,15 +678,21 @@ class AppServices:
                 continue
             if state == "MERGED":
                 self.promotion_store.upsert(transition(current, PromotionState.applied))
-                await self.sync.sync()  # level-triggered が rename を拾い shared へ再 ingest
+                await (
+                    self.sync.sync()
+                )  # level-triggered が rename を拾い shared へ再 ingest
                 applied += 1
             elif state == "APPROVED":
                 # 承認と適用が分離するバックエンド（Slack 等）の中間状態。
                 # 承認の記録のみ行い、sync はしない（適用は MERGED 検知時）。
                 # GitHub backend は APPROVED を返さないため既存経路への影響はない。
                 if current.state is PromotionState.proposed:
-                    self.promotion_store.upsert(transition(current, PromotionState.approved))
+                    self.promotion_store.upsert(
+                        transition(current, PromotionState.approved)
+                    )
             elif state == "CLOSED":
-                self.promotion_store.upsert(transition(current, PromotionState.rejected))
+                self.promotion_store.upsert(
+                    transition(current, PromotionState.rejected)
+                )
                 rejected += 1
         return {"applied": applied, "rejected": rejected, "checked": checked}

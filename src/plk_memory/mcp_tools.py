@@ -34,6 +34,14 @@ no_use_reason when none of the returned facts affected the decision. Zero-hit
 searches need no record call. Reuse decision_id only to retry the exact same
 payload. If recording fails with non_blocking=true, continue the main task."""
 
+PLK_RECORD_INTENT_DESCRIPTION = """Start an auditable operation trace before
+searching PLK or acting. Classify the intended operation, target, side effect,
+and whether PLK is required. Reuse trace_id only for an identical retry."""
+
+PLK_RECORD_ACTION_DESCRIPTION = """Record an attempted or completed action in
+an existing trace. Link the decision when PLK affected the action. Record both
+phases so the trace can distinguish pending, succeeded, failed, and blocked work."""
+
 PLK_ADD_DESCRIPTION = """Write a PLK fact. Call only after plk_assess_candidate
 returns eligible, duplicates are reviewed, and the user explicitly approves the
 preview. Never call for ineligible or needs_evidence. Use an existing namespace.
@@ -76,6 +84,7 @@ def build_mcp(services: "ServiceFacade") -> FastMCP:
     auth = None
     if services.settings.auth_mode == "jwt":
         from plk_memory.auth import build_jwt_verifier
+
         auth = build_jwt_verifier(services.settings)
     mcp = FastMCP("plk-memory", auth=auth)
 
@@ -87,10 +96,42 @@ def build_mcp(services: "ServiceFacade") -> FastMCP:
         status: str = "active",
         limit: int = 10,
         reason: str | None = None,
+        trace_id: str | None = None,
     ) -> dict:
         return await services.tool_search(
-            query=query, namespaces=namespaces, kind=kind, status=status,
-            limit=limit, reason=reason,
+            query=query,
+            namespaces=namespaces,
+            kind=kind,
+            status=status,
+            limit=limit,
+            reason=reason,
+            trace_id=trace_id,
+        )
+
+    @mcp.tool(description=PLK_RECORD_INTENT_DESCRIPTION)
+    async def plk_record_intent(
+        trace_id: str,
+        operation_type: str,
+        intent: str,
+        side_effect: Literal["read", "local_write", "external_write", "destructive"],
+        plk_requirement: Literal["required", "optional", "not_required"],
+        target: str | None = None,
+        no_search_reason: Literal[
+            "not_applicable",
+            "fresh_primary_source",
+            "no_decision",
+            "service_unavailable",
+        ]
+        | None = None,
+    ) -> dict:
+        return await services.tool_record_intent(
+            trace_id=trace_id,
+            operation_type=operation_type,
+            intent=intent,
+            target=target,
+            side_effect=side_effect,
+            plk_requirement=plk_requirement,
+            no_search_reason=no_search_reason,
         )
 
     @mcp.tool(description=PLK_ASSESS_DESCRIPTION)
@@ -99,9 +140,7 @@ def build_mcp(services: "ServiceFacade") -> FastMCP:
             services.admission,
             candidate=candidate,
             context=context,
-            search=lambda **kwargs: services.tool_search(
-                **kwargs, log_usage=False
-            ),
+            search=lambda **kwargs: services.tool_search(**kwargs, log_usage=False),
         )
 
     @mcp.tool(description=PLK_RECORD_DECISION_DESCRIPTION)
@@ -118,6 +157,7 @@ def build_mcp(services: "ServiceFacade") -> FastMCP:
             "insufficient",
         ]
         | None = None,
+        trace_id: str | None = None,
     ) -> dict:
         return await services.tool_record_decision(
             decision_id=decision_id,
@@ -125,6 +165,35 @@ def build_mcp(services: "ServiceFacade") -> FastMCP:
             used_fact_ids=used_fact_ids,
             effect=effect,
             no_use_reason=no_use_reason,
+            trace_id=trace_id,
+        )
+
+    @mcp.tool(description=PLK_RECORD_ACTION_DESCRIPTION)
+    async def plk_record_action(
+        event_id: str,
+        action_id: str,
+        trace_id: str,
+        phase: Literal["attempted", "completed"],
+        action_type: str,
+        side_effect: Literal["read", "local_write", "external_write", "destructive"],
+        outcome: Literal["pending", "succeeded", "failed", "blocked", "cancelled"],
+        tool_name: str | None = None,
+        target: str | None = None,
+        decision_id: str | None = None,
+        error_category: str | None = None,
+    ) -> dict:
+        return await services.tool_record_action(
+            event_id=event_id,
+            action_id=action_id,
+            trace_id=trace_id,
+            phase=phase,
+            action_type=action_type,
+            tool_name=tool_name,
+            target=target,
+            side_effect=side_effect,
+            outcome=outcome,
+            decision_id=decision_id,
+            error_category=error_category,
         )
 
     @mcp.tool(description=PLK_ADD_DESCRIPTION)
@@ -145,9 +214,17 @@ def build_mcp(services: "ServiceFacade") -> FastMCP:
         expected_superseded_revisions: dict[str, int] | None = None,
     ) -> dict:
         return await services.tool_add(
-            namespace=namespace, kind=kind, statement=statement, why=why,
-            how_to_apply=how_to_apply, source=source, tags=tags, body=body,
-            slug=slug, source_type=source_type, supersedes=supersedes,
+            namespace=namespace,
+            kind=kind,
+            statement=statement,
+            why=why,
+            how_to_apply=how_to_apply,
+            source=source,
+            tags=tags,
+            body=body,
+            slug=slug,
+            source_type=source_type,
+            supersedes=supersedes,
             idempotency_key=idempotency_key,
             expected_revision=expected_revision,
             expected_superseded_revisions=expected_superseded_revisions,

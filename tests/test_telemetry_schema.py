@@ -1,14 +1,30 @@
 from plk_memory.postgres.schema import (
     TENANT_TABLES,
+    action_events,
     decision_events,
     decision_search_links,
+    intent_events,
     search_events,
 )
 
 
 def test_telemetry_tables_are_tenant_scoped_and_link_each_search_once():
     tenant_names = {table.name for table in TENANT_TABLES}
-    assert {"search_events", "decision_events", "decision_search_links"} <= tenant_names
+    assert {
+        "search_events",
+        "decision_events",
+        "decision_search_links",
+        "intent_events",
+        "action_events",
+    } <= tenant_names
+    assert [column.name for column in intent_events.primary_key.columns] == [
+        "organization_id",
+        "trace_id",
+    ]
+    assert [column.name for column in action_events.primary_key.columns] == [
+        "organization_id",
+        "event_id",
+    ]
     assert [column.name for column in decision_search_links.primary_key.columns] == [
         "organization_id",
         "search_id",

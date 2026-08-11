@@ -1,5 +1,8 @@
 # Hermes Agent 接続
 
+接続後、[共通trace指示](guideline-line.md)をsystem promptへ追加する。MCP登録だけでは
+操作前のPLK検索・action記録は発火しない。
+
 `~/.hermes/config.yaml`:
 
 ```yaml

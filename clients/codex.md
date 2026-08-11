@@ -1,5 +1,8 @@
 # Codex CLI 接続
 
+接続後、[共通trace指示](guideline-line.md)をユーザー`AGENTS.md`へ追加する。MCP登録だけでは
+操作前のPLK検索・action記録は発火しない。
+
 ```bash
 codex mcp add plk --url http://127.0.0.1:8735/mcp --bearer-token-env-var PLK_TOKEN
 ```

@@ -1,5 +1,8 @@
 # Claude Code 接続
 
+接続後、[共通trace指示](guideline-line.md)をユーザー`CLAUDE.md`へ追加する。MCP登録だけでは
+操作前のPLK検索・action記録は発火しない。
+
 ```bash
 export PLK_TOKEN=<発行されたトークン>
 claude mcp add --transport http plk http://127.0.0.1:8735/mcp --header "Authorization: Bearer ${PLK_TOKEN}"

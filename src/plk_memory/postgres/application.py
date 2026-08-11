@@ -40,8 +40,10 @@ from plk_memory.ports import (
 from plk_memory.settings import Settings
 from plk_memory.admission import CodexAdmissionRunner
 from plk_memory.telemetry import (
+    ActionCommand,
     DecisionCommand,
     FactReference,
+    IntentCommand,
     TelemetryError,
     TelemetryStore,
 )
@@ -121,6 +123,7 @@ class PostgresAppServices:
         limit: int = 10,
         reason: str | None = None,
         log_usage: bool = True,
+        trace_id: str | None = None,
     ) -> dict[str, Any]:
         start = time.monotonic()
         scope = self._scope()
@@ -139,6 +142,7 @@ class PostgresAppServices:
                     latency_ms=latency_ms,
                     reason=reason,
                     outcome="degraded",
+                    trace_id=trace_id,
                 )
             return {
                 "degraded": True,
@@ -176,6 +180,7 @@ class PostgresAppServices:
                     latency_ms=latency_ms,
                     reason=reason,
                     outcome="error",
+                    trace_id=trace_id,
                 )
             return {
                 "error": f"検索条件が不正: {error}",
@@ -194,6 +199,7 @@ class PostgresAppServices:
                     latency_ms=latency_ms,
                     reason=reason,
                     outcome="error",
+                    trace_id=trace_id,
                 )
             return {
                 "degraded": True,
@@ -229,6 +235,7 @@ class PostgresAppServices:
                 latency_ms=latency_ms,
                 reason=reason,
                 outcome="ok",
+                trace_id=trace_id,
             )
         return {
             "hits": results,
@@ -245,6 +252,7 @@ class PostgresAppServices:
         used_fact_ids: list[str],
         effect: str,
         no_use_reason: str | None = None,
+        trace_id: str | None = None,
     ) -> dict[str, Any]:
         actor = self._actor()
         try:
@@ -255,6 +263,7 @@ class PostgresAppServices:
                     "used_fact_ids": used_fact_ids,
                     "effect": effect,
                     "no_use_reason": no_use_reason,
+                    "trace_id": trace_id,
                 }
             )
             if self.telemetry is None:
@@ -272,6 +281,36 @@ class PostgresAppServices:
                 "non_blocking": True,
                 "error": f"telemetry unavailable: {error}",
             }
+
+    async def tool_record_intent(self, **values) -> dict[str, Any]:
+        actor = self._actor()
+        try:
+            if self.telemetry is None:
+                raise RuntimeError("telemetry store is unavailable")
+            return await self.telemetry.record_intent(
+                client=actor.actor_id,
+                command=IntentCommand.model_validate(values),
+            )
+        except (ValidationError, TelemetryError) as error:
+            return {"error": str(error), "recorded": False}
+        except Exception as error:  # noqa: BLE001
+            logger.exception("PLK intent telemetry write failed")
+            return {"recorded": False, "non_blocking": True, "error": str(error)}
+
+    async def tool_record_action(self, **values) -> dict[str, Any]:
+        actor = self._actor()
+        try:
+            if self.telemetry is None:
+                raise RuntimeError("telemetry store is unavailable")
+            return await self.telemetry.record_action(
+                client=actor.actor_id,
+                command=ActionCommand.model_validate(values),
+            )
+        except (ValidationError, TelemetryError) as error:
+            return {"error": str(error), "recorded": False}
+        except Exception as error:  # noqa: BLE001
+            logger.exception("PLK action telemetry write failed")
+            return {"recorded": False, "non_blocking": True, "error": str(error)}
 
     async def tool_add(
         self,
@@ -337,8 +376,14 @@ class PostgresAppServices:
             )
         except RevisionConflict as error:
             return self._revision_error(error)
-        except (ValidationError, FactMissing, FactAlreadyExists, IdempotencyConflict,
-                PersistenceError, ValueError) as error:
+        except (
+            ValidationError,
+            FactMissing,
+            FactAlreadyExists,
+            IdempotencyConflict,
+            PersistenceError,
+            ValueError,
+        ) as error:
             return {"error": str(error)}
 
         return {
@@ -381,8 +426,13 @@ class PostgresAppServices:
             )
         except RevisionConflict as error:
             return self._revision_error(error)
-        except (ValidationError, FactMissing, IdempotencyConflict, PersistenceError,
-                ValueError) as error:
+        except (
+            ValidationError,
+            FactMissing,
+            IdempotencyConflict,
+            PersistenceError,
+            ValueError,
+        ) as error:
             return {"error": str(error)}
 
         return {
@@ -594,9 +644,7 @@ class PostgresAppServices:
         }
 
     async def admin_reindex(self) -> dict[str, Any]:
-        return {
-            "error": "PostgreSQL-primaryの管理reindex endpointは未対応"
-        }
+        return {"error": "PostgreSQL-primaryの管理reindex endpointは未対応"}
 
     async def _expected_superseded_revisions(
         self,
@@ -643,6 +691,7 @@ class PostgresAppServices:
         latency_ms: int,
         reason: str | None,
         outcome: str,
+        trace_id: str | None = None,
     ) -> None:
         if self.telemetry is None:
             return
@@ -662,6 +711,7 @@ class PostgresAppServices:
                     for hit in hits
                 ],
                 outcome=outcome,
+                trace_id=trace_id,
             )
         except Exception:  # noqa: BLE001 - telemetry must never block search
             logger.exception("PLK search telemetry write failed")

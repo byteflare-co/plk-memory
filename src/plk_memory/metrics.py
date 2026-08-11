@@ -50,6 +50,129 @@ def _searches(usage: list[dict]) -> list[dict]:
     return [record for record in usage if record.get("tool") == "plk_search"]
 
 
+def _operation_trace_stats(usage: list[dict]) -> dict:
+    intents = {
+        record["trace_id"]: record
+        for record in usage
+        if record.get("tool") == "plk_record_intent"
+        and record.get("outcome") == "recorded"
+        and isinstance(record.get("trace_id"), str)
+    }
+    searches = [
+        record
+        for record in usage
+        if record.get("tool") == "plk_search"
+        and isinstance(record.get("trace_id"), str)
+    ]
+    decisions = [
+        record
+        for record in usage
+        if record.get("tool") == "plk_record_decision"
+        and record.get("outcome") == "recorded"
+        and isinstance(record.get("trace_id"), str)
+    ]
+    actions = [
+        record
+        for record in usage
+        if record.get("tool") == "plk_record_action"
+        and isinstance(record.get("trace_id"), str)
+    ]
+    searches_by_trace = Counter(record["trace_id"] for record in searches)
+    decisions_by_trace = Counter(record["trace_id"] for record in decisions)
+    attempted_by_trace = Counter(
+        record["trace_id"] for record in actions if record.get("phase") == "attempted"
+    )
+    completed_by_trace = Counter(
+        record["trace_id"] for record in actions if record.get("phase") == "completed"
+    )
+    terminal_outcomes = Counter(
+        record.get("outcome")
+        for record in actions
+        if record.get("phase") == "completed"
+        and record.get("outcome") in {"succeeded", "failed", "blocked", "cancelled"}
+    )
+    required = {
+        trace_id
+        for trace_id, record in intents.items()
+        if record.get("plk_requirement") == "required"
+    }
+    requirements = Counter(
+        record.get("plk_requirement")
+        for record in intents.values()
+        if record.get("plk_requirement") in {"required", "optional", "not_required"}
+    )
+    side_effects = Counter(
+        record.get("side_effect")
+        for record in intents.values()
+        if record.get("side_effect")
+        in {"read", "local_write", "external_write", "destructive"}
+    )
+    searched_required = {
+        trace_id for trace_id in required if searches_by_trace[trace_id]
+    }
+    effects = Counter(
+        record.get("effect")
+        for record in decisions
+        if isinstance(record.get("effect"), str)
+    )
+    clients: list[dict] = []
+    client_names = {
+        client
+        for record in intents.values()
+        if isinstance((client := record.get("client")), str)
+    }
+    for client in sorted(client_names):
+        trace_ids = {
+            trace_id
+            for trace_id, record in intents.items()
+            if record.get("client") == client
+        }
+        client_required = trace_ids & required
+        client_searched = {
+            trace_id for trace_id in client_required if searches_by_trace[trace_id]
+        }
+        clients.append(
+            {
+                "client": client,
+                "intents": len(trace_ids),
+                "plk_required": len(client_required),
+                "required_searched": len(client_searched),
+                "required_search_rate": len(client_searched) / len(client_required)
+                if client_required
+                else None,
+            }
+        )
+    return {
+        "intents": len(intents),
+        "plk_required": len(required),
+        "requirements": dict(requirements),
+        "side_effects": dict(side_effects),
+        "required_searched": len(searched_required),
+        "required_search_rate": len(searched_required) / len(required)
+        if required
+        else None,
+        "missing_required_search": len(required - searched_required),
+        "with_decision": sum(
+            bool(decisions_by_trace[trace_id]) for trace_id in intents
+        ),
+        "with_action_attempt": sum(
+            bool(attempted_by_trace[trace_id]) for trace_id in intents
+        ),
+        "with_action_completion": sum(
+            bool(completed_by_trace[trace_id]) for trace_id in intents
+        ),
+        "terminal_outcomes": dict(terminal_outcomes),
+        "decision_linked_actions": sum(
+            1
+            for record in actions
+            if record.get("phase") == "completed"
+            and isinstance(record.get("decision_id"), str)
+        ),
+        "effects": dict(effects),
+        "clients": clients,
+    }
+
+
 def _decisions(usage: list[dict]) -> list[dict]:
     seen: set[str] = set()
     result: list[dict] = []
@@ -173,13 +296,13 @@ def _search_stats(usage: list[dict], now: datetime, tz: ZoneInfo) -> dict:
             row["failures"] += 1
 
     clients = Counter(
-        record["client"]
-        for record in searches
-        if isinstance(record.get("client"), str)
+        record["client"] for record in searches if isinstance(record.get("client"), str)
     )
     client_rows = [
         {"client": client, "count": count}
-        for client, count in sorted(clients.items(), key=lambda item: (-item[1], item[0]))[:10]
+        for client, count in sorted(
+            clients.items(), key=lambda item: (-item[1], item[0])
+        )[:10]
     ]
     all_latency = [
         value
@@ -318,13 +441,17 @@ def _normalize_datetime(value: object) -> datetime | None:
     return parse_ts(value)
 
 
-def _corpus_stats(posts: list[dict], usage: list[dict], now: datetime, tz: ZoneInfo) -> dict:
+def _corpus_stats(
+    posts: list[dict], usage: list[dict], now: datetime, tz: ZoneInfo
+) -> dict:
     active = [post for post in posts if post.get("status") == "active"]
     invalidated = [post for post in posts if post.get("status") == "invalidated"]
     namespaces = Counter(
         post["namespace"] for post in active if isinstance(post.get("namespace"), str)
     )
-    kinds = Counter(post["kind"] for post in active if isinstance(post.get("kind"), str))
+    kinds = Counter(
+        post["kind"] for post in active if isinstance(post.get("kind"), str)
+    )
     starts = _window_starts(now, tz)
     added = {start: 0 for start in starts}
     for post in posts:
@@ -348,7 +475,9 @@ def _corpus_stats(posts: list[dict], usage: list[dict], now: datetime, tz: ZoneI
         "status": {"active": len(active), "invalidated": len(invalidated)},
         "namespaces": [
             {"namespace": namespace, "count": count}
-            for namespace, count in sorted(namespaces.items(), key=lambda item: (-item[1], item[0]))
+            for namespace, count in sorted(
+                namespaces.items(), key=lambda item: (-item[1], item[0])
+            )
         ],
         "kinds": {
             "philosophy": kinds.get("philosophy", 0),
@@ -404,7 +533,9 @@ def _contribution_stats(usage: list[dict], posts: list[dict] | None = None) -> d
         and decision.get("no_use_reason")
         in {"irrelevant", "already_known", "stale", "conflict", "insufficient"}
     )
-    adopted = effects["changed_action"] + effects["prevented_error"] + effects["confirmed"]
+    adopted = (
+        effects["changed_action"] + effects["prevented_error"] + effects["confirmed"]
+    )
     strong = effects["changed_action"] + effects["prevented_error"]
 
     client_totals: dict[str, dict[str, int]] = {}
@@ -497,8 +628,7 @@ def _contribution_stats(usage: list[dict], posts: list[dict] | None = None) -> d
         decision
         for decision in decisions
         if any(
-            search_id in searches_by_id
-            for search_id in decision.get("search_ids", [])
+            search_id in searches_by_id for search_id in decision.get("search_ids", [])
         )
     ]
     return {
@@ -533,7 +663,10 @@ def _contribution_stats(usage: list[dict], posts: list[dict] | None = None) -> d
 
 def _kill_criteria(usage: list[dict], now: datetime, tz: ZoneInfo) -> dict:
     current = _week_start(now, tz)
-    starts = [current - timedelta(weeks=offset) for offset in reversed(range(1, KILL_WEEKS + 1))]
+    starts = [
+        current - timedelta(weeks=offset)
+        for offset in reversed(range(1, KILL_WEEKS + 1))
+    ]
     rows = {
         start: {
             "week": start.isoformat(),
@@ -575,12 +708,9 @@ def _kill_criteria(usage: list[dict], now: datetime, tz: ZoneInfo) -> dict:
             row["_strong_decision_ids"].add(decision["decision_id"])
     values = list(rows.values())
     for row in values:
-        row["auto_strong_contribution_decisions"] = len(
-            row["_strong_decision_ids"]
-        )
+        row["auto_strong_contribution_decisions"] = len(row["_strong_decision_ids"])
     if not all(
-        row["_auto_searches"] > 0
-        and row["_resolved_searches"] == row["_auto_searches"]
+        row["_auto_searches"] > 0 and row["_resolved_searches"] == row["_auto_searches"]
         for row in values
     ):
         verdict = "inconclusive"
@@ -628,9 +758,7 @@ def _decision_value(
         else observation_week + timedelta(weeks=1)
     )
 
-    weekly_issues: dict[date, Counter[str]] = {
-        start: Counter() for start in starts
-    }
+    weekly_issues: dict[date, Counter[str]] = {start: Counter() for start in starts}
     issue_counts: Counter[str] = Counter()
 
     def record_issue(code: str, weeks: set[date] | None = None) -> None:
@@ -705,9 +833,7 @@ def _decision_value(
         normalized_decisions.append(first)
 
     valid_decisions = _validated_decisions(normalized_decisions, searches_by_id)
-    valid_decision_ids = {
-        decision["decision_id"] for decision in valid_decisions
-    }
+    valid_decision_ids = {decision["decision_id"] for decision in valid_decisions}
     for decision in normalized_decisions:
         if decision["decision_id"] in valid_decision_ids:
             continue
@@ -734,8 +860,7 @@ def _decision_value(
             weekly_searches[week].append(record)
 
     weekly_effects: dict[date, dict[str, set[str]]] = {
-        start: {"changed_action": set(), "prevented_error": set()}
-        for start in starts
+        start: {"changed_action": set(), "prevented_error": set()} for start in starts
     }
     for decision in valid_decisions:
         effect = decision.get("effect")
@@ -776,7 +901,8 @@ def _decision_value(
     for start in starts:
         searches = weekly_searches[start]
         measurable_ids = {
-            record["search_id"] for record in searches
+            record["search_id"]
+            for record in searches
             if isinstance(record.get("search_id"), str)
         }
         resolved = len(measurable_ids.intersection(resolved_ids))
@@ -886,26 +1012,33 @@ def _decision_value(
             if record.get("reason") == "auto-guideline"
             and record.get("search_id") not in resolved_ids
         )
-        client = unresolved_clients.most_common(1)[0][0] if unresolved_clients else "unknown"
+        client = (
+            unresolved_clients.most_common(1)[0][0] if unresolved_clients else "unknown"
+        )
         next_action = {
-            "code": "record_missing_decisions", "count": missing_searches,
-            "client": client, "destination": "decision_measurement",
+            "code": "record_missing_decisions",
+            "count": missing_searches,
+            "client": client,
+            "destination": "decision_measurement",
         }
     elif primary == "no_eligible_searches":
         next_action = {
-            "code": "verify_auto_search_flow", "weeks": no_search_weeks,
+            "code": "verify_auto_search_flow",
+            "weeks": no_search_weeks,
             "observation_started_at": observation_started_at.isoformat(),
             "destination": "decision_measurement",
         }
     elif primary == "insufficient_history":
         next_action = {
-            "code": "observe_more_weeks", "weeks_remaining": pre_observation,
+            "code": "observe_more_weeks",
+            "weeks_remaining": pre_observation,
             "destination": "decision_value",
         }
     elif primary == "weekly_target_missed":
         missed = next(row for row in rows if row["evaluable"] and not row["target_met"])
         next_action = {
-            "code": "inspect_below_target_week", "week": missed["week"],
+            "code": "inspect_below_target_week",
+            "week": missed["week"],
             "strong_decisions": missed["strong_decisions"],
             "target": KILL_THRESHOLD_WEEKLY_HITS,
             "destination": "decision_breakdown",
@@ -927,7 +1060,8 @@ def _decision_value(
             "measurable_searches": len(recent_ids),
             "resolved_searches": recent_resolved,
             "measurement_rate": recent_resolved / len(recent_ids)
-            if recent_ids else None,
+            if recent_ids
+            else None,
             "minimum_searches": READINESS_MIN_SEARCHES,
             "target_rate": READINESS_MEASUREMENT_TARGET,
         },
@@ -1068,13 +1202,15 @@ def _operational_readiness(
         run_id = latest_record.get("run_id")
         if isinstance(run_id, str):
             run_rows = [
-                record for record, _ts in valid_eval_rows
+                record
+                for record, _ts in valid_eval_rows
                 if record.get("run_id") == run_id
             ]
         else:
             latest_hash = latest_record.get("queries_hash")
             run_rows = [
-                record for record, ts in valid_eval_rows
+                record
+                for record, ts in valid_eval_rows
                 if ts == latest_ts and record.get("queries_hash") == latest_hash
             ]
         graph_rows = [
@@ -1170,11 +1306,7 @@ def _operational_readiness(
             "検索から最終判断までの計測",
             measurement_status,
             f"{len(resolved)}/{len(measurable)}"
-            + (
-                f" ({measurement_rate:.0%})"
-                if measurement_rate is not None
-                else ""
-            ),
+            + (f" ({measurement_rate:.0%})" if measurement_rate is not None else ""),
             f"直近{READINESS_WINDOW_DAYS}日で{READINESS_MEASUREMENT_TARGET:.0%}以上"
             f"（最低{READINESS_MIN_SEARCHES}検索）",
         ),
@@ -1252,6 +1384,7 @@ def build_metrics(
     return {
         "generated_at": now.astimezone(tz).isoformat(timespec="seconds"),
         "search": _search_stats(usage, now, tz),
+        "operation_traces": _operation_trace_stats(usage),
         "contribution": _contribution_stats(usage, posts),
         "decision_value": _decision_value(
             usage,

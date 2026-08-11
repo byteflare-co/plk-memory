@@ -401,6 +401,7 @@ search_events = Table(
     Column("organization_id", UUID(as_uuid=True), nullable=False),
     Column("search_id", String(26), nullable=False),
     Column("client", String(255), nullable=False),
+    Column("trace_id", String(64)),
     Column("query_preview", Text),
     Column("query_hash", String(64), nullable=False),
     Column("reason", String(64)),
@@ -428,6 +429,7 @@ decision_events = Table(
     Column("organization_id", UUID(as_uuid=True), nullable=False),
     Column("decision_id", String(64), nullable=False),
     Column("client", String(255), nullable=False),
+    Column("trace_id", String(64)),
     Column("effect", String(32), nullable=False),
     Column("no_use_reason", String(32)),
     Column("search_ids", JSONB, nullable=False),
@@ -450,6 +452,91 @@ decision_events = Table(
     CheckConstraint(
         "jsonb_typeof(used_fact_refs) = 'array'", name="used_fact_refs_array"
     ),
+)
+
+intent_events = Table(
+    "intent_events",
+    metadata,
+    Column("organization_id", UUID(as_uuid=True), nullable=False),
+    Column("trace_id", String(64), nullable=False),
+    Column("client", String(255), nullable=False),
+    Column("operation_type", String(64), nullable=False),
+    Column("intent_hash", String(64), nullable=False),
+    Column("target_hash", String(64)),
+    Column("side_effect", String(32), nullable=False),
+    Column("plk_requirement", String(32), nullable=False),
+    Column("no_search_reason", String(32)),
+    Column("request_hash", String(64), nullable=False),
+    Column(
+        "created_at", DateTime(timezone=True), nullable=False, server_default=func.now()
+    ),
+    PrimaryKeyConstraint("organization_id", "trace_id"),
+    CheckConstraint(
+        "side_effect IN ('read', 'local_write', 'external_write', 'destructive')",
+        name="intent_side_effect",
+    ),
+    CheckConstraint(
+        "plk_requirement IN ('required', 'optional', 'not_required')",
+        name="plk_requirement",
+    ),
+)
+
+action_events = Table(
+    "action_events",
+    metadata,
+    Column("organization_id", UUID(as_uuid=True), nullable=False),
+    Column("event_id", String(64), nullable=False),
+    Column("action_id", String(64), nullable=False),
+    Column("trace_id", String(64), nullable=False),
+    Column("client", String(255), nullable=False),
+    Column("phase", String(32), nullable=False),
+    Column("action_type", String(64), nullable=False),
+    Column("tool_name", String(255)),
+    Column("target_hash", String(64)),
+    Column("side_effect", String(32), nullable=False),
+    Column("outcome", String(32), nullable=False),
+    Column("decision_id", String(64)),
+    Column("error_category", String(64)),
+    Column("request_hash", String(64), nullable=False),
+    Column(
+        "created_at", DateTime(timezone=True), nullable=False, server_default=func.now()
+    ),
+    PrimaryKeyConstraint("organization_id", "event_id"),
+    ForeignKeyConstraint(
+        ["organization_id", "trace_id"],
+        [f"{SCHEMA}.intent_events.organization_id", f"{SCHEMA}.intent_events.trace_id"],
+        ondelete="CASCADE",
+    ),
+    ForeignKeyConstraint(
+        ["organization_id", "decision_id"],
+        [
+            f"{SCHEMA}.decision_events.organization_id",
+            f"{SCHEMA}.decision_events.decision_id",
+        ],
+        ondelete="SET NULL",
+    ),
+    CheckConstraint("phase IN ('attempted', 'completed')", name="action_phase"),
+    CheckConstraint(
+        "outcome IN ('pending', 'succeeded', 'failed', 'blocked', 'cancelled')",
+        name="action_outcome",
+    ),
+)
+
+search_events.append_constraint(
+    ForeignKeyConstraint(
+        ["organization_id", "trace_id"],
+        [f"{SCHEMA}.intent_events.organization_id", f"{SCHEMA}.intent_events.trace_id"],
+        ondelete="SET NULL",
+        name="fk_search_events_org_trace_intent_events",
+    )
+)
+decision_events.append_constraint(
+    ForeignKeyConstraint(
+        ["organization_id", "trace_id"],
+        [f"{SCHEMA}.intent_events.organization_id", f"{SCHEMA}.intent_events.trace_id"],
+        ondelete="SET NULL",
+        name="fk_decision_events_org_trace_intent_events",
+    )
 )
 
 decision_search_links = Table(
@@ -537,6 +624,17 @@ Index(
     "ix_decision_events_org_created",
     decision_events.c.organization_id,
     decision_events.c.created_at,
+)
+Index(
+    "ix_intent_events_org_created",
+    intent_events.c.organization_id,
+    intent_events.c.created_at,
+)
+Index(
+    "ix_action_events_org_trace_created",
+    action_events.c.organization_id,
+    action_events.c.trace_id,
+    action_events.c.created_at,
 )
 
 

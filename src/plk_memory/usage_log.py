@@ -10,8 +10,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from plk_memory.telemetry import (
+    ActionCommand,
     DecisionCommand,
     FactReference,
+    IntentCommand,
     TelemetryConflict,
     TelemetryError,
 )
@@ -37,7 +39,8 @@ class UsageLog:
             hits: int | None = None, latency_ms: int | None = None,
             reason: str | None = None, fact_ids: list[str] | None = None,
             fact_refs: list[dict] | None = None,
-            search_id: str | None = None, outcome: str | None = None) -> None:
+            search_id: str | None = None, outcome: str | None = None,
+            trace_id: str | None = None) -> None:
         now = datetime.now(timezone.utc)
         query_preview = (
             (query or "")[:200] or None
@@ -54,7 +57,7 @@ class UsageLog:
             "hits": hits, "latency_ms": latency_ms, "reason": reason,
             "fact_ids": fact_ids or None,
             "fact_refs": fact_refs or None,
-            "search_id": search_id, "outcome": outcome,
+            "search_id": search_id, "outcome": outcome, "trace_id": trace_id,
         }
         with self._lock:
             self._append(rec)
@@ -74,7 +77,22 @@ class UsageLog:
         reason: str | None,
         fact_refs: list[FactReference],
         outcome: str,
+        trace_id: str | None = None,
     ) -> None:
+        if trace_id is not None:
+            with self._lock:
+                intent = next(
+                    (
+                        record
+                        for record in read_usage(self.path)
+                        if record.get("tool") == "plk_record_intent"
+                        and record.get("trace_id") == trace_id
+                        and record.get("client") == client
+                    ),
+                    None,
+                )
+            if intent is None:
+                raise TelemetryError("unknown trace_id for this client")
         self.log(
             client,
             "plk_search",
@@ -86,7 +104,42 @@ class UsageLog:
             fact_refs=[ref.model_dump(mode="json", exclude_none=True) for ref in fact_refs],
             search_id=search_id,
             outcome=outcome,
+            trace_id=trace_id,
         )
+
+    async def record_intent(self, *, client: str, command: IntentCommand) -> dict:
+        with self._lock:
+            records = read_usage(self.path)
+            request_hash = command.request_hash()
+            existing = next(
+                (record for record in records
+                 if record.get("tool") == "plk_record_intent"
+                 and record.get("trace_id") == command.trace_id),
+                None,
+            )
+            if existing is not None:
+                if existing.get("request_hash") != request_hash or existing.get("client") != client:
+                    raise TelemetryConflict("trace_id is already used for a different intent")
+                return {"recorded": True, "replayed": True, "trace_id": command.trace_id}
+            self._append({
+                "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "client": client,
+                "tool": "plk_record_intent",
+                **command.model_dump(mode="json", exclude={"intent", "target"}),
+                "intent_preview": command.intent[:500] if self.raw_query_retention_days > 0 else None,
+                "target_preview": command.target[:500]
+                if command.target and self.raw_query_retention_days > 0 else None,
+                "intent_hash": hashlib.sha256(command.intent.encode()).hexdigest(),
+                "target_hash": hashlib.sha256(command.target.encode()).hexdigest()
+                if command.target else None,
+                "request_hash": request_hash,
+                "outcome": "recorded",
+            })
+            if self.raw_query_retention_days > 0:
+                self._schedule_redaction(
+                    datetime.now(timezone.utc) + timedelta(days=self.raw_query_retention_days)
+                )
+        return {"recorded": True, "replayed": False, "trace_id": command.trace_id}
 
     async def record_decision(
         self,
@@ -138,6 +191,31 @@ class UsageLog:
                 raise TelemetryError(
                     f"search_ids belong to another client: {', '.join(foreign)}"
                 )
+            traced_searches = {
+                item: searches[item].get("trace_id")
+                for item in command.search_ids
+                if isinstance(searches[item].get("trace_id"), str)
+            }
+            if traced_searches and command.trace_id is None:
+                raise TelemetryError("trace-linked searches require decision trace_id")
+            if command.trace_id is not None:
+                intent = next(
+                    (record for record in records
+                     if record.get("tool") == "plk_record_intent"
+                     and record.get("trace_id") == command.trace_id
+                     and record.get("client") == client),
+                    None,
+                )
+                if intent is None:
+                    raise TelemetryError("unknown trace_id for this client")
+                mismatched = [
+                    item for item in command.search_ids
+                    if searches[item].get("trace_id") != command.trace_id
+                ]
+                if mismatched:
+                    raise TelemetryError(
+                        "search_ids do not belong to trace_id: " + ", ".join(mismatched)
+                    )
             no_hits = [
                 item
                 for item in command.search_ids
@@ -197,6 +275,92 @@ class UsageLog:
             "decision_id": command.decision_id,
         }
 
+    async def record_action(self, *, client: str, command: ActionCommand) -> dict:
+        with self._lock:
+            records = read_usage(self.path)
+            request_hash = command.request_hash()
+            existing = next(
+                (
+                    record
+                    for record in records
+                    if record.get("tool") == "plk_record_action"
+                    and record.get("event_id") == command.event_id
+                ),
+                None,
+            )
+            if existing is not None:
+                if (
+                    existing.get("request_hash") != request_hash
+                    or existing.get("client") != client
+                ):
+                    raise TelemetryConflict(
+                        "event_id is already used for a different action event"
+                    )
+                return {
+                    "recorded": True,
+                    "replayed": True,
+                    "event_id": command.event_id,
+                }
+            intent = next(
+                (
+                    record
+                    for record in records
+                    if record.get("tool") == "plk_record_intent"
+                    and record.get("trace_id") == command.trace_id
+                    and record.get("client") == client
+                ),
+                None,
+            )
+            if intent is None:
+                raise TelemetryError("unknown trace_id for this client")
+            if intent.get("side_effect") != command.side_effect:
+                raise TelemetryError("action side_effect must match intent side_effect")
+            if command.decision_id is not None:
+                decision = next(
+                    (
+                        record
+                        for record in records
+                        if record.get("tool") == "plk_record_decision"
+                        and record.get("decision_id") == command.decision_id
+                        and record.get("trace_id") == command.trace_id
+                        and record.get("client") == client
+                    ),
+                    None,
+                )
+                if decision is None:
+                    raise TelemetryError("decision_id does not belong to trace_id")
+            if command.phase == "completed":
+                attempted = any(
+                    record.get("tool") == "plk_record_action"
+                    and record.get("action_id") == command.action_id
+                    and record.get("trace_id") == command.trace_id
+                    and record.get("phase") == "attempted"
+                    for record in records
+                )
+                if not attempted:
+                    raise TelemetryError("completed action requires an attempted event")
+            self._append(
+                {
+                    "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    "client": client,
+                    "tool": "plk_record_action",
+                    **command.model_dump(mode="json", exclude={"target"}),
+                    "target_preview": command.target[:500]
+                    if command.target and self.raw_query_retention_days > 0
+                    else None,
+                    "target_hash": hashlib.sha256(command.target.encode()).hexdigest()
+                    if command.target
+                    else None,
+                    "request_hash": request_hash,
+                }
+            )
+            if self.raw_query_retention_days > 0 and command.target:
+                self._schedule_redaction(
+                    datetime.now(timezone.utc)
+                    + timedelta(days=self.raw_query_retention_days)
+                )
+        return {"recorded": True, "replayed": False, "event_id": command.event_id}
+
     async def list_usage(self) -> list[dict]:
         with self._lock:
             next_redaction = self._redact_expired_queries()
@@ -251,17 +415,18 @@ class UsageLog:
             except (json.JSONDecodeError, TypeError, ValueError):
                 output.append(line)
                 continue
-            if (
-                record.get("tool") == "plk_search"
-                and record.get("query") is not None
-                and timestamp < cutoff
-            ):
-                record["query"] = None
+            tool = record.get("tool")
+            preview_fields = {
+                "plk_search": ("query",),
+                "plk_record_intent": ("intent_preview", "target_preview"),
+                "plk_record_action": ("target_preview",),
+            }.get(tool, ()) if isinstance(tool, str) else ()
+            populated = [field for field in preview_fields if record.get(field) is not None]
+            if populated and timestamp < cutoff:
+                for field in populated:
+                    record[field] = None
                 changed = True
-            elif (
-                record.get("tool") == "plk_search"
-                and record.get("query") is not None
-            ):
+            elif populated:
                 expires_at = timestamp + timedelta(
                     days=self.raw_query_retention_days
                 )

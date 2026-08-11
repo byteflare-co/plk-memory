@@ -145,7 +145,9 @@ Gitにファイルとして保存する構成は、人間が直接読み、レ�
 | tool | 役割 | 認可 |
 |---|---|---|
 | `plk_search` | 知識を検索する。PostgreSQL modeでは候補をDBで再検証する | read |
+| `plk_record_intent` | 操作前に意図・対象・副作用・PLK要否をtraceとして記録する | read |
 | `plk_record_decision` | 検索結果を最終判断で採用したか、行動変更・誤り防止・確認補強・不採用のどれだったかを記録する | read |
+| `plk_record_action` | traceに操作の試行・完了・結果と採用したdecisionを記録する | read |
 | `plk_assess_candidate` | 自然文候補の保存適格性をread-onlyで判定し、判定結果にかかわらず重複候補を検索する | read |
 | `plk_add` | factを追加し、`supersedes`対象があれば同時に無効化する | write |
 | `plk_invalidate` | 理由を記録してactive factを無効化する | write |
@@ -158,9 +160,11 @@ Gitにファイルとして保存する構成は、人間が直接読み、レ�
 なら追加しません。重複候補の検索は判定結果にかかわらずread-onlyで行い、`eligible` の場合だけ
 新規／更新previewと明示承認を経て`plk_add`へ進みます。assessment自体は承認でも書き込みでもありません。
 
-各クライアントには、税務・社保・法務・過去の意思決定・社内ノウハウに関する判断前に
-`plk_search(reason="auto-guideline")`を呼び、ヒットがあった場合だけ最終回答前に関連する検索を
-まとめて`plk_record_decision`へ1回記録するルールを配布します。0ヒット時は追加呼び出し不要です。
+各クライアントには、操作前に`plk_record_intent`でtraceを開始し、税務・社保・法務・過去の意思決定・
+社内ノウハウに関する判断では同じ`trace_id`を付けて`plk_search(reason="auto-guideline")`を呼ぶ
+ルールを配布します。ヒットがあった場合だけ最終判断時に関連する検索を
+`plk_record_decision`へ1回記録し、実操作は`plk_record_action`のattempted/completedで挟みます。
+0ヒット時はdecision不要ですが、操作結果は記録します。
 未記録の検索は未使用と推定せず、ダッシュボードでは未計測として分離します。
 
 検索イベントと意思決定イベントはGit backendでは権限`0600`のJSONL、PostgreSQL backendでは
@@ -169,7 +173,12 @@ tenant RLS付きテーブルへ保存します。検索文のSHA-256は両backen
 常にhashと構造化メタデータだけを残します。PostgreSQLのzero-hit一覧はhash先頭12桁を非可逆な
 bucket labelとして使い、同じ検索の再発回数を追跡します。
 自由記述の判断理由や回答本文は保存しません。メトリクスは因果効果ではなく、
-エージェントの最終判断時申告に基づく「観測貢献」です。
+エージェントの最終判断時申告に基づく「観測貢献」です。operation traceではclient別の
+PLK必須操作数、事前検索率、検索漏れ、判断接続、操作試行・完了、decision付き操作を集計します。
+traceなしの旧イベントは互換維持のため受理しますが、この集計には含めません。
+PLKサーバーは他ツールの呼び出しを直接観測できないため、これは全操作のcoverageではなく、
+clientが開始したtrace内のcoverageです。ただし`external_write`と`destructive`はサーバー側で
+`plk_requirement=required`を強制し、actionで異なる副作用へすり替えることも拒否します。
 
 ## Web UIのreviewed writes
 

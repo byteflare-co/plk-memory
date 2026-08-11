@@ -7,8 +7,10 @@ import pytest
 from pydantic import ValidationError
 
 from plk_memory.telemetry import (
+    ActionCommand,
     DecisionCommand,
     FactReference,
+    IntentCommand,
     TelemetryConflict,
     TelemetryError,
 )
@@ -17,9 +19,17 @@ from plk_memory.usage_log import UsageLog
 
 def test_appends_jsonl_and_truncates_query(tmp_path):
     log = UsageLog(tmp_path / "u.jsonl")
-    log.log("claude-code", "plk_search", query="あ" * 500, hits=3, latency_ms=42,
-            reason="auto-guideline", fact_ids=["01A", "01B"],
-            search_id="01SEARCH", outcome="ok")
+    log.log(
+        "claude-code",
+        "plk_search",
+        query="あ" * 500,
+        hits=3,
+        latency_ms=42,
+        reason="auto-guideline",
+        fact_ids=["01A", "01B"],
+        search_id="01SEARCH",
+        outcome="ok",
+    )
     log.log("codex", "plk_add")
     lines = (tmp_path / "u.jsonl").read_text(encoding="utf-8").strip().splitlines()
     assert len(lines) == 2
@@ -69,9 +79,7 @@ async def test_records_one_decision_for_multiple_searches_idempotently(tmp_path)
     assert replay["replayed"] is True
     decision = (await log.list_usage())[-1]
     assert decision["search_ids"] == ["S1", "S2"]
-    assert decision["used_fact_refs"] == [
-        {"fact_id": "F2", "content_hash": "b" * 64}
-    ]
+    assert decision["used_fact_refs"] == [{"fact_id": "F2", "content_hash": "b" * 64}]
 
     with pytest.raises(TelemetryConflict):
         await log.record_decision(
@@ -266,3 +274,189 @@ async def test_active_log_redacts_last_query_without_later_access(tmp_path):
 
     assert "last private query" not in path.read_text(encoding="utf-8")
     await log.close()
+
+
+async def test_records_complete_operation_trace_and_enforces_links(tmp_path):
+    log = UsageLog(tmp_path / "u.jsonl")
+    intent = IntentCommand(
+        trace_id="T1",
+        operation_type="browser_operation",
+        intent="Open the correct workspace",
+        target="https://example.test/private",
+        side_effect="read",
+        plk_requirement="required",
+    )
+    assert (await log.record_intent(client="codex", command=intent))[
+        "replayed"
+    ] is False
+    assert (await log.record_intent(client="codex", command=intent))["replayed"] is True
+    await log.record_search(
+        client="codex",
+        search_id="S1",
+        query="profile routing",
+        hits=1,
+        latency_ms=1,
+        reason="auto-guideline",
+        trace_id="T1",
+        fact_refs=[FactReference(fact_id="F1")],
+        outcome="ok",
+    )
+    decision = DecisionCommand(
+        decision_id="D1",
+        trace_id="T1",
+        search_ids=("S1",),
+        used_fact_ids=("F1",),
+        effect="changed_action",
+    )
+    await log.record_decision(client="codex", command=decision)
+    attempted = ActionCommand(
+        event_id="E1",
+        action_id="A1",
+        trace_id="T1",
+        phase="attempted",
+        action_type="browser_navigate",
+        tool_name="chrome",
+        target="https://example.test/private",
+        side_effect="read",
+        outcome="pending",
+        decision_id="D1",
+    )
+    completed = attempted.model_copy(
+        update={"event_id": "E2", "phase": "completed", "outcome": "succeeded"}
+    )
+    await log.record_action(client="codex", command=attempted)
+    await log.record_action(client="codex", command=completed)
+
+    records = await log.list_usage()
+    assert [record["tool"] for record in records] == [
+        "plk_record_intent",
+        "plk_search",
+        "plk_record_decision",
+        "plk_record_action",
+        "plk_record_action",
+    ]
+    assert records[0]["intent_hash"]
+    assert records[-1]["decision_id"] == "D1"
+
+
+async def test_trace_rejects_unlinked_decision_and_completion(tmp_path):
+    log = UsageLog(tmp_path / "u.jsonl")
+    await log.record_intent(
+        client="codex",
+        command=IntentCommand(
+            trace_id="T1",
+            operation_type="code_edit",
+            intent="edit",
+            side_effect="local_write",
+            plk_requirement="optional",
+        ),
+    )
+    await log.record_search(
+        client="codex",
+        search_id="S1",
+        query="q",
+        hits=1,
+        latency_ms=1,
+        reason=None,
+        fact_refs=[FactReference(fact_id="F1")],
+        outcome="ok",
+    )
+    with pytest.raises(TelemetryError, match="do not belong"):
+        await log.record_decision(
+            client="codex",
+            command=DecisionCommand(
+                decision_id="D1",
+                trace_id="T1",
+                search_ids=("S1",),
+                used_fact_ids=("F1",),
+                effect="confirmed",
+            ),
+        )
+    with pytest.raises(TelemetryError, match="requires an attempted"):
+        await log.record_action(
+            client="codex",
+            command=ActionCommand(
+                event_id="E2",
+                action_id="A1",
+                trace_id="T1",
+                phase="completed",
+                action_type="edit",
+                side_effect="local_write",
+                outcome="succeeded",
+            ),
+        )
+
+
+async def test_trace_linked_search_requires_decision_trace_id(tmp_path):
+    log = UsageLog(tmp_path / "u.jsonl")
+    await log.record_intent(
+        client="codex",
+        command=IntentCommand(
+            trace_id="T1",
+            operation_type="browser_operation",
+            intent="open",
+            side_effect="read",
+            plk_requirement="required",
+        ),
+    )
+    await log.record_search(
+        client="codex",
+        search_id="S1",
+        query="profile",
+        hits=1,
+        latency_ms=1,
+        reason="auto-guideline",
+        fact_refs=[FactReference(fact_id="F1")],
+        outcome="ok",
+        trace_id="T1",
+    )
+    with pytest.raises(TelemetryError, match="require decision trace_id"):
+        await log.record_decision(
+            client="codex",
+            command=DecisionCommand(
+                decision_id="D1",
+                search_ids=("S1",),
+                used_fact_ids=("F1",),
+                effect="confirmed",
+            ),
+        )
+
+
+def test_high_risk_intent_requires_plk_server_side():
+    with pytest.raises(ValidationError, match="requires plk_requirement=required"):
+        IntentCommand(
+            trace_id="T1",
+            operation_type="browser_submit",
+            intent="submit external form",
+            side_effect="external_write",
+            plk_requirement="not_required",
+            no_search_reason="not_applicable",
+        )
+
+
+async def test_action_cannot_change_intent_side_effect(tmp_path):
+    log = UsageLog(tmp_path / "u.jsonl")
+    await log.record_intent(
+        client="codex",
+        command=IntentCommand(
+            trace_id="T1",
+            operation_type="browser_read",
+            intent="read page",
+            side_effect="read",
+            plk_requirement="optional",
+        ),
+    )
+
+    with pytest.raises(TelemetryError, match="must match intent"):
+        await log.record_action(
+            client="codex",
+            command=ActionCommand(
+                event_id="E1",
+                action_id="A1",
+                trace_id="T1",
+                phase="attempted",
+                action_type="browser_submit",
+                side_effect="external_write",
+                outcome="pending",
+            ),
+        )

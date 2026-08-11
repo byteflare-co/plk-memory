@@ -1377,6 +1377,58 @@ function renderMeasurementClients(rows) {
   });
 }
 
+function renderOperationTraces(value) {
+  const stats = document.getElementById('operationTraceStats');
+  clearElement(stats);
+  const required = numberOrNull(value.plk_required) || 0;
+  const searched = numberOrNull(value.required_searched) || 0;
+  addStatTile(stats, {
+    label: '申告trace内の事前検索率',
+    value: percent(value.required_search_rate),
+    ratio: value.required_search_rate,
+    tag: required === 0 ? 'データ不足' : (searched === required ? '全件検索' : `検索漏れ ${required - searched}件`),
+    tone: required > 0 && searched === required ? 'pass' : (required > 0 ? 'fail' : ''),
+    note: `${searched} / ${required} PLK必須trace（未trace操作は対象外）`,
+  });
+  addStatTile(stats, {
+    label: '操作の終了記録trace',
+    value: String(numberOrNull(value.with_action_completion) || 0),
+    unit: '件',
+    tag: `試行 ${numberOrNull(value.with_action_attempt) || 0}件`,
+    note: `成功 ${numberOrNull((value.terminal_outcomes || {}).succeeded) || 0} / 失敗 ${numberOrNull((value.terminal_outcomes || {}).failed) || 0} / 停止 ${numberOrNull((value.terminal_outcomes || {}).blocked) || 0}`,
+  });
+  addStatTile(stats, {
+    label: '判断を結んだ完了操作',
+    value: String(numberOrNull(value.decision_linked_actions) || 0),
+    unit: '件',
+    tag: '観測値',
+    note: 'PLKによる因果効果そのものは示しません',
+  });
+
+  const tbody = document.getElementById('operationTraceClientRows');
+  clearElement(tbody);
+  const rows = Array.isArray(value.clients) ? value.clients : [];
+  if (!rows.length) {
+    emptyTableRow(tbody, 5, '操作traceはまだ記録されていません。');
+    return;
+  }
+  rows.forEach(row => {
+    const tr = document.createElement('tr');
+    const client = document.createElement('td');
+    client.className = 'mono';
+    client.textContent = row.client || 'unknown';
+    tr.appendChild(client);
+    [numberOrNull(row.intents) || 0, numberOrNull(row.plk_required) || 0,
+      numberOrNull(row.required_searched) || 0, percent(row.required_search_rate)].forEach(value => {
+      const td = document.createElement('td');
+      td.className = 'num';
+      td.textContent = String(value);
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
+}
+
 function renderContributionFacts(rows) {
   const tbody = document.getElementById('contributionFactRows');
   clearElement(tbody);
@@ -1456,6 +1508,7 @@ function renderMetrics(data) {
   const corpus = data.corpus || {};
   const contribution = data.contribution || {};
   renderDecisionValue(data.decision_value || {});
+  renderOperationTraces(data.operation_traces || {});
   renderOperationalReadiness(data.operational_readiness || {});
   renderMetricsCharts(data);
   renderMeasurementClients(Array.isArray(contribution.clients) ? contribution.clients : []);

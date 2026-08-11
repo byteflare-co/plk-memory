@@ -731,6 +731,12 @@
       </section>
       <div class="stat-grid decision-stat-grid" id="decisionValueStats"></div>
       <section class="metric-card wide">
+        <h2>操作traceの適用状況</h2>
+        <p class="subhead">記録されたtrace内で、PLK必須操作の事前検索、判断接続、実操作の終了をclient別に監査</p>
+        <div class="stat-grid" id="operationTraceStats"></div>
+        <div class="table-wrap"><table class="metrics-table"><thead><tr><th>呼び出し元</th><th class="num">操作意図</th><th class="num">PLK必須</th><th class="num">事前検索</th><th class="num">検索率</th></tr></thead><tbody id="operationTraceClientRows"></tbody></table></div>
+      </section>
+      <section class="metric-card wide">
         <h2>週ごとの強い影響の報告</h2>
         <p class="subhead">行動変更・誤り防止の報告と、週ごとの観測カバレッジ</p>
         <div class="chart decision-chart" id="decisionValueChart"></div>
