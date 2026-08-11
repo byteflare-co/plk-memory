@@ -39,6 +39,33 @@ class PostgresTelemetryStore:
     def _organization_id(self) -> UUID:
         return self._organization_provider()
 
+    async def _replay_if_matching(
+        self,
+        session,
+        *,
+        table,
+        id_column,
+        organization_id: UUID,
+        identifier: str,
+        client: str,
+        request_hash: str,
+        response_id: str,
+        conflict_message: str,
+    ) -> dict | None:
+        existing = (
+            await session.execute(
+                select(table.c.request_hash, table.c.client).where(
+                    table.c.organization_id == organization_id,
+                    id_column == identifier,
+                )
+            )
+        ).one_or_none()
+        if existing is None:
+            return None
+        if existing.request_hash != request_hash or existing.client != client:
+            raise TelemetryConflict(conflict_message)
+        return {"recorded": True, "replayed": True, response_id: identifier}
+
     async def record_search(
         self,
         *,
@@ -93,29 +120,19 @@ class PostgresTelemetryStore:
         request_hash = command.request_hash()
         try:
             async with self.database.transaction(organization_id) as session:
-                existing = (
-                    await session.execute(
-                        select(
-                            intent_events.c.request_hash, intent_events.c.client
-                        ).where(
-                            intent_events.c.organization_id == organization_id,
-                            intent_events.c.trace_id == command.trace_id,
-                        )
-                    )
-                ).one_or_none()
-                if existing is not None:
-                    if (
-                        existing.request_hash != request_hash
-                        or existing.client != client
-                    ):
-                        raise TelemetryConflict(
-                            "trace_id is already used for a different intent"
-                        )
-                    return {
-                        "recorded": True,
-                        "replayed": True,
-                        "trace_id": command.trace_id,
-                    }
+                replay = await self._replay_if_matching(
+                    session,
+                    table=intent_events,
+                    id_column=intent_events.c.trace_id,
+                    organization_id=organization_id,
+                    identifier=command.trace_id,
+                    client=client,
+                    request_hash=request_hash,
+                    response_id="trace_id",
+                    conflict_message="trace_id is already used for a different intent",
+                )
+                if replay is not None:
+                    return replay
                 await session.execute(
                     insert(intent_events).values(
                         organization_id=organization_id,
@@ -134,26 +151,21 @@ class PostgresTelemetryStore:
                 )
         except IntegrityError as error:
             async with self.database.transaction(organization_id) as session:
-                existing = (
-                    await session.execute(
-                        select(
-                            intent_events.c.request_hash, intent_events.c.client
-                        ).where(
-                            intent_events.c.organization_id == organization_id,
-                            intent_events.c.trace_id == command.trace_id,
-                        )
-                    )
-                ).one_or_none()
-            if (
-                existing is not None
-                and existing.request_hash == request_hash
-                and existing.client == client
-            ):
-                return {
-                    "recorded": True,
-                    "replayed": True,
-                    "trace_id": command.trace_id,
-                }
+                replay = await self._replay_if_matching(
+                    session,
+                    table=intent_events,
+                    id_column=intent_events.c.trace_id,
+                    organization_id=organization_id,
+                    identifier=command.trace_id,
+                    client=client,
+                    request_hash=request_hash,
+                    response_id="trace_id",
+                    conflict_message=(
+                        "trace_id was created concurrently with different intent"
+                    ),
+                )
+            if replay is not None:
+                return replay
             raise TelemetryConflict(
                 "trace_id was created concurrently with different intent"
             ) from error
@@ -169,30 +181,21 @@ class PostgresTelemetryStore:
         request_hash = command.request_hash()
         try:
             async with self.database.transaction(organization_id) as session:
-                existing = (
-                    await session.execute(
-                        select(
-                            decision_events.c.request_hash,
-                            decision_events.c.client,
-                        ).where(
-                            decision_events.c.organization_id == organization_id,
-                            decision_events.c.decision_id == command.decision_id,
-                        )
-                    )
-                ).one_or_none()
-                if existing is not None:
-                    if (
-                        existing.request_hash != request_hash
-                        or existing.client != client
-                    ):
-                        raise TelemetryConflict(
-                            "decision_id is already used for a different decision"
-                        )
-                    return {
-                        "recorded": True,
-                        "replayed": True,
-                        "decision_id": command.decision_id,
-                    }
+                replay = await self._replay_if_matching(
+                    session,
+                    table=decision_events,
+                    id_column=decision_events.c.decision_id,
+                    organization_id=organization_id,
+                    identifier=command.decision_id,
+                    client=client,
+                    request_hash=request_hash,
+                    response_id="decision_id",
+                    conflict_message=(
+                        "decision_id is already used for a different decision"
+                    ),
+                )
+                if replay is not None:
+                    return replay
 
                 search_rows = (
                     await session.execute(
@@ -324,26 +327,19 @@ class PostgresTelemetryStore:
                 )
         except IntegrityError as error:
             async with self.database.transaction(organization_id) as session:
-                existing = (
-                    await session.execute(
-                        select(
-                            decision_events.c.request_hash, decision_events.c.client
-                        ).where(
-                            decision_events.c.organization_id == organization_id,
-                            decision_events.c.decision_id == command.decision_id,
-                        )
-                    )
-                ).one_or_none()
-            if (
-                existing is not None
-                and existing.request_hash == request_hash
-                and existing.client == client
-            ):
-                return {
-                    "recorded": True,
-                    "replayed": True,
-                    "decision_id": command.decision_id,
-                }
+                replay = await self._replay_if_matching(
+                    session,
+                    table=decision_events,
+                    id_column=decision_events.c.decision_id,
+                    organization_id=organization_id,
+                    identifier=command.decision_id,
+                    client=client,
+                    request_hash=request_hash,
+                    response_id="decision_id",
+                    conflict_message=("decision or search was resolved concurrently"),
+                )
+            if replay is not None:
+                return replay
             raise TelemetryConflict(
                 "decision or search was resolved concurrently"
             ) from error
@@ -358,29 +354,21 @@ class PostgresTelemetryStore:
         request_hash = command.request_hash()
         try:
             async with self.database.transaction(organization_id) as session:
-                existing = (
-                    await session.execute(
-                        select(
-                            action_events.c.request_hash, action_events.c.client
-                        ).where(
-                            action_events.c.organization_id == organization_id,
-                            action_events.c.event_id == command.event_id,
-                        )
-                    )
-                ).one_or_none()
-                if existing is not None:
-                    if (
-                        existing.request_hash != request_hash
-                        or existing.client != client
-                    ):
-                        raise TelemetryConflict(
-                            "event_id is already used for a different action event"
-                        )
-                    return {
-                        "recorded": True,
-                        "replayed": True,
-                        "event_id": command.event_id,
-                    }
+                replay = await self._replay_if_matching(
+                    session,
+                    table=action_events,
+                    id_column=action_events.c.event_id,
+                    organization_id=organization_id,
+                    identifier=command.event_id,
+                    client=client,
+                    request_hash=request_hash,
+                    response_id="event_id",
+                    conflict_message=(
+                        "event_id is already used for a different action event"
+                    ),
+                )
+                if replay is not None:
+                    return replay
                 intent = (
                     await session.execute(
                         select(
@@ -451,26 +439,21 @@ class PostgresTelemetryStore:
                 )
         except IntegrityError as error:
             async with self.database.transaction(organization_id) as session:
-                existing = (
-                    await session.execute(
-                        select(
-                            action_events.c.request_hash, action_events.c.client
-                        ).where(
-                            action_events.c.organization_id == organization_id,
-                            action_events.c.event_id == command.event_id,
-                        )
-                    )
-                ).one_or_none()
-            if (
-                existing is not None
-                and existing.request_hash == request_hash
-                and existing.client == client
-            ):
-                return {
-                    "recorded": True,
-                    "replayed": True,
-                    "event_id": command.event_id,
-                }
+                replay = await self._replay_if_matching(
+                    session,
+                    table=action_events,
+                    id_column=action_events.c.event_id,
+                    organization_id=organization_id,
+                    identifier=command.event_id,
+                    client=client,
+                    request_hash=request_hash,
+                    response_id="event_id",
+                    conflict_message=(
+                        "event_id was created concurrently with different action"
+                    ),
+                )
+            if replay is not None:
+                return replay
             raise TelemetryConflict(
                 "event_id was created concurrently with different action"
             ) from error
