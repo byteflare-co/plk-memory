@@ -980,163 +980,6 @@ function addStatTile(host, { label, value, unit = '', note = '', ratio = null, t
   host.appendChild(tile);
 }
 
-// 判定不能週を「薄く塗る」と 0 件と見分けが付かず、輪郭だけだと積み上げが読めない。
-// 系列色のハッチで塗り、面の存在は保ったまま暫定であることを示す。
-function hatchFill(svg, id, color) {
-  let defs = svg.querySelector('defs');
-  if (!defs) {
-    defs = svgElement('defs');
-    svg.insertBefore(defs, svg.firstChild);
-  }
-  const pattern = svgElement('pattern', {
-    id, width: 5, height: 5, patternUnits: 'userSpaceOnUse', patternTransform: 'rotate(45)',
-  });
-  pattern.appendChild(svgElement('rect', { width: 5, height: 5, fill: 'var(--chart-surface)' }));
-  pattern.appendChild(svgElement('line', { x1: 0, y1: 0, x2: 0, y2: 5, stroke: color, 'stroke-width': 2 }));
-  defs.appendChild(pattern);
-  return `url(#${id})`;
-}
-
-const HATCH_CSS = color => `repeating-linear-gradient(45deg, ${color} 0 2px, var(--chart-surface) 2px 5px)`;
-
-function renderDecisionValueChart(weekly) {
-  const host = document.getElementById('decisionValueChart');
-  if (!weekly.length) {
-    renderChartEmpty(host, '4完了週の観測データがまだありません。');
-    return;
-  }
-  const { svg, width: hostWidth } = makeChart(host, '直近4完了週の強い影響報告と観測カバレッジ', 174);
-  const description = svgElement('desc');
-  description.textContent = '行動変更と誤り防止の報告数を週別に積み上げ、週次目標線と観測カバレッジを表示します。';
-  svg.appendChild(description);
-  const left = 40; const top = 8; const width = hostWidth - left - 72; const height = 108;
-  const target = Math.max(1, ...weekly.map(row => numberOrNull(row.target) || 0));
-  const scale = niceScale(Math.max(target, ...weekly.map(row => numberOrNull(row.strong_decisions) || 0)));
-  const maxValue = scale.max;
-  drawGrid(svg, { left, top, width, height, ticks: scale.ticks, maxValue, formatter: value => String(Math.round(value)) });
-
-  const slot = width / weekly.length;
-  const barWidth = Math.min(64, Math.max(18, slot * .34));
-  const hatches = [hatchFill(svg, 'dvHatchInk', INK), hatchFill(svg, 'dvHatchBlue', BLUE)];
-  weekly.forEach((row, index) => {
-    const changed = Math.max(0, numberOrNull(row.changed_action_decisions) || 0);
-    const prevented = Math.max(0, numberOrNull(row.prevented_error_decisions) || 0);
-    const x = left + slot * index + (slot - barWidth) / 2;
-    const solid = Boolean(row.evaluable);
-    const stack = [
-      { value: changed, color: INK, hatch: hatches[0], label: '行動変更' },
-      { value: prevented, color: BLUE, hatch: hatches[1], label: '誤り防止' },
-    ];
-    let cursor = 0;
-    stack.forEach(part => {
-      if (part.value <= 0) return;
-      const barHeight = height * part.value / maxValue;
-      cursor += barHeight;
-      const rect = svgElement('rect', {
-        x, y: top + height - cursor, width: barWidth, height: barHeight,
-        fill: solid ? part.color : part.hatch,
-        stroke: solid ? 'none' : part.color,
-        'stroke-width': solid ? 0 : 1,
-      });
-      const title = svgElement('title');
-      title.textContent = `${row.week}: ${part.label} ${part.value}件${solid ? '' : '（判定不能週）'}`;
-      rect.appendChild(title);
-      svg.appendChild(rect);
-    });
-    if (!solid && changed + prevented === 0) {
-      const placeholderHeight = Math.max(28, height * .18);
-      const pending = svgElement('rect', {
-        x, y: top + height - placeholderHeight, width: barWidth, height: placeholderHeight,
-        fill: hatches[0], stroke: RULE_STRONG, 'stroke-width': 1,
-      });
-      const pendingTitle = svgElement('title');
-      pendingTitle.textContent = `${row.week}: 計測不足のため判定不能`;
-      pending.appendChild(pendingTitle);
-      svg.appendChild(pending);
-      svgText(svg, '判定不能', {
-        x: x + barWidth / 2, y: top + height - placeholderHeight / 2 + 4,
-        fill: MUTE, 'font-size': 10, 'font-weight': 600, 'text-anchor': 'middle',
-      });
-    }
-    svgText(svg, compactWeek(row.week), {
-      x: x + barWidth / 2, y: top + height + 22, fill: MUTE, 'font-size': 11, 'text-anchor': 'middle',
-    });
-    const coverage = numberOrNull(row.auto_measurement_rate);
-    svgText(svg, solid ? percent(coverage) : '判定不能', {
-      x: x + barWidth / 2, y: top + height + 40, fill: FAINT, 'font-size': 11, 'text-anchor': 'middle',
-    });
-  });
-
-  // 目標線は罫線と同じ格で引き、注記だけをプロット域の外に出す
-  const targetY = top + height * (1 - target / maxValue);
-  svg.appendChild(svgElement('line', {
-    x1: left, y1: targetY, x2: left + width, y2: targetY,
-    stroke: RULE_STRONG, 'stroke-width': 1, 'stroke-dasharray': '4 4', 'shape-rendering': 'crispEdges',
-  }));
-  svgText(svg, `目標 ${target}`, {
-    x: left + width + 8, y: targetY + 4, fill: MUTE, 'font-size': 11, 'text-anchor': 'start',
-  });
-  const legend = [
-    { label: '行動を変更', color: INK },
-    { label: '誤りを防止', color: BLUE },
-  ];
-  if (weekly.some(row => !row.evaluable)) {
-    legend.push({ label: '判定不能週', color: HATCH_CSS(INK), outlined: true });
-  }
-  appendLegend(host, legend);
-}
-
-function renderDecisionValueRows(weekly) {
-  const tbody = document.getElementById('decisionValueRows');
-  clearElement(tbody);
-  if (!weekly.length) {
-    emptyTableRow(tbody, 7, '4完了週の観測データがありません。');
-    return;
-  }
-  weekly.forEach(row => {
-    const tr = document.createElement('tr');
-    const week = document.createElement('td');
-    week.className = 'mono';
-    week.textContent = row.week || '—';
-    tr.appendChild(week);
-    [
-      numberOrNull(row.auto_measurable_searches) || 0,
-      numberOrNull(row.auto_resolved_searches) || 0,
-      percent(row.auto_measurement_rate),
-      numberOrNull(row.changed_action_decisions) || 0,
-      numberOrNull(row.prevented_error_decisions) || 0,
-    ].forEach(value => {
-      const td = document.createElement('td');
-      td.className = 'num';
-      td.textContent = String(value);
-      tr.appendChild(td);
-    });
-    const statusTd = document.createElement('td');
-    if (row.evaluable) {
-      statusTd.appendChild(makeTag(row.target_met ? '目標達成' : '目標未達', row.target_met ? 'pass' : 'fail'));
-    } else {
-      statusTd.appendChild(makeTag('判定不能', ''));
-      const why = (row.unevaluable_reasons || []).join(', ');
-      if (why) statusTd.title = why;
-    }
-    tr.appendChild(statusTd);
-    tbody.appendChild(tr);
-  });
-}
-
-function nextActionCopy(action) {
-  const code = String(action.code || 'none');
-  const copies = {
-    repair_invalid_records: [`不正な計測記録 ${action.count || 0}件を確認`, '週次判定から除外された重複・不正記録を修復します。', 'データ状態を見る'],
-    record_missing_decisions: [`未計測 ${action.count || 0}件を確認`, `${action.client || '対象client'}の検索後に最終判断を記録し、判定可能な週を増やします。`, '計測内訳を見る'],
-    verify_auto_search_flow: ['自動検索の動線を確認', `観測開始後 ${action.weeks || 0}週で対象検索がありません。`, '検索品質を見る'],
-    observe_more_weeks: ['観測を継続', `4週判定まで、あと${action.weeks_remaining || 0}完了週の観測が必要です。`, null],
-    inspect_below_target_week: [`${action.week || '対象週'}の未達要因を確認`, `強い影響の報告は${action.strong_decisions || 0}件、目標は${action.target || 0}件です。`, '判断内訳を見る'],
-    none: ['現在、優先対応はありません', '同じ基準で週次観測を継続します。', null],
-  };
-  return copies[code] || ['観測状態を確認', '詳細データを確認してください。', '詳細を見る'];
-}
-
 function switchMetricsPanel(panelId, focusTab = false) {
   const panels = ['decisionValuePanel', 'searchQualityPanel', 'dataStatePanel'];
   const tabs = ['decisionValueTab', 'searchQualityTab', 'dataStateTab'];
@@ -1152,93 +995,173 @@ function switchMetricsPanel(panelId, focusTab = false) {
   scheduleChartRerender();
 }
 
-function renderDecisionValue(value) {
-  const summary = document.getElementById('decisionValueSummary');
-  const title = document.getElementById('decisionValueTitle');
-  const reason = document.getElementById('decisionValueReason');
-  const status = String(value.status || 'insufficient_data');
-  const fourWeek = value.four_week || {};
-  const evaluable = numberOrNull(fourWeek.evaluable_weeks) || 0;
-  const targetMet = numberOrNull(fourWeek.target_met_weeks) || 0;
-  const required = numberOrNull(fourWeek.required_weeks) || 4;
-  const labels = {
-    observed_sustained: '4週価値目標を達成（観測上）',
-    target_not_met: '4週価値目標は未達',
-    insufficient_data: 'データ不足 — 判定保留',
-  };
-  const verdictLabels = {
-    observed_sustained: ['達成', 'pass'],
-    target_not_met: ['未達', 'fail'],
-    insufficient_data: ['判定保留', ''],
-  };
-  title.textContent = labels[status] || labels.insufficient_data;
-  summary.dataset.tone = status === 'observed_sustained' ? 'good' : 'attention';
-  const [verdictText, verdictTone] = verdictLabels[status] || verdictLabels.insufficient_data;
-  const verdict = document.getElementById('decisionValueVerdict');
-  verdict.className = `tag ${verdictTone}`.trim();
-  verdict.textContent = verdictText;
-  if (status === 'observed_sustained') {
-    reason.textContent = `4完了週すべてで、強い影響の報告が週${fourWeek.weekly_target || 3}件以上あり、計測欠損もありません。`;
-  } else if (status === 'target_not_met') {
-    reason.textContent = `${required}完了週は計測できましたが、価値目標を満たしたのは${targetMet}週です。`;
-  } else {
-    reason.textContent = `判定可能な完了週は${evaluable}/${required}週です。未計測や観測開始前の週を0件として扱わず、判定を保留しています。`;
-  }
+const WORKFLOW_STAGE_LABELS = {
+  trigger: '想起', retrieval: '取得', application: '適用', action: '行動',
+};
+const FAILURE_TARGETS = {
+  trigger: 'client指示・operation分類・preflight guard',
+  retrieval: 'query bridge・fact表現・namespace・retriever',
+  knowledge: 'factの追加・更新・無効化',
+  application: 'how_to_apply・競合解消・agent instruction',
+  action: 'tool guard・引数検証・実行前確認・read-back',
+  evidence: 'telemetry・構造化属性・review動線',
+};
 
-  const stats = document.getElementById('decisionValueStats');
+function workflowAggregateIsValid(value) {
+  if (!value || typeof value !== 'object') return false;
+  const counts = ['reviews', 'evaluable', 'unknown', 'e2e_successes'];
+  if (!counts.every(key => Number.isInteger(value[key]) && value[key] >= 0)) return false;
+  if (value.evaluable + value.unknown !== value.reviews) return false;
+  if (value.e2e_successes > value.evaluable) return false;
+  if (value.evaluable === 0 && value.e2e_success_rate !== null) return false;
+  if (value.evaluable > 0 && (
+    !Number.isFinite(value.e2e_success_rate)
+    || value.e2e_success_rate < 0
+    || value.e2e_success_rate > 1
+  )) return false;
+  return ['stages', 'failure_stages', 'by_case', 'by_client', 'by_week', 'improvements']
+    .every(key => value[key] && typeof value[key] === 'object');
+}
+
+function clearWorkflowTables(message) {
+  ['workflowStageRows', 'workflowFailureRows', 'workflowCaseRows', 'workflowClientRows', 'workflowWeekRows']
+    .forEach(id => {
+      const body = document.getElementById(id);
+      clearElement(body);
+      emptyTableRow(body, id === 'workflowFailureRows' ? 3 : 5, message);
+    });
+  clearElement(document.getElementById('workflowImprovementStats'));
+}
+
+function renderWorkflowUnavailable(kind) {
+  const copies = {
+    invalid_store: ['評価ストアを検証できません', '署名・chain・権限・形式のいずれかが不正です。集計値を表示せず、運用設定を確認してください。', 'ストア不正'],
+    invalid_response: ['評価レスポンスを検証できません', '集計契約に合わない応答のため、値を表示せず判定を保留しました。', '応答不正'],
+    unavailable: ['評価APIを利用できません', 'レビュー済みE2E評価を取得できません。旧telemetryを代替の成功指標には使いません。', '取得失敗'],
+  };
+  const [titleCopy, reasonCopy, verdictCopy] = copies[kind] || copies.unavailable;
+  const summary = document.getElementById('workflowEvaluationSummary');
+  summary.dataset.tone = 'attention';
+  document.getElementById('workflowEvaluationTitle').textContent = titleCopy;
+  document.getElementById('workflowEvaluationReason').textContent = reasonCopy;
+  const verdict = document.getElementById('workflowEvaluationVerdict');
+  verdict.className = 'tag fail';
+  verdict.textContent = verdictCopy;
+  const stats = document.getElementById('workflowEvaluationStats');
   clearElement(stats);
-  const recent = value.recent || {};
-  const recentRate = numberOrNull(recent.measurement_rate);
-  const recentTarget = numberOrNull(recent.target_rate);
-  const coverageMet = recentRate !== null && recentTarget !== null && recentRate >= recentTarget;
-  addStatTile(stats, {
-    label: `観測カバレッジ / 直近${recent.days || 7}日`,
-    value: percent(recent.measurement_rate),
-    ratio: recentRate,
-    tag: recentRate === null ? null : (coverageMet ? '目標達成' : '目標未達'),
-    tone: coverageMet ? 'pass' : 'fail',
-    note: `${numberOrNull(recent.resolved_searches) || 0} / ${numberOrNull(recent.measurable_searches) || 0} 検索`,
+  ['review総数', '判定可能', 'unknown', 'E2E成功率'].forEach(label => {
+    addStatTile(stats, { label, value: '—', tag: '判定保留' });
   });
-  addStatTile(stats, {
-    label: '判定可能な完了週',
-    value: `${evaluable}/${required}`,
-    unit: '週',
-    ratio: required > 0 ? evaluable / required : null,
-    tag: evaluable === required ? '全週計測' : `判定不能 ${Math.max(0, required - evaluable)}週`,
-    tone: evaluable === required ? 'pass' : '',
-    note: `目標達成 ${targetMet}週`,
-  });
-  const weekly = Array.isArray(value.weekly) ? value.weekly : [];
-  const latest = weekly.at(-1) || {};
-  const latestTarget = numberOrNull(latest.target) || 3;
-  const latestStrong = numberOrNull(latest.strong_decisions) || 0;
-  addStatTile(stats, {
-    // 件数対目標は 100% を超え得るため、頭打ちするメーターは付けない
-    label: '強い影響の報告 / 直近完了週',
-    value: String(latestStrong),
-    unit: '件',
-    tag: latest.evaluable ? (latest.target_met ? '目標達成' : '目標未達') : '判定保留',
-    tone: latest.evaluable && latest.target_met ? 'pass' : (latest.evaluable ? 'fail' : ''),
-    note: latest.evaluable ? `基準 ${latestTarget}件` : '計測不足',
-  });
-  renderDecisionValueRows(weekly);
+  clearWorkflowTables('評価データを表示できません。');
+}
 
-  const action = value.next_action || {};
-  const [actionTitle, actionText, buttonText] = nextActionCopy(action);
-  document.getElementById('decisionNextActionTitle').textContent = actionTitle;
-  document.getElementById('decisionNextActionText').textContent = actionText;
-  const button = document.getElementById('decisionNextActionButton');
-  button.hidden = !buttonText;
-  button.textContent = buttonText || '';
-  button.onclick = () => {
-    const destination = action.destination;
-    if (destination === 'search_quality') switchMetricsPanel('searchQualityPanel', true);
-    else if (destination === 'data_quality') switchMetricsPanel('dataStatePanel', true);
-    else {
-      const details = document.getElementById('decisionBreakdownDetails');
-      if (details) details.open = true;
-    }
-  };
+function renderCohortRows(bodyId, rows) {
+  const tbody = document.getElementById(bodyId);
+  clearElement(tbody);
+  const entries = Object.entries(rows || {});
+  if (!entries.length) {
+    emptyTableRow(tbody, 5, 'レビュー済みepisodeがありません。');
+    return;
+  }
+  entries.forEach(([name, row]) => {
+    const tr = document.createElement('tr');
+    const label = document.createElement('td');
+    label.className = 'mono';
+    label.textContent = name;
+    tr.appendChild(label);
+    [row.reviews, row.evaluable, row.unknown, percent(row.success_rate)].forEach(value => {
+      const td = document.createElement('td');
+      td.className = 'num';
+      td.textContent = String(value ?? '—');
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
+}
+
+function renderWorkflowEvaluation(value) {
+  if (!workflowAggregateIsValid(value)) {
+    renderWorkflowUnavailable('invalid_response');
+    return;
+  }
+  const summary = document.getElementById('workflowEvaluationSummary');
+  const title = document.getElementById('workflowEvaluationTitle');
+  const reason = document.getElementById('workflowEvaluationReason');
+  const verdict = document.getElementById('workflowEvaluationVerdict');
+  let titleCopy = 'レビューなし — 判定保留';
+  let reasonCopy = '人間レビュー済みepisodeがないため、PLKの実務価値はまだ判定できません。';
+  let verdictCopy = 'レビューなし';
+  let tone = '';
+  if (value.reviews > 0 && value.evaluable === 0) {
+    titleCopy = '判定可能なepisodeなし';
+    reasonCopy = `${value.reviews}件をreview済みですが、${value.unknown}件すべてがunknownです。証拠を補って再評価してください。`;
+    verdictCopy = 'unknown';
+  } else if (value.evaluable > 0) {
+    titleCopy = value.e2e_successes === value.evaluable ? 'E2E成功を確認' : 'E2E失敗あり — 改善が必要';
+    reasonCopy = `判定可能${value.evaluable}件のうち${value.e2e_successes}件で、必須段階とTier A行動証拠を確認しました。`;
+    verdictCopy = value.e2e_successes === value.evaluable ? '確認済み' : '要改善';
+    tone = value.e2e_successes === value.evaluable ? 'pass' : 'fail';
+  }
+  summary.dataset.tone = tone === 'pass' ? 'good' : 'attention';
+  title.textContent = titleCopy;
+  reason.textContent = reasonCopy;
+  verdict.className = `tag ${tone}`.trim();
+  verdict.textContent = verdictCopy;
+
+  const stats = document.getElementById('workflowEvaluationStats');
+  clearElement(stats);
+  addStatTile(stats, { label: 'review総数', value: String(value.reviews), unit: '件', note: '人間review済み' });
+  addStatTile(stats, { label: '判定可能', value: String(value.evaluable), unit: '件', note: `分母 ${value.evaluable}` });
+  addStatTile(stats, { label: 'unknown', value: String(value.unknown), unit: '件', tag: value.unknown ? '証拠不足' : 'なし' });
+  addStatTile(stats, {
+    label: 'E2E成功率', value: percent(value.e2e_success_rate), ratio: value.e2e_success_rate,
+    tag: value.evaluable ? `${value.e2e_successes}/${value.evaluable}` : '判定保留',
+    tone: value.evaluable && value.e2e_successes < value.evaluable ? 'fail' : '',
+    note: '判定可能episodeを分母に集計',
+  });
+
+  const stageBody = document.getElementById('workflowStageRows');
+  clearElement(stageBody);
+  Object.entries(WORKFLOW_STAGE_LABELS).forEach(([stage, labelText]) => {
+    const row = value.stages[stage] || {};
+    const tr = document.createElement('tr');
+    const label = document.createElement('td');
+    label.textContent = labelText;
+    tr.appendChild(label);
+    ['pass', 'fail', 'unknown', 'not_applicable'].forEach(result => {
+      const td = document.createElement('td');
+      td.className = 'num';
+      td.textContent = String(numberOrNull(row[result]) || 0);
+      tr.appendChild(td);
+    });
+    stageBody.appendChild(tr);
+  });
+
+  const failureBody = document.getElementById('workflowFailureRows');
+  clearElement(failureBody);
+  const failures = Object.entries(value.failure_stages || {});
+  if (!failures.length) emptyTableRow(failureBody, 3, 'failure stageが記録されたepisodeはありません。');
+  failures.forEach(([stage, count]) => {
+    const tr = document.createElement('tr');
+    [stage, count, FAILURE_TARGETS[stage] || '分類を確認'].forEach((item, index) => {
+      const td = document.createElement('td');
+      td.className = index === 1 ? 'num' : (index === 0 ? 'mono' : '');
+      td.textContent = String(item);
+      tr.appendChild(td);
+    });
+    failureBody.appendChild(tr);
+  });
+
+  renderCohortRows('workflowCaseRows', value.by_case);
+  renderCohortRows('workflowClientRows', value.by_client);
+  renderCohortRows('workflowWeekRows', value.by_week);
+  const improvements = value.improvements || {};
+  const leadTime = improvements.lead_time_hours || {};
+  const improvementStats = document.getElementById('workflowImprovementStats');
+  clearElement(improvementStats);
+  addStatTile(improvementStats, { label: '変更後の同一case再評価', value: String(numberOrNull(improvements.reviewed_replays) || 0), unit: '件' });
+  addStatTile(improvementStats, { label: '同じ失敗の再発率', value: percent(improvements.recurrence_rate), note: '改善前がfailの再評価を分母に集計' });
+  addStatTile(improvementStats, { label: '改善リードタイム', value: numberOrNull(leadTime.average) === null ? '—' : String(Math.round(leadTime.average * 10) / 10), unit: numberOrNull(leadTime.average) === null ? '' : '時間', note: `${numberOrNull(leadTime.count) || 0}組の変更前後` });
 }
 
 function emptyTableRow(tbody, columns, message) {
@@ -1464,8 +1387,6 @@ function renderMetricsCharts(data) {
   const weekly = Array.isArray(search.weekly) ? search.weekly : [];
   const corpus = data.corpus || {};
   const contribution = data.contribution || {};
-  const decisionWeekly = Array.isArray((data.decision_value || {}).weekly) ? data.decision_value.weekly : [];
-  renderDecisionValueChart(decisionWeekly);
   renderWeeklySearch(weekly);
   renderReturnRate(weekly);
   renderEval(data.eval || {});
@@ -1507,7 +1428,6 @@ function renderMetrics(data) {
   lastMetricsData = data;
   const corpus = data.corpus || {};
   const contribution = data.contribution || {};
-  renderDecisionValue(data.decision_value || {});
   renderOperationTraces(data.operation_traces || {});
   renderOperationalReadiness(data.operational_readiness || {});
   renderMetricsCharts(data);
@@ -1535,12 +1455,21 @@ async function loadMetrics(force = false) {
   status.textContent = '読み込み中…';
   refresh.disabled = true;
   try {
-    const response = await fetch('/ui/api/metrics');
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const data = await response.json();
+    const [metricsResponse, workflowResponse] = await Promise.all([
+      fetch('/ui/api/metrics'),
+      fetch('/ui/api/workflow-evaluation'),
+    ]);
+    if (!metricsResponse.ok) throw new Error(`metrics HTTP ${metricsResponse.status}`);
+    const data = await metricsResponse.json();
+    if (!workflowResponse.ok) {
+      renderWorkflowUnavailable(workflowResponse.status === 503 ? 'invalid_store' : 'unavailable');
+    } else {
+      renderWorkflowEvaluation(await workflowResponse.json());
+    }
     renderMetrics(data);
     metricsLoaded = true;
   } catch (error) {
+    renderWorkflowUnavailable('unavailable');
     status.className = 'metrics-status error';
     const lastSuccess = metricsLastSuccessAt
       ? ` 最終成功: ${new Date(metricsLastSuccessAt).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })}`

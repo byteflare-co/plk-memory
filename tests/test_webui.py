@@ -127,29 +127,31 @@ def _workflow_case_path() -> Path:
     return Path(__file__).parents[1] / "scripts" / "eval" / "workflow_cases.yaml"
 
 
-def _workflow_review() -> WorkflowReviewSubmission:
-    return WorkflowReviewSubmission(
-        review_id="ui-review-1",
-        case_id="browser-byteflare-profile-selection",
-        variant_id="unique-match",
-        reviewed_at=datetime.now(timezone.utc),
-        reviewer="private-reviewer",
-        trace_id="trace-private",
-        search_ids=["search-private"],
-        action_ids=["action-private"],
-        ratings=StageRatings(
+def _workflow_review(**updates) -> WorkflowReviewSubmission:
+    values = {
+        "review_id": "ui-review-1",
+        "case_id": "browser-byteflare-profile-selection",
+        "variant_id": "unique-match",
+        "reviewed_at": datetime.now(timezone.utc),
+        "reviewer": "private-reviewer",
+        "trace_id": "trace-private",
+        "search_ids": ["search-private"],
+        "action_ids": ["action-private"],
+        "ratings": StageRatings(
             trigger="pass", retrieval="pass", application="pass", action="pass"
         ),
-        evidence_tier="A",
-        evidence_refs=["evidence-private"],
-        revisions=EvaluationRevisions(
+        "evidence_tier": "A",
+        "evidence_refs": ["evidence-private"],
+        "revisions": EvaluationRevisions(
             client="codex@1",
             model="gpt@1",
             instruction="agents@1",
             retriever="graph@1",
             corpus="git@1",
         ),
-    )
+    }
+    values.update(updates)
+    return WorkflowReviewSubmission.model_validate(values)
 
 
 def _signed_workflow_review(review: WorkflowReviewSubmission) -> WorkflowReview:
@@ -274,6 +276,60 @@ async def test_workflow_evaluation_api_fails_closed_for_unsafe_store(
     assert response.json()["detail"] == "workflow evaluation data is unavailable"
 
 
+async def test_workflow_evaluation_api_distinguishes_empty_and_unknown(
+    remote, tmp_path, write_valid_fact
+):
+    origin, seed = remote
+    write_valid_fact(seed, "knowledge/domains/tax/x.md")
+    push(seed)
+    cases = _workflow_case_path()
+    store = tmp_path / "reviews.jsonl"
+    settings = make_settings(
+        tmp_path,
+        origin,
+        ui_password="",
+        workflow_review_path=store,
+        workflow_cases_path=cases,
+        workflow_reviewer_id="test-human-reviewer",
+        workflow_reviewer_public_key=_TEST_PUBLIC_KEY,
+        workflow_review_trusted_head="0" * 64,
+    )
+    app = create_app(settings=settings, graph=FakeGraphIndex())
+    app.state.services.store.ensure_repo()
+    app.state.services.store.fetch_and_ff()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://plk") as client:
+        empty = await client.get("/ui/api/workflow-evaluation")
+        assert empty.status_code == 200
+        assert empty.json()["status"] == "insufficient_data"
+        assert empty.json()["reviews"] == 0
+
+        review = _workflow_review(
+            ratings=StageRatings(
+                trigger="pass",
+                retrieval="pass",
+                application="pass",
+                action="unknown",
+            ),
+            evidence_tier="B",
+        )
+        envelope = _signed_workflow_review(review)
+        append_review(
+            store,
+            envelope,
+            suite=load_review_suite(cases),
+            settings=settings,
+        )
+        settings.workflow_review_trusted_head = envelope.record_hash
+        unknown = await client.get("/ui/api/workflow-evaluation")
+        assert unknown.status_code == 200
+        assert unknown.json()["status"] == "insufficient_data"
+        assert unknown.json()["reviews"] == 1
+        assert unknown.json()["evaluable"] == 0
+        assert unknown.json()["unknown"] == 1
+        assert unknown.json()["e2e_success_rate"] is None
+
+
 async def test_metrics_skips_broken_jsonl_and_malformed_fact(
     remote, tmp_path, write_valid_fact
 ):
@@ -352,6 +408,7 @@ async def test_ui_proposal_preview_includes_body(uiclient):
 async def test_metrics_frontend_uses_safe_dom_and_metrics_endpoint(uiclient):
     response = await uiclient.get("/static/app.js")
     assert "fetch('/ui/api/metrics')" in response.text
+    assert "fetch('/ui/api/workflow-evaluation')" in response.text
     assert response.text.count("innerHTML") == 1
     assert "body.innerHTML = data.body_html" in response.text
     assert "title.textContent" in response.text
@@ -364,11 +421,15 @@ async def test_metrics_frontend_uses_clear_labels(uiclient):
     page = await uiclient.get("/")
     script = await uiclient.get("/static/app.js")
     visible_copy = page.text + script.text
-    assert "判断価値" in page.text
-    assert "検索品質" in page.text
-    assert "データ状態" in page.text
-    assert "週ごとの強い影響の報告" in page.text
+    assert "レビュー済みE2E評価" in page.text
+    assert "E2E評価" in page.text
+    assert "検索の健康" in page.text
+    assert "知識・計測の健康" in page.text
+    assert "段階別の判定" in page.text
+    assert "最初の失敗段階と改善先" in page.text
     assert "検索方式の対照評価" in page.text
+    assert "4週価値目標" not in visible_copy
+    assert "判断価値" not in visible_copy
     assert "キル基準" not in visible_copy
     assert "コーパス" not in visible_copy
     assert "proxy OK" not in visible_copy
@@ -377,13 +438,17 @@ async def test_metrics_frontend_uses_clear_labels(uiclient):
 async def test_metrics_frontend_explains_status_and_next_action(uiclient):
     page = await uiclient.get("/")
     script = await uiclient.get("/static/app.js")
-    assert 'id="decisionValueTitle"' in page.text
-    assert 'id="decisionNextActionTitle"' in page.text
-    assert 'id="decisionValueStats"' in page.text
-    assert "判定可能な完了週" in script.text
-    assert "未計測や観測開始前の週を0件として扱わず" in script.text
-    assert "因果効果や判断の正しさは示しません" in page.text
-    assert 'role="tablist" aria-label="利用状況の詳細"' in page.text
+    assert 'id="workflowEvaluationTitle"' in page.text
+    assert 'id="workflowEvaluationStats"' in page.text
+    assert 'id="workflowStageRows"' in page.text
+    assert 'id="workflowFailureRows"' in page.text
+    assert "レビューなし — 判定保留" in script.text
+    assert "判定可能なepisodeなし" in script.text
+    assert "評価ストアを検証できません" in script.text
+    assert "評価APIを利用できません" in script.text
+    assert "unknownを成功や失敗へ丸めません" in page.text
+    assert "E2E成功の証拠ではありません" in page.text
+    assert 'role="tablist" aria-label="評価の詳細"' in page.text
     assert "ArrowRight" in script.text and "Home" in script.text
 
 
