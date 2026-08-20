@@ -1,5 +1,6 @@
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
+import os
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ from plk_memory.workflow_evaluation import (
     WorkflowReview,
     WorkflowSuite,
     append_review,
+    load_review_suite,
     load_suite,
     read_reviews,
     summarize_reviews,
@@ -158,19 +160,38 @@ def test_failed_review_requires_failure_stage():
         )
 
 
-def test_review_must_reference_a_known_case_and_variant():
+def test_failed_review_requires_improvement_target():
+    with pytest.raises(ValidationError, match="requires improvement_target"):
+        _review(
+            ratings=StageRatings(
+                trigger="pass",
+                retrieval="fail",
+                application="unknown",
+                action="unknown",
+            ),
+            failure_stage="retrieval",
+        )
+
+
+def test_review_must_reference_a_known_case_and_variant(tmp_path):
     suite = _repository_suite()
 
     with pytest.raises(ValueError, match="unknown workflow variant"):
         validate_review_against_suite(_review(variant_id="missing"), suite)
 
+    with pytest.raises(ValueError, match="unknown workflow variant"):
+        append_review(
+            tmp_path / "reviews.jsonl", _review(variant_id="missing"), suite=suite
+        )
+
 
 def test_review_store_is_append_only_and_summarized(tmp_path):
     path = tmp_path / "reviews.jsonl"
-    append_review(path, _review())
+    suite = _repository_suite()
+    append_review(path, _review(), suite=suite)
 
     with pytest.raises(ValueError, match="duplicate review_id"):
-        append_review(path, _review())
+        append_review(path, _review(), suite=suite)
 
     reviews = read_reviews(path)
     assert path.stat().st_mode & 0o777 == 0o600
@@ -179,7 +200,17 @@ def test_review_store_is_append_only_and_summarized(tmp_path):
     assert summary["e2e_success_rate"] == 1.0
     assert summary["by_case"]["browser-byteflare-profile-selection"]["evaluable"] == 1
     assert summary["by_client"]["codex@1"]["success_rate"] == 1.0
-    assert summary["improvements"]["pairs"] == []
+    assert summary["improvements"]["reviewed_replays"] == 0
+    assert summary["improvements"]["lead_time_hours"] == {
+        "count": 0,
+        "average": None,
+    }
+
+
+def test_no_reviews_is_insufficient_data_not_zero_percent():
+    summary = summarize_reviews([])
+    assert summary["status"] == "insufficient_data"
+    assert summary["e2e_success_rate"] is None
 
 
 def test_replay_requires_existing_same_case_variant_and_is_summarized(tmp_path):
@@ -203,9 +234,11 @@ def test_replay_requires_existing_same_case_variant_and_is_summarized(tmp_path):
 
     summary = summarize_reviews(read_reviews(path))
     assert summary["improvements"]["recurrence_rate"] == 0.0
-    assert summary["improvements"]["pairs"][0]["before_success"] is False
-    assert summary["improvements"]["pairs"][0]["after_success"] is True
-    assert summary["improvements"]["pairs"][0]["lead_time_hours"] == 4.0
+    assert summary["improvements"]["reviewed_replays"] == 1
+    assert summary["improvements"]["lead_time_hours"] == {
+        "count": 1,
+        "average": 4.0,
+    }
 
 
 def test_replay_rejects_unknown_or_duplicate_original(tmp_path):
@@ -235,3 +268,61 @@ def test_replay_rejects_unknown_or_duplicate_original(tmp_path):
             ),
             suite=suite,
         )
+
+
+def test_read_review_store_rejects_unsafe_files_and_malformed_history(tmp_path):
+    store = tmp_path / "reviews.jsonl"
+    store.write_text("not-json\n", encoding="utf-8")
+    os.chmod(store, 0o600)
+    with pytest.raises(ValueError, match="invalid workflow review"):
+        read_reviews(store)
+
+    store.write_text(_review().model_dump_json() + "\n", encoding="utf-8")
+    os.chmod(store, 0o644)
+    with pytest.raises(ValueError, match="mode 0600"):
+        read_reviews(store)
+
+    regular = tmp_path / "regular.jsonl"
+    regular.write_text(_review().model_dump_json() + "\n", encoding="utf-8")
+    os.chmod(regular, 0o600)
+    link = tmp_path / "link.jsonl"
+    link.symlink_to(regular)
+    with pytest.raises(ValueError, match="safe regular file"):
+        read_reviews(link)
+
+    directory = tmp_path / "directory.jsonl"
+    directory.mkdir()
+    with pytest.raises(ValueError, match="safe regular file|regular file"):
+        read_reviews(directory)
+
+
+def test_read_review_store_rejects_duplicate_and_invalid_replay_history(tmp_path):
+    store = tmp_path / "reviews.jsonl"
+    first = _review()
+    duplicate = _review()
+    store.write_text(
+        first.model_dump_json() + "\n" + duplicate.model_dump_json() + "\n",
+        encoding="utf-8",
+    )
+    os.chmod(store, 0o600)
+    with pytest.raises(ValueError, match="duplicate review_id"):
+        read_reviews(store)
+
+    backwards = _review(
+        review_id="R2",
+        replay_of="R1",
+        change_id="change-1",
+        reviewed_at=first.reviewed_at - timedelta(hours=1),
+    )
+    store.write_text(
+        first.model_dump_json() + "\n" + backwards.model_dump_json() + "\n",
+        encoding="utf-8",
+    )
+    os.chmod(store, 0o600)
+    with pytest.raises(ValueError, match="replay must be reviewed after"):
+        read_reviews(store)
+
+
+def test_review_suite_contract_can_load_without_live_corpus_access():
+    suite = load_review_suite(_case_path())
+    assert suite.cases[0].id == "browser-byteflare-profile-selection"

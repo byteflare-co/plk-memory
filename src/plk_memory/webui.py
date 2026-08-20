@@ -20,6 +20,11 @@ from fastapi import APIRouter, HTTPException, Request, Response, status
 
 from plk_memory.metrics import build_metrics
 from plk_memory.usage_records import read_eval_history
+from plk_memory.workflow_evaluation import (
+    load_review_suite,
+    read_reviews,
+    summarize_reviews,
+)
 
 if TYPE_CHECKING:
     from plk_memory.facade import ServiceFacade
@@ -189,6 +194,20 @@ def build_ui_router(services: "ServiceFacade") -> APIRouter:
         result["corpus"]["available"] = True
         result["corpus"]["skipped_files"] = skipped
         return result
+
+    @router.get("/ui/api/workflow-evaluation")
+    async def ui_workflow_evaluation(request: Request) -> dict:
+        """Return only aggregate workflow-evaluation metrics to the dashboard."""
+        _require_cookie(request)
+        try:
+            suite = load_review_suite(settings.workflow_cases_path)
+            reviews = read_reviews(settings.workflow_review_path, suite=suite)
+        except (OSError, ValueError):
+            # Never turn a malformed or unsafe private store into a partial score.
+            raise HTTPException(
+                status_code=503, detail="workflow evaluation data is unavailable"
+            ) from None
+        return summarize_reviews(reviews)
 
     @router.get("/ui/api/facts/{fact_id}")
     async def ui_fact_detail(request: Request, fact_id: str) -> dict:

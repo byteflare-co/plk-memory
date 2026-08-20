@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     usage_raw_query_retention_days: int = Field(default=30, ge=0, le=365)
     eval_history_path: Path = Path.home() / ".plk" / "eval-history.jsonl"
     workflow_review_path: Path = Path.home() / ".plk" / "workflow-reviews.jsonl"
+    workflow_cases_path: Path = (
+        Path(__file__).resolve().parents[2] / "scripts" / "eval" / "workflow_cases.yaml"
+    )
     metrics_timezone: str = "Asia/Tokyo"
     lock_path: Path = Path.home() / ".plk" / "writer.lock"
     feedback_path: Path = Path.home() / ".plk" / "feedback.json"

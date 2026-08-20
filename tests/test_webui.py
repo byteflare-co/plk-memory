@@ -1,5 +1,10 @@
 import asyncio
+import json
 import re
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
 
 import httpx
 import pytest
@@ -7,6 +12,13 @@ import pytest
 from plk_memory.app import create_app
 from plk_memory.feedback import FeedbackProposal
 from plk_memory.webui import sanitize_markdown
+from plk_memory.workflow_evaluation import (
+    EvaluationRevisions,
+    StageRatings,
+    WorkflowReview,
+    append_review,
+    load_review_suite,
+)
 from tests.conftest import make_settings
 from tests.fakes import FakeGraphIndex
 from tests.gitsync_helpers import push
@@ -89,6 +101,121 @@ async def test_metrics_missing_sources_returns_empty_structure(open_uiclient):
     assert body["corpus"]["available"] is True
     assert body["decision_value"]["status"] == "insufficient_data"
     assert len(body["decision_value"]["weekly"]) == 4
+
+
+def _workflow_case_path() -> Path:
+    return Path(__file__).parents[1] / "scripts" / "eval" / "workflow_cases.yaml"
+
+
+def _workflow_review() -> WorkflowReview:
+    return WorkflowReview(
+        review_id="ui-review-1",
+        case_id="browser-byteflare-profile-selection",
+        variant_id="unique-match",
+        reviewed_at=datetime.now(timezone.utc),
+        reviewer="private-reviewer",
+        trace_id="trace-private",
+        search_ids=["search-private"],
+        action_ids=["action-private"],
+        ratings=StageRatings(
+            trigger="pass", retrieval="pass", application="pass", action="pass"
+        ),
+        evidence_tier="A",
+        evidence_refs=["evidence-private"],
+        revisions=EvaluationRevisions(
+            client="codex@1",
+            model="gpt@1",
+            instruction="agents@1",
+            retriever="graph@1",
+            corpus="git@1",
+        ),
+    )
+
+
+async def test_workflow_evaluation_api_requires_existing_ui_auth(uiclient):
+    response = await uiclient.get("/ui/api/workflow-evaluation")
+    assert response.status_code == 401
+
+
+async def test_workflow_evaluation_api_is_aggregate_only_and_matches_cli(
+    remote, tmp_path, write_valid_fact
+):
+    origin, seed = remote
+    write_valid_fact(seed, "knowledge/domains/tax/x.md")
+    push(seed)
+    cases = _workflow_case_path()
+    store = tmp_path / "reviews.jsonl"
+    append_review(store, _workflow_review(), suite=load_review_suite(cases))
+    settings = make_settings(
+        tmp_path,
+        origin,
+        ui_password="",
+        workflow_review_path=store,
+        workflow_cases_path=cases,
+    )
+    app = create_app(settings=settings, graph=FakeGraphIndex())
+    app.state.services.store.ensure_repo()
+    app.state.services.store.fetch_and_ff()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://plk") as client:
+        response = await client.get("/ui/api/workflow-evaluation")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["e2e_success_rate"] == 1.0
+    assert payload["by_case"]["browser-byteflare-profile-selection"]["evaluable"] == 1
+    serialized = json.dumps(payload)
+    for private_value in (
+        "private-reviewer",
+        "evidence-private",
+        "trace-private",
+        "search-private",
+        "action-private",
+        "ui-review-1",
+    ):
+        assert private_value not in serialized
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "scripts/eval/workflow_review.py",
+            "report",
+            "--store",
+            str(store),
+            "--cases",
+            str(cases),
+        ],
+        cwd=Path(__file__).parents[1],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert json.loads(completed.stdout) == payload
+
+
+async def test_workflow_evaluation_api_fails_closed_for_unsafe_store(
+    remote, tmp_path, write_valid_fact
+):
+    origin, seed = remote
+    write_valid_fact(seed, "knowledge/domains/tax/x.md")
+    push(seed)
+    store = tmp_path / "reviews.jsonl"
+    store.write_text("malformed\n", encoding="utf-8")
+    store.chmod(0o600)
+    settings = make_settings(
+        tmp_path,
+        origin,
+        ui_password="",
+        workflow_review_path=store,
+        workflow_cases_path=_workflow_case_path(),
+    )
+    app = create_app(settings=settings, graph=FakeGraphIndex())
+    app.state.services.store.ensure_repo()
+    app.state.services.store.fetch_and_ff()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://plk") as client:
+        response = await client.get("/ui/api/workflow-evaluation")
+    assert response.status_code == 503
+    assert response.json()["detail"] == "workflow evaluation data is unavailable"
 
 
 async def test_metrics_skips_broken_jsonl_and_malformed_fact(

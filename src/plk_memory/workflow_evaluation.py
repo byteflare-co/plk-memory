@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fcntl
 import os
+import stat
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Literal
@@ -151,6 +152,8 @@ class WorkflowReview(BaseModel):
 
     @model_validator(mode="after")
     def validate_review(self) -> "WorkflowReview":
+        if self.reviewed_at.tzinfo is None or self.reviewed_at.utcoffset() is None:
+            raise ValueError("reviewed_at must include a timezone")
         values = self.ratings.model_dump().values()
         if "fail" in values and self.failure_stage is None:
             raise ValueError("a failed review requires failure_stage")
@@ -166,10 +169,15 @@ class WorkflowReview(BaseModel):
 
 
 def load_suite(path: Path, *, settings: Settings | None = None) -> WorkflowSuite:
-    payload = yaml.safe_load(path.read_text(encoding="utf-8"))
-    suite = WorkflowSuite.model_validate(payload)
+    suite = load_review_suite(path)
     validate_suite_corpus(suite, settings=settings or Settings())
     return suite
+
+
+def load_review_suite(path: Path) -> WorkflowSuite:
+    """Load only the case/variant contract; never inspect a live knowledge corpus."""
+    payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    return WorkflowSuite.model_validate(payload)
 
 
 def validate_suite_corpus(suite: WorkflowSuite, *, settings: Settings) -> None:
@@ -204,19 +212,87 @@ def validate_suite_corpus(suite: WorkflowSuite, *, settings: Settings) -> None:
         )
 
 
-def read_reviews(path: Path) -> list[WorkflowReview]:
-    if not path.exists():
-        return []
+def _open_review_store(path: Path, *, write: bool) -> int | None:
+    """Open the private JSONL store without following links or accepting devices.
+
+    A review store is an append-only audit input.  Returning a partial result from
+    an unexpected file type or permissive file would make the evaluation look
+    healthier than its evidence allows, so every such condition is rejected.
+    """
+
+    flags = os.O_RDWR if write else os.O_RDONLY
+    if write:
+        flags |= os.O_CREAT
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags, 0o600)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise ValueError("workflow review store is not a safe regular file") from exc
+
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError("workflow review store must be a regular file")
+        if metadata.st_mode & 0o077:
+            raise ValueError("workflow review store must have mode 0600")
+        if write:
+            os.fchmod(descriptor, 0o600)
+        return descriptor
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def _parse_reviews(lines: list[str]) -> list[WorkflowReview]:
     reviews: list[WorkflowReview] = []
-    for line_number, line in enumerate(
-        path.read_text(encoding="utf-8").splitlines(), 1
-    ):
+    for line_number, line in enumerate(lines, 1):
         if not line.strip():
             continue
         try:
             reviews.append(WorkflowReview.model_validate_json(line))
         except ValueError as exc:
             raise ValueError(f"invalid workflow review at line {line_number}") from exc
+    return reviews
+
+
+def _validate_review_history(reviews: list[WorkflowReview]) -> None:
+    seen: dict[str, WorkflowReview] = {}
+    replayed: set[str] = set()
+    for review in reviews:
+        if review.review_id in seen:
+            raise ValueError(f"duplicate review_id: {review.review_id}")
+        if review.replay_of is not None:
+            original = seen.get(review.replay_of)
+            if original is None:
+                raise ValueError(f"unknown replay_of: {review.replay_of}")
+            if (original.case_id, original.variant_id) != (
+                review.case_id,
+                review.variant_id,
+            ):
+                raise ValueError("replay must use the same case and variant")
+            if review.reviewed_at <= original.reviewed_at:
+                raise ValueError("replay must be reviewed after the original")
+            if original.review_id in replayed:
+                raise ValueError(f"review already has a replay: {original.review_id}")
+            replayed.add(original.review_id)
+        seen[review.review_id] = review
+
+
+def read_reviews(
+    path: Path, *, suite: WorkflowSuite | None = None
+) -> list[WorkflowReview]:
+    descriptor = _open_review_store(path, write=False)
+    if descriptor is None:
+        return []
+    with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
+        reviews = _parse_reviews(handle.read().splitlines())
+    _validate_review_history(reviews)
+    if suite is not None:
+        for review in reviews:
+            validate_review_against_suite(review, suite)
     return reviews
 
 
@@ -234,37 +310,20 @@ def append_review(
     path: Path,
     review: WorkflowReview,
     *,
-    suite: WorkflowSuite | None = None,
+    suite: WorkflowSuite,
 ) -> None:
-    if suite is not None:
-        validate_review_against_suite(review, suite)
+    validate_review_against_suite(review, suite)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a+", encoding="utf-8") as handle:
-        os.chmod(path, 0o600)
+    descriptor = _open_review_store(path, write=True)
+    if descriptor is None:  # pragma: no cover - write=True creates the file
+        raise ValueError("workflow review store could not be created")
+    with os.fdopen(descriptor, "r+", encoding="utf-8") as handle:
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
         handle.seek(0)
-        existing = [
-            WorkflowReview.model_validate_json(line)
-            for line in handle.read().splitlines()
-            if line.strip()
-        ]
-        if any(row.review_id == review.review_id for row in existing):
-            raise ValueError(f"duplicate review_id: {review.review_id}")
-        if review.replay_of is not None:
-            original = next(
-                (row for row in existing if row.review_id == review.replay_of), None
-            )
-            if original is None:
-                raise ValueError(f"unknown replay_of: {review.replay_of}")
-            if (original.case_id, original.variant_id) != (
-                review.case_id,
-                review.variant_id,
-            ):
-                raise ValueError("replay must use the same case and variant")
-            if review.reviewed_at <= original.reviewed_at:
-                raise ValueError("replay must be reviewed after the original")
-            if any(row.replay_of == original.review_id for row in existing):
-                raise ValueError(f"review already has a replay: {original.review_id}")
+        existing = _parse_reviews(handle.read().splitlines())
+        _validate_review_history(existing + [review])
+        for stored_review in existing:
+            validate_review_against_suite(stored_review, suite)
         handle.seek(0, os.SEEK_END)
         handle.write(review.model_dump_json() + "\n")
         handle.flush()
@@ -296,6 +355,7 @@ def summarize_reviews(reviews: list[WorkflowReview]) -> dict:
         judged = [review for review in rows if is_evaluable(review)]
         passed = [review for review in judged if is_success(review)]
         return {
+            "status": "ok" if judged else "insufficient_data",
             "reviews": len(rows),
             "evaluable": len(judged),
             "unknown": len(rows) - len(judged),
@@ -317,11 +377,6 @@ def summarize_reviews(reviews: list[WorkflowReview]) -> dict:
         original = originals[replay.replay_of]
         improvement_pairs.append(
             {
-                "change_id": replay.change_id,
-                "case_id": replay.case_id,
-                "variant_id": replay.variant_id,
-                "before_review_id": original.review_id,
-                "after_review_id": replay.review_id,
                 "before_success": is_success(original),
                 "after_success": is_success(replay),
                 "before_failure_stage": original.failure_stage,
@@ -345,6 +400,7 @@ def summarize_reviews(reviews: list[WorkflowReview]) -> dict:
         return {name: cohort(rows) for name, rows in sorted(values.items())}
 
     return {
+        "status": "ok" if evaluable else "insufficient_data",
         "reviews": len(reviews),
         "evaluable": len(evaluable),
         "unknown": len(reviews) - len(evaluable),
@@ -361,7 +417,7 @@ def summarize_reviews(reviews: list[WorkflowReview]) -> dict:
             )
         ),
         "improvements": {
-            "pairs": improvement_pairs,
+            "reviewed_replays": len(improvement_pairs),
             "failed_before": len(failed_pairs),
             "same_failure_recurrences": sum(
                 bool(pair["same_failure_recurred"]) for pair in failed_pairs
@@ -372,5 +428,14 @@ def summarize_reviews(reviews: list[WorkflowReview]) -> dict:
                 if failed_pairs
                 else None
             ),
+            "lead_time_hours": {
+                "count": len(improvement_pairs),
+                "average": (
+                    sum(pair["lead_time_hours"] for pair in improvement_pairs)
+                    / len(improvement_pairs)
+                    if improvement_pairs
+                    else None
+                ),
+            },
         },
     }

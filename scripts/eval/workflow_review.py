@@ -11,6 +11,7 @@ from plk_memory.settings import Settings
 from plk_memory.workflow_evaluation import (
     WorkflowReview,
     append_review,
+    load_review_suite,
     load_suite,
     read_reviews,
     summarize_reviews,
@@ -37,9 +38,10 @@ def main() -> int:
         append_review(args.store, review, suite=load_suite(args.cases))
         print(f"recorded: {review.review_id}")
     else:
+        suite = load_review_suite(args.cases)
         print(
             json.dumps(
-                summarize_reviews(read_reviews(args.store)),
+                summarize_reviews(read_reviews(args.store, suite=suite)),
                 ensure_ascii=False,
                 indent=2,
             )
