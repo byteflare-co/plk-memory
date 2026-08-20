@@ -137,6 +137,27 @@ cookie、token、ページ本文、個人情報をcaseやreviewへ複写せず�
 
 pilot の完了条件は「評価ケースを作った」ことではなく、最低5 episode を人間がレビューし、少なくとも1回、失敗分類から変更、同一ケース再評価までを完了することとする。初期しきい値は、その5 episodeを見てから決める。根拠のない成功率目標を先に固定しない。
 
+### 7.1 Pilot status と rollback
+
+Chrome profile pilot の評価記録は、次で集計する。これは実ブラウザを起動せず、署名済みのprivate review JSONLを検証して集計するだけのコマンドである。
+
+```bash
+uv run python scripts/eval/workflow_review.py pilot-status
+```
+
+`pilot-status` は、対象caseについて (1) reviewed episode 5件以上、(2) 定義済みvariantのcoverage、(3) 各episodeのTier A action evidence、(4) failure episode 1件以上、(5) failure後のchange ID付き同一case/variant replay 1組以上を検査する。不足時は不足項目をJSONで列挙してnon-zeroで終了する。これらを満たしても、**実5 episode の出力と変更前後1組を保存していない限り、epicの価値検証は完了ではない**。
+
+Chrome操作の実施手順は、profileを列挙し、業務指定名とcase-insensitive完全一致する1件だけを選ぶことから始める。no-match、duplicate、private-onlyは操作を停止し、途中で別profileへfallbackしない。選んだ同一profileで最後まで実施し、workspaceのread-backをTier A証拠として残す。cookie、token、ページ本文、customer dataをreview JSONLへ複写せず、opaqueなprivate evidence referenceだけを残す。
+
+aggregate APIが利用不能、private data露出、unknown率の増加、または変更後replayの再失敗はrollback条件である。前二者は独立した観測を明示して次のように確認できる。
+
+```bash
+uv run python scripts/eval/workflow_review.py pilot-status \
+  --aggregate-api-status unavailable --private-data-exposure
+```
+
+rollback時は`recommended_dashboard_view: telemetry`を確認し、旧telemetryを**基盤の健康診断だけ**として表示する。reviewed E2Eの成功率へ読み替えない。署名済みreview JSONLは削除・上書きせず保持するため、原因の再検証と表示復帰が可能である。
+
 ## 8. 段階的な自動化
 
 ### Phase 0: 人間が正解を作る
