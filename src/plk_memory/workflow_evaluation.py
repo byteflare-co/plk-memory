@@ -93,6 +93,15 @@ class WorkflowCase(BaseModel):
             raise ValueError("variant ids must be unique")
         if len(set(self.required_stages)) != len(self.required_stages):
             raise ValueError("required stages must be unique")
+        if "action" not in self.required_stages:
+            raise ValueError("action must be required for every workflow case")
+        memory_stages = {"trigger", "retrieval", "application"}
+        if self.memory_expected and not memory_stages.issubset(self.required_stages):
+            raise ValueError(
+                "memory_expected=true requires trigger, retrieval, and application"
+            )
+        if not self.memory_expected and set(self.required_stages) != {"action"}:
+            raise ValueError("memory_expected=false requires action-only stages")
         expected_stages = {
             "trigger",
             "retrieval",
@@ -394,6 +403,16 @@ def validate_review_against_suite(
         raise ValueError(
             f"unknown workflow variant: {review.case_id}/{review.variant_id}"
         )
+    ratings = review.ratings.model_dump()
+    for stage in case.required_stages:
+        if ratings[stage] == "not_applicable":
+            raise ValueError(f"required stage cannot be not_applicable: {stage}")
+    if ratings["action"] == "not_applicable":
+        raise ValueError("action cannot be not_applicable")
+    if review.failure_stage in ratings and ratings[review.failure_stage] != "fail":
+        raise ValueError(
+            f"failure_stage must match a failed rating: {review.failure_stage}"
+        )
 
 
 def append_review(
@@ -440,6 +459,8 @@ def append_review(
 def summarize_reviews(
     reviews: Sequence[WorkflowReviewSubmission], *, suite: WorkflowSuite
 ) -> dict:
+    for review in reviews:
+        validate_review_against_suite(review, suite)
     stage_names = ("trigger", "retrieval", "application", "action")
     stages = {
         name: {
@@ -456,13 +477,19 @@ def summarize_reviews(
         return case.required_stages
 
     def is_success(review: WorkflowReviewSubmission) -> bool:
-        return all(
-            getattr(review.ratings, name) == "pass" for name in required_stages(review)
+        return (
+            review.evidence_tier == "A"
+            and review.ratings.action == "pass"
+            and all(getattr(review.ratings, name) != "fail" for name in stage_names)
+            and all(
+                getattr(review.ratings, name) == "pass"
+                for name in required_stages(review)
+            )
         )
 
     def is_evaluable(review: WorkflowReviewSubmission) -> bool:
         return is_success(review) or any(
-            getattr(review.ratings, name) == "fail" for name in required_stages(review)
+            getattr(review.ratings, name) == "fail" for name in stage_names
         )
 
     def cohort(rows: Sequence[WorkflowReviewSubmission]) -> dict:

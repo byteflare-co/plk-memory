@@ -318,38 +318,27 @@ def test_no_reviews_is_insufficient_data_not_zero_percent():
 
 
 def test_required_action_not_applicable_is_not_an_e2e_success():
-    summary = summarize_reviews(
-        [
-            _review(
-                ratings=StageRatings(
-                    trigger="pass",
-                    retrieval="pass",
-                    application="pass",
-                    action="not_applicable",
+    with pytest.raises(ValueError, match="required stage cannot be not_applicable"):
+        summarize_reviews(
+            [
+                _review(
+                    ratings=StageRatings(
+                        trigger="pass",
+                        retrieval="pass",
+                        application="pass",
+                        action="not_applicable",
+                    )
                 )
-            )
-        ],
-        suite=_repository_suite(),
-    )
-
-    assert summary["status"] == "insufficient_data"
-    assert summary["evaluable"] == 0
-    assert summary["unknown"] == 1
-    assert summary["e2e_successes"] == 0
-    assert summary["e2e_success_rate"] is None
-    assert summary["by_case"]["browser-byteflare-profile-selection"] == {
-        "status": "insufficient_data",
-        "reviews": 1,
-        "evaluable": 0,
-        "unknown": 1,
-        "successes": 0,
-        "success_rate": None,
-    }
+            ],
+            suite=_repository_suite(),
+        )
 
 
 def test_optional_stage_not_applicable_does_not_block_e2e_success():
     payload = _repository_suite().model_dump()
-    payload["cases"][0]["required_stages"] = ["trigger", "application", "action"]
+    payload["cases"][0]["memory_expected"] = False
+    payload["cases"][0]["retrieval"] = None
+    payload["cases"][0]["required_stages"] = ["action"]
     suite = WorkflowSuite.model_validate(payload)
 
     summary = summarize_reviews(
@@ -369,6 +358,118 @@ def test_optional_stage_not_applicable_does_not_block_e2e_success():
     assert summary["evaluable"] == 1
     assert summary["e2e_successes"] == 1
     assert summary["e2e_success_rate"] == 1.0
+
+
+def test_workflow_case_requires_action_and_memory_stages_when_expected():
+    payload = _repository_suite().model_dump()
+    payload["cases"][0]["required_stages"] = ["trigger", "retrieval", "application"]
+
+    with pytest.raises(ValidationError, match="action must be required"):
+        WorkflowSuite.model_validate(payload)
+
+    payload = _repository_suite().model_dump()
+    payload["cases"][0]["required_stages"] = ["trigger", "application", "action"]
+
+    with pytest.raises(
+        ValidationError, match="requires trigger, retrieval, and application"
+    ):
+        WorkflowSuite.model_validate(payload)
+
+
+@pytest.mark.parametrize("memory_stage", ["trigger", "retrieval", "application"])
+def test_non_memory_workflow_case_rejects_required_memory_stages(memory_stage):
+    payload = _repository_suite().model_dump()
+    payload["cases"][0]["memory_expected"] = False
+    payload["cases"][0]["retrieval"] = None
+    payload["cases"][0]["required_stages"] = [memory_stage, "action"]
+
+    with pytest.raises(ValidationError, match="requires action-only stages"):
+        WorkflowSuite.model_validate(payload)
+
+
+def test_review_ratings_must_match_the_case_contract():
+    suite = _repository_suite()
+
+    with pytest.raises(ValueError, match="required stage cannot be not_applicable"):
+        validate_review_against_suite(
+            _review(
+                ratings=StageRatings(
+                    trigger="pass",
+                    retrieval="not_applicable",
+                    application="pass",
+                    action="pass",
+                )
+            ),
+            suite,
+        )
+
+    with pytest.raises(ValueError, match="failure_stage must match a failed rating"):
+        validate_review_against_suite(
+            _review(
+                ratings=StageRatings(
+                    trigger="pass", retrieval="fail", application="pass", action="pass"
+                ),
+                failure_stage="action",
+                improvement_target="retriever",
+            ),
+            suite,
+        )
+
+
+def test_optional_stage_failure_is_evaluable_e2e_failure():
+    payload = _repository_suite().model_dump()
+    payload["cases"][0]["memory_expected"] = False
+    payload["cases"][0]["retrieval"] = None
+    payload["cases"][0]["required_stages"] = ["action"]
+    suite = WorkflowSuite.model_validate(payload)
+
+    summary = summarize_reviews(
+        [
+            _review(
+                ratings=StageRatings(
+                    trigger="fail",
+                    retrieval="not_applicable",
+                    application="not_applicable",
+                    action="pass",
+                ),
+                failure_stage="trigger",
+                improvement_target="preflight",
+            )
+        ],
+        suite=suite,
+    )
+
+    assert summary["status"] == "ok"
+    assert summary["evaluable"] == 1
+    assert summary["unknown"] == 0
+    assert summary["e2e_successes"] == 0
+    assert summary["e2e_success_rate"] == 0.0
+
+
+def test_unknown_only_review_is_insufficient_data():
+    payload = _repository_suite().model_dump()
+    payload["cases"][0]["memory_expected"] = False
+    payload["cases"][0]["retrieval"] = None
+    payload["cases"][0]["required_stages"] = ["action"]
+    suite = WorkflowSuite.model_validate(payload)
+
+    summary = summarize_reviews(
+        [
+            _review(
+                ratings=StageRatings(
+                    trigger="not_applicable",
+                    retrieval="not_applicable",
+                    application="not_applicable",
+                    action="unknown",
+                )
+            )
+        ],
+        suite=suite,
+    )
+
+    assert summary["status"] == "insufficient_data"
+    assert summary["evaluable"] == 0
+    assert summary["unknown"] == 1
 
 
 def test_replay_requires_existing_same_case_variant_and_is_summarized(tmp_path):
