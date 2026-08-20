@@ -26,6 +26,14 @@ fail-closed で拒否することをローカルで確認する。
 uv run python scripts/eval/validate_workflow_cases.py
 ```
 
+CI と同じ隔離検証では、repository fixture を明示して実行する。
+
+```bash
+uv run python scripts/eval/validate_workflow_cases.py \
+  tests/fixtures/workflow_evaluation/workflow_cases.yaml \
+  --corpus-root tests/fixtures/workflow_evaluation/corpus
+```
+
 次に正常・異常・境界をまとめて確認する。
 
 ```bash
@@ -47,6 +55,7 @@ git diff --check
 ## 判定
 
 - validator が exit 0 で case / variant 件数を表示する。
+- CI の disposable fixture 実行は `~/.plk` や既存 corpus を参照しない。
 - `tests/test_workflow_eval_cases.py` がすべてpassする。
 - lint、型検査、JavaScript構文、diff検査がすべてpassする。
 - 欠落・invalidated・content hash変更が受理された場合はfailとする。

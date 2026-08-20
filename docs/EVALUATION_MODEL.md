@@ -175,3 +175,15 @@ pilot の完了条件は「評価ケースを作った」ことではなく、�
 
 E2E pilot完了前は、旧ゲートを基盤健全性のblockerとして使い、新評価を価値継続・停止の主判定に使う。
 両者が不一致なら、基盤が不健全な場合は判定保留、基盤が健全でもE2Eが失敗ならPLK価値未達とする。
+
+## 10. CI の契約
+
+GitHub Actions の `Workflow evaluation contract` は、外部 API、secret、`~/.plk`、既存 DB を使わず、
+リポジトリの fixture と task 固有の一時環境だけで次を検証する。
+
+- lint、今回の workflow-evaluation Python の format、型、pytest、dashboard JavaScript 構文
+- 正常な disposable corpus fixture を使った CLI validator
+- 重複 case / variant、expected fact の欠落・invalidated・content hash 不一致の fail-closed test
+
+実運用 corpus との照合は live data に接続しない。正本の hash と active status は、実運用の
+改善手順で別途確認し、CI の fixture 成功を実務価値の成功判定に使わない。
