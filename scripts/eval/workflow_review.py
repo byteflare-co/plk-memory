@@ -9,7 +9,7 @@ from pathlib import Path
 
 from plk_memory.settings import Settings
 from plk_memory.workflow_evaluation import (
-    WorkflowReview,
+    WorkflowReviewSubmission,
     append_review,
     load_review_suite,
     load_suite,
@@ -32,16 +32,22 @@ def main() -> int:
     if args.command == "record":
         if args.input is None:
             parser.error("record requires an input JSON file")
-        review = WorkflowReview.model_validate_json(
+        review = WorkflowReviewSubmission.model_validate_json(
             args.input.read_text(encoding="utf-8")
         )
-        append_review(args.store, review, suite=load_suite(args.cases))
+        settings = Settings()
+        append_review(
+            args.store, review, suite=load_suite(args.cases), settings=settings
+        )
         print(f"recorded: {review.review_id}")
     else:
+        settings = Settings()
         suite = load_review_suite(args.cases)
         print(
             json.dumps(
-                summarize_reviews(read_reviews(args.store, suite=suite)),
+                summarize_reviews(
+                    read_reviews(args.store, suite=suite, settings=settings)
+                ),
                 ensure_ascii=False,
                 indent=2,
             )

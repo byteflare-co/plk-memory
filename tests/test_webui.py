@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import re
 import subprocess
 import sys
@@ -15,7 +16,7 @@ from plk_memory.webui import sanitize_markdown
 from plk_memory.workflow_evaluation import (
     EvaluationRevisions,
     StageRatings,
-    WorkflowReview,
+    WorkflowReviewSubmission,
     append_review,
     load_review_suite,
 )
@@ -107,8 +108,8 @@ def _workflow_case_path() -> Path:
     return Path(__file__).parents[1] / "scripts" / "eval" / "workflow_cases.yaml"
 
 
-def _workflow_review() -> WorkflowReview:
-    return WorkflowReview(
+def _workflow_review() -> WorkflowReviewSubmission:
+    return WorkflowReviewSubmission(
         review_id="ui-review-1",
         case_id="browser-byteflare-profile-selection",
         variant_id="unique-match",
@@ -145,13 +146,20 @@ async def test_workflow_evaluation_api_is_aggregate_only_and_matches_cli(
     push(seed)
     cases = _workflow_case_path()
     store = tmp_path / "reviews.jsonl"
-    append_review(store, _workflow_review(), suite=load_review_suite(cases))
     settings = make_settings(
         tmp_path,
         origin,
         ui_password="",
         workflow_review_path=store,
         workflow_cases_path=cases,
+        workflow_reviewer_id="test-human-reviewer",
+        workflow_reviewer_token="synthetic-review-token",
+    )
+    append_review(
+        store,
+        _workflow_review(),
+        suite=load_review_suite(cases),
+        settings=settings,
     )
     app = create_app(settings=settings, graph=FakeGraphIndex())
     app.state.services.store.ensure_repo()
@@ -188,6 +196,11 @@ async def test_workflow_evaluation_api_is_aggregate_only_and_matches_cli(
         capture_output=True,
         text=True,
         check=True,
+        env={
+            **os.environ,
+            "PLK_WORKFLOW_REVIEWER_ID": "test-human-reviewer",
+            "PLK_WORKFLOW_REVIEWER_TOKEN": "synthetic-review-token",
+        },
     )
     assert json.loads(completed.stdout) == payload
 

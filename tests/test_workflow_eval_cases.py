@@ -1,5 +1,6 @@
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
+import json
 import os
 from pathlib import Path
 
@@ -11,7 +12,8 @@ from plk_memory.settings import Settings
 from plk_memory.workflow_evaluation import (
     EvaluationRevisions,
     StageRatings,
-    WorkflowReview,
+    WorkflowReviewSubmission,
+    attest_review,
     WorkflowSuite,
     append_review,
     load_review_suite,
@@ -52,7 +54,15 @@ def _fixture_suite():
     )
 
 
-def _review(**updates) -> WorkflowReview:
+def _review_settings(*, token: str = "synthetic-review-token") -> Settings:
+    return Settings(
+        workflow_reviewer_id="test-human-reviewer",
+        workflow_reviewer_token=token,
+        _env_file=None,  # pyright: ignore[reportCallIssue]
+    )
+
+
+def _review(**updates) -> WorkflowReviewSubmission:
     values = {
         "review_id": "R1",
         "case_id": "browser-byteflare-profile-selection",
@@ -73,7 +83,7 @@ def _review(**updates) -> WorkflowReview:
         ),
     }
     values.update(updates)
-    return WorkflowReview.model_validate(values)
+    return WorkflowReviewSubmission.model_validate(values)
 
 
 def test_repository_workflow_cases_are_structurally_valid():
@@ -175,25 +185,30 @@ def test_failed_review_requires_improvement_target():
 
 def test_review_must_reference_a_known_case_and_variant(tmp_path):
     suite = _repository_suite()
+    settings = _review_settings()
 
     with pytest.raises(ValueError, match="unknown workflow variant"):
         validate_review_against_suite(_review(variant_id="missing"), suite)
 
     with pytest.raises(ValueError, match="unknown workflow variant"):
         append_review(
-            tmp_path / "reviews.jsonl", _review(variant_id="missing"), suite=suite
+            tmp_path / "reviews.jsonl",
+            _review(variant_id="missing"),
+            suite=suite,
+            settings=settings,
         )
 
 
 def test_review_store_is_append_only_and_summarized(tmp_path):
     path = tmp_path / "reviews.jsonl"
     suite = _repository_suite()
-    append_review(path, _review(), suite=suite)
+    settings = _review_settings()
+    append_review(path, _review(), suite=suite, settings=settings)
 
     with pytest.raises(ValueError, match="duplicate review_id"):
-        append_review(path, _review(), suite=suite)
+        append_review(path, _review(), suite=suite, settings=settings)
 
-    reviews = read_reviews(path)
+    reviews = read_reviews(path, settings=settings)
     assert path.stat().st_mode & 0o777 == 0o600
     summary = summarize_reviews(reviews)
     assert summary["reviews"] == 1
@@ -205,6 +220,36 @@ def test_review_store_is_append_only_and_summarized(tmp_path):
         "count": 0,
         "average": None,
     }
+
+
+def test_review_recording_requires_configured_human_reviewer(tmp_path):
+    with pytest.raises(ValueError, match="credential is not configured"):
+        append_review(
+            tmp_path / "reviews.jsonl",
+            _review(),
+            suite=_repository_suite(),
+            settings=Settings(_env_file=None),  # pyright: ignore[reportCallIssue]
+        )
+
+
+def test_untrusted_append_and_tampered_review_cannot_be_aggregated(tmp_path):
+    path = tmp_path / "reviews.jsonl"
+    suite = _repository_suite()
+    trusted = _review_settings()
+    append_review(
+        path, _review(), suite=suite, settings=_review_settings(token="other")
+    )
+    with pytest.raises(ValueError, match="attestation is invalid"):
+        read_reviews(path, suite=suite, settings=trusted)
+
+    path.unlink()
+    append_review(path, _review(), suite=suite, settings=trusted)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["reviewer"] = "tampered"
+    path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+    with pytest.raises(ValueError, match="attestation is invalid"):
+        read_reviews(path, suite=suite, settings=trusted)
 
 
 def test_no_reviews_is_insufficient_data_not_zero_percent():
@@ -245,6 +290,7 @@ def test_required_action_not_applicable_is_not_an_e2e_success():
 def test_replay_requires_existing_same_case_variant_and_is_summarized(tmp_path):
     path = tmp_path / "reviews.jsonl"
     suite = _repository_suite()
+    settings = _review_settings()
     before = _review(
         ratings=StageRatings(
             trigger="fail", retrieval="unknown", application="unknown", action="unknown"
@@ -252,16 +298,16 @@ def test_replay_requires_existing_same_case_variant_and_is_summarized(tmp_path):
         failure_stage="trigger",
         improvement_target="browser preflight",
     )
-    append_review(path, before, suite=suite)
+    append_review(path, before, suite=suite, settings=settings)
     after = _review(
         review_id="R2",
         reviewed_at=before.reviewed_at + timedelta(hours=4),
         replay_of="R1",
         change_id="change-1",
     )
-    append_review(path, after, suite=suite)
+    append_review(path, after, suite=suite, settings=settings)
 
-    summary = summarize_reviews(read_reviews(path))
+    summary = summarize_reviews(read_reviews(path, settings=settings))
     assert summary["improvements"]["recurrence_rate"] == 0.0
     assert summary["improvements"]["reviewed_replays"] == 1
     assert summary["improvements"]["lead_time_hours"] == {
@@ -273,19 +319,20 @@ def test_replay_requires_existing_same_case_variant_and_is_summarized(tmp_path):
 def test_replay_rejects_unknown_or_duplicate_original(tmp_path):
     path = tmp_path / "reviews.jsonl"
     suite = _repository_suite()
+    settings = _review_settings()
     unknown = _review(review_id="R2", replay_of="missing", change_id="change-1")
     with pytest.raises(ValueError, match="unknown replay_of"):
-        append_review(path, unknown, suite=suite)
+        append_review(path, unknown, suite=suite, settings=settings)
 
     original = _review()
-    append_review(path, original, suite=suite)
+    append_review(path, original, suite=suite, settings=settings)
     replay = _review(
         review_id="R2",
         reviewed_at=original.reviewed_at + timedelta(hours=1),
         replay_of="R1",
         change_id="change-1",
     )
-    append_review(path, replay, suite=suite)
+    append_review(path, replay, suite=suite, settings=settings)
     with pytest.raises(ValueError, match="already has a replay"):
         append_review(
             path,
@@ -296,46 +343,58 @@ def test_replay_rejects_unknown_or_duplicate_original(tmp_path):
                 change_id="change-2",
             ),
             suite=suite,
+            settings=settings,
         )
 
 
 def test_read_review_store_rejects_unsafe_files_and_malformed_history(tmp_path):
+    settings = _review_settings()
     store = tmp_path / "reviews.jsonl"
     store.write_text("not-json\n", encoding="utf-8")
     os.chmod(store, 0o600)
     with pytest.raises(ValueError, match="invalid workflow review"):
-        read_reviews(store)
+        read_reviews(store, settings=settings)
 
-    store.write_text(_review().model_dump_json() + "\n", encoding="utf-8")
+    store.write_text(
+        attest_review(_review(), settings=settings).model_dump_json() + "\n",
+        encoding="utf-8",
+    )
     os.chmod(store, 0o644)
     with pytest.raises(ValueError, match="mode 0600"):
-        read_reviews(store)
+        read_reviews(store, settings=settings)
 
     regular = tmp_path / "regular.jsonl"
-    regular.write_text(_review().model_dump_json() + "\n", encoding="utf-8")
+    regular.write_text(
+        attest_review(_review(), settings=settings).model_dump_json() + "\n",
+        encoding="utf-8",
+    )
     os.chmod(regular, 0o600)
     link = tmp_path / "link.jsonl"
     link.symlink_to(regular)
     with pytest.raises(ValueError, match="safe regular file"):
-        read_reviews(link)
+        read_reviews(link, settings=settings)
 
     directory = tmp_path / "directory.jsonl"
     directory.mkdir()
     with pytest.raises(ValueError, match="safe regular file|regular file"):
-        read_reviews(directory)
+        read_reviews(directory, settings=settings)
 
 
 def test_read_review_store_rejects_duplicate_and_invalid_replay_history(tmp_path):
+    settings = _review_settings()
     store = tmp_path / "reviews.jsonl"
     first = _review()
     duplicate = _review()
     store.write_text(
-        first.model_dump_json() + "\n" + duplicate.model_dump_json() + "\n",
+        attest_review(first, settings=settings).model_dump_json()
+        + "\n"
+        + attest_review(duplicate, settings=settings).model_dump_json()
+        + "\n",
         encoding="utf-8",
     )
     os.chmod(store, 0o600)
     with pytest.raises(ValueError, match="duplicate review_id"):
-        read_reviews(store)
+        read_reviews(store, settings=settings)
 
     backwards = _review(
         review_id="R2",
@@ -344,12 +403,15 @@ def test_read_review_store_rejects_duplicate_and_invalid_replay_history(tmp_path
         reviewed_at=first.reviewed_at - timedelta(hours=1),
     )
     store.write_text(
-        first.model_dump_json() + "\n" + backwards.model_dump_json() + "\n",
+        attest_review(first, settings=settings).model_dump_json()
+        + "\n"
+        + attest_review(backwards, settings=settings).model_dump_json()
+        + "\n",
         encoding="utf-8",
     )
     os.chmod(store, 0o600)
     with pytest.raises(ValueError, match="replay must be reviewed after"):
-        read_reviews(store)
+        read_reviews(store, settings=settings)
 
 
 def test_review_suite_contract_can_load_without_live_corpus_access():

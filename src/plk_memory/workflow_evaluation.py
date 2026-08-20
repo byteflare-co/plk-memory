@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
+import hmac
+import json
 import os
 import stat
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Sequence
 
 import frontmatter
 import yaml
@@ -130,7 +133,7 @@ class EvaluationRevisions(BaseModel):
     corpus: str = Field(min_length=1)
 
 
-class WorkflowReview(BaseModel):
+class WorkflowReviewSubmission(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     review_id: str = Field(min_length=1, max_length=64)
@@ -151,7 +154,7 @@ class WorkflowReview(BaseModel):
     revisions: EvaluationRevisions
 
     @model_validator(mode="after")
-    def validate_review(self) -> "WorkflowReview":
+    def validate_review(self) -> "WorkflowReviewSubmission":
         if self.reviewed_at.tzinfo is None or self.reviewed_at.utcoffset() is None:
             raise ValueError("reviewed_at must include a timezone")
         values = self.ratings.model_dump().values()
@@ -166,6 +169,62 @@ class WorkflowReview(BaseModel):
         if self.replay_of is not None and self.change_id is None:
             raise ValueError("a replay requires change_id")
         return self
+
+
+class WorkflowReview(WorkflowReviewSubmission):
+    """A review attested by the configured human-reviewer path."""
+
+    recorded_by: str = Field(min_length=1, max_length=128)
+    attestation: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+def _workflow_reviewer_credentials(settings: Settings) -> tuple[str, str]:
+    """Return the configured reviewer identity and secret, or fail closed."""
+
+    reviewer_id = settings.workflow_reviewer_id.strip()
+    token = settings.workflow_reviewer_token.get_secret_value()
+    if not reviewer_id or not token:
+        raise ValueError("workflow reviewer credential is not configured")
+    return reviewer_id, token
+
+
+def _attestation_payload(review: WorkflowReview) -> bytes:
+    return json.dumps(
+        review.model_dump(mode="json", exclude={"attestation"}),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+
+
+def _attestation(review: WorkflowReview, token: str) -> str:
+    return hmac.new(
+        token.encode("utf-8"), _attestation_payload(review), hashlib.sha256
+    ).hexdigest()
+
+
+def attest_review(
+    review: WorkflowReviewSubmission, *, settings: Settings
+) -> WorkflowReview:
+    """Bind a submitted review to the configured human-reviewer identity."""
+
+    reviewer_id, token = _workflow_reviewer_credentials(settings)
+    unsigned = WorkflowReview.model_validate(
+        {
+            **review.model_dump(exclude={"recorded_by", "attestation"}),
+            "recorded_by": reviewer_id,
+            "attestation": "0" * 64,
+        }
+    )
+    return unsigned.model_copy(update={"attestation": _attestation(unsigned, token)})
+
+
+def _validate_attestation(review: WorkflowReview, *, settings: Settings) -> None:
+    reviewer_id, token = _workflow_reviewer_credentials(settings)
+    if review.recorded_by != reviewer_id or not hmac.compare_digest(
+        review.attestation, _attestation(review, token)
+    ):
+        raise ValueError("workflow review attestation is invalid")
 
 
 def load_suite(path: Path, *, settings: Settings | None = None) -> WorkflowSuite:
@@ -282,13 +341,16 @@ def _validate_review_history(reviews: list[WorkflowReview]) -> None:
 
 
 def read_reviews(
-    path: Path, *, suite: WorkflowSuite | None = None
+    path: Path, *, suite: WorkflowSuite | None = None, settings: Settings
 ) -> list[WorkflowReview]:
+    _workflow_reviewer_credentials(settings)
     descriptor = _open_review_store(path, write=False)
     if descriptor is None:
         return []
     with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
         reviews = _parse_reviews(handle.read().splitlines())
+    for review in reviews:
+        _validate_attestation(review, settings=settings)
     _validate_review_history(reviews)
     if suite is not None:
         for review in reviews:
@@ -296,7 +358,9 @@ def read_reviews(
     return reviews
 
 
-def validate_review_against_suite(review: WorkflowReview, suite: WorkflowSuite) -> None:
+def validate_review_against_suite(
+    review: WorkflowReviewSubmission, suite: WorkflowSuite
+) -> None:
     case = next((row for row in suite.cases if row.id == review.case_id), None)
     if case is None:
         raise ValueError(f"unknown workflow case: {review.case_id}")
@@ -308,11 +372,13 @@ def validate_review_against_suite(review: WorkflowReview, suite: WorkflowSuite) 
 
 def append_review(
     path: Path,
-    review: WorkflowReview,
+    review: WorkflowReviewSubmission,
     *,
     suite: WorkflowSuite,
+    settings: Settings,
 ) -> None:
     validate_review_against_suite(review, suite)
+    stored_review = attest_review(review, settings=settings)
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor = _open_review_store(path, write=True)
     if descriptor is None:  # pragma: no cover - write=True creates the file
@@ -321,16 +387,18 @@ def append_review(
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
         handle.seek(0)
         existing = _parse_reviews(handle.read().splitlines())
-        _validate_review_history(existing + [review])
-        for stored_review in existing:
-            validate_review_against_suite(stored_review, suite)
+        for existing_review in existing:
+            _validate_attestation(existing_review, settings=settings)
+        _validate_review_history(existing + [stored_review])
+        for existing_review in existing:
+            validate_review_against_suite(existing_review, suite)
         handle.seek(0, os.SEEK_END)
-        handle.write(review.model_dump_json() + "\n")
+        handle.write(stored_review.model_dump_json() + "\n")
         handle.flush()
         os.fsync(handle.fileno())
 
 
-def summarize_reviews(reviews: list[WorkflowReview]) -> dict:
+def summarize_reviews(reviews: Sequence[WorkflowReviewSubmission]) -> dict:
     stage_names = ("trigger", "retrieval", "application", "action")
     stages = {
         name: {
@@ -340,15 +408,15 @@ def summarize_reviews(reviews: list[WorkflowReview]) -> dict:
         for name in stage_names
     }
 
-    def is_success(review: WorkflowReview) -> bool:
+    def is_success(review: WorkflowReviewSubmission) -> bool:
         return all(getattr(review.ratings, name) == "pass" for name in stage_names)
 
-    def is_evaluable(review: WorkflowReview) -> bool:
+    def is_evaluable(review: WorkflowReviewSubmission) -> bool:
         return is_success(review) or any(
             getattr(review.ratings, name) == "fail" for name in stage_names
         )
 
-    def cohort(rows: list[WorkflowReview]) -> dict:
+    def cohort(rows: Sequence[WorkflowReviewSubmission]) -> dict:
         judged = [review for review in rows if is_evaluable(review)]
         passed = [review for review in judged if is_success(review)]
         return {
@@ -391,7 +459,7 @@ def summarize_reviews(reviews: list[WorkflowReview]) -> dict:
     ]
 
     def grouped(key):
-        values: dict[str, list[WorkflowReview]] = {}
+        values: dict[str, list[WorkflowReviewSubmission]] = {}
         for review in reviews:
             values.setdefault(str(key(review)), []).append(review)
         return {name: cohort(rows) for name, rows in sorted(values.items())}

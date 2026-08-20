@@ -201,7 +201,9 @@ def build_ui_router(services: "ServiceFacade") -> APIRouter:
         _require_cookie(request)
         try:
             suite = load_review_suite(settings.workflow_cases_path)
-            reviews = read_reviews(settings.workflow_review_path, suite=suite)
+            reviews = read_reviews(
+                settings.workflow_review_path, suite=suite, settings=settings
+            )
         except (OSError, ValueError):
             # Never turn a malformed or unsafe private store into a partial score.
             raise HTTPException(
