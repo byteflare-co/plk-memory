@@ -11,6 +11,7 @@ from plk_memory.settings import Settings
 from plk_memory.workflow_evaluation import (
     WorkflowReview,
     append_review,
+    load_review_suite,
     load_suite,
     read_reviews,
     summarize_reviews,
@@ -31,15 +32,25 @@ def main() -> int:
     if args.command == "record":
         if args.input is None:
             parser.error("record requires an input JSON file")
+        # The evaluator supplies a pre-signed envelope. This runtime has only
+        # the public verifier and never signs a human review itself.
         review = WorkflowReview.model_validate_json(
             args.input.read_text(encoding="utf-8")
         )
-        append_review(args.store, review, suite=load_suite(args.cases))
+        settings = Settings()
+        append_review(
+            args.store, review, suite=load_suite(args.cases), settings=settings
+        )
         print(f"recorded: {review.review_id}")
     else:
+        settings = Settings()
+        suite = load_review_suite(args.cases)
         print(
             json.dumps(
-                summarize_reviews(read_reviews(args.store)),
+                summarize_reviews(
+                    read_reviews(args.store, suite=suite, settings=settings),
+                    suite=suite,
+                ),
                 ensure_ascii=False,
                 indent=2,
             )

@@ -49,6 +49,16 @@ class Settings(BaseSettings):
     usage_raw_query_retention_days: int = Field(default=30, ge=0, le=365)
     eval_history_path: Path = Path.home() / ".plk" / "eval-history.jsonl"
     workflow_review_path: Path = Path.home() / ".plk" / "workflow-reviews.jsonl"
+    # Human review is the trust boundary for the E2E success metric. Runtime
+    # only receives the reviewer's public key: it can verify a pre-signed
+    # envelope but never sign one. ``workflow_review_trusted_head`` is held
+    # separately from the JSONL store, so removal or rollback fails closed.
+    workflow_reviewer_id: str = ""
+    workflow_reviewer_public_key: str = ""
+    workflow_review_trusted_head: str = ""
+    workflow_cases_path: Path = (
+        Path(__file__).resolve().parents[2] / "scripts" / "eval" / "workflow_cases.yaml"
+    )
     metrics_timezone: str = "Asia/Tokyo"
     lock_path: Path = Path.home() / ".plk" / "writer.lock"
     feedback_path: Path = Path.home() / ".plk" / "feedback.json"

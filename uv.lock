@@ -1298,6 +1298,7 @@ source = { editable = "." }
 dependencies = [
     { name = "alembic" },
     { name = "asyncpg" },
+    { name = "cryptography" },
     { name = "fastapi" },
     { name = "fastmcp" },
     { name = "graphiti-core", extra = ["anthropic", "falkordb"] },
@@ -1332,6 +1333,7 @@ examples = [
 requires-dist = [
     { name = "alembic", specifier = "==1.18.4" },
     { name = "asyncpg", specifier = "==0.31.0" },
+    { name = "cryptography", specifier = ">=43" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "fastmcp", specifier = ">=3,<4" },
     { name = "graphiti-core", extras = ["anthropic", "falkordb"], specifier = ">=0.29.2,<0.30" },

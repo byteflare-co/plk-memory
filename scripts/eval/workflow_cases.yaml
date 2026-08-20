@@ -31,6 +31,7 @@ cases:
       - 利用可能 profile の列挙結果へのprivate evidence reference
       - 実際に選択した profile、または安全に停止した結果へのprivate evidence reference
       - 操作後の account または workspace のTier A read-back
+    required_stages: [trigger, retrieval, application, action]
     variants:
       - id: unique-match
         evaluator_input:
