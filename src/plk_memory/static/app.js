@@ -1006,21 +1006,147 @@ const FAILURE_TARGETS = {
   action: 'tool guard・引数検証・実行前確認・read-back',
   evidence: 'telemetry・構造化属性・review動線',
 };
+const WORKFLOW_STAGE_NAMES = Object.keys(WORKFLOW_STAGE_LABELS);
+const WORKFLOW_STAGE_RESULTS = ['pass', 'fail', 'unknown', 'not_applicable'];
+const FAILURE_STAGE_NAMES = Object.keys(FAILURE_TARGETS);
+const WORKFLOW_UNAVAILABLE_COPIES = {
+  invalid_store: ['評価ストアを検証できません', '署名・chain・権限・形式のいずれかが不正です。集計値を表示せず、運用設定を確認してください。', 'ストア不正'],
+  invalid_response: ['評価レスポンスを検証できません', '集計契約に合わない応答のため、値を表示せず判定を保留しました。', '応答不正'],
+  unavailable: ['評価APIを利用できません', 'レビュー済みE2E評価を取得できません。旧telemetryを代替の成功指標には使いません。', '取得失敗'],
+};
+
+function isPlainObject(value) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function hasExactKeys(value, keys) {
+  if (!isPlainObject(value)) return false;
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
+}
+
+function isNonNegativeInteger(value) {
+  return Number.isInteger(value) && value >= 0;
+}
+
+function rateMatches(rate, numerator, denominator) {
+  if (denominator === 0) return rate === null;
+  return Number.isFinite(rate)
+    && rate >= 0
+    && rate <= 1
+    && Math.abs(rate - numerator / denominator) < 1e-12;
+}
+
+function cohortIsValid(row) {
+  const keys = ['status', 'reviews', 'evaluable', 'unknown', 'successes', 'success_rate'];
+  if (!hasExactKeys(row, keys)) return false;
+  if (!['ok', 'insufficient_data'].includes(row.status)) return false;
+  if (!['reviews', 'evaluable', 'unknown', 'successes'].every(key => isNonNegativeInteger(row[key]))) return false;
+  if (row.evaluable + row.unknown !== row.reviews || row.successes > row.evaluable) return false;
+  if (row.status !== (row.evaluable > 0 ? 'ok' : 'insufficient_data')) return false;
+  return rateMatches(row.success_rate, row.successes, row.evaluable);
+}
+
+function cohortGroupIsValid(group, aggregate) {
+  if (!isPlainObject(group)) return false;
+  const rows = Object.values(group);
+  if ((aggregate.reviews === 0) !== (rows.length === 0)) return false;
+  if (!rows.every(cohortIsValid)) return false;
+  const totals = rows.reduce((acc, row) => ({
+    reviews: acc.reviews + row.reviews,
+    evaluable: acc.evaluable + row.evaluable,
+    unknown: acc.unknown + row.unknown,
+    successes: acc.successes + row.successes,
+  }), { reviews: 0, evaluable: 0, unknown: 0, successes: 0 });
+  return totals.reviews === aggregate.reviews
+    && totals.evaluable === aggregate.evaluable
+    && totals.unknown === aggregate.unknown
+    && totals.successes === aggregate.e2e_successes;
+}
+
+function improvementsAreValid(improvements, reviews) {
+  const keys = ['reviewed_replays', 'failed_before', 'same_failure_recurrences', 'recurrence_rate', 'lead_time_hours'];
+  if (!hasExactKeys(improvements, keys)) return false;
+  const counts = ['reviewed_replays', 'failed_before', 'same_failure_recurrences'];
+  if (!counts.every(key => isNonNegativeInteger(improvements[key]))) return false;
+  if (improvements.reviewed_replays > reviews
+    || improvements.failed_before > improvements.reviewed_replays
+    || improvements.same_failure_recurrences > improvements.failed_before
+    || !rateMatches(
+      improvements.recurrence_rate,
+      improvements.same_failure_recurrences,
+      improvements.failed_before,
+    )) return false;
+  const lead = improvements.lead_time_hours;
+  if (!hasExactKeys(lead, ['count', 'average'])
+    || !isNonNegativeInteger(lead.count)
+    || lead.count !== improvements.reviewed_replays) return false;
+  return lead.count === 0
+    ? lead.average === null
+    : Number.isFinite(lead.average) && lead.average >= 0;
+}
 
 function workflowAggregateIsValid(value) {
-  if (!value || typeof value !== 'object') return false;
+  if (!isPlainObject(value)) return false;
   const counts = ['reviews', 'evaluable', 'unknown', 'e2e_successes'];
-  if (!counts.every(key => Number.isInteger(value[key]) && value[key] >= 0)) return false;
+  if (!counts.every(key => isNonNegativeInteger(value[key]))) return false;
   if (value.evaluable + value.unknown !== value.reviews) return false;
   if (value.e2e_successes > value.evaluable) return false;
-  if (value.evaluable === 0 && value.e2e_success_rate !== null) return false;
-  if (value.evaluable > 0 && (
-    !Number.isFinite(value.e2e_success_rate)
-    || value.e2e_success_rate < 0
-    || value.e2e_success_rate > 1
-  )) return false;
-  return ['stages', 'failure_stages', 'by_case', 'by_client', 'by_week', 'improvements']
-    .every(key => value[key] && typeof value[key] === 'object');
+  if (!['ok', 'insufficient_data'].includes(value.status)
+    || value.status !== (value.evaluable > 0 ? 'ok' : 'insufficient_data')
+    || !rateMatches(value.e2e_success_rate, value.e2e_successes, value.evaluable)) return false;
+
+  if (!hasExactKeys(value.stages, WORKFLOW_STAGE_NAMES)) return false;
+  for (const stage of WORKFLOW_STAGE_NAMES) {
+    const row = value.stages[stage];
+    if (!hasExactKeys(row, WORKFLOW_STAGE_RESULTS)
+      || !WORKFLOW_STAGE_RESULTS.every(result => isNonNegativeInteger(row[result]))
+      || WORKFLOW_STAGE_RESULTS.reduce((sum, result) => sum + row[result], 0) !== value.reviews) return false;
+  }
+
+  if (!isPlainObject(value.failure_stages)) return false;
+  const failures = Object.entries(value.failure_stages);
+  if (!failures.every(([stage, count]) => FAILURE_STAGE_NAMES.includes(stage) && isNonNegativeInteger(count))) return false;
+  if (failures.reduce((sum, [, count]) => sum + count, 0) !== value.evaluable - value.e2e_successes) return false;
+
+  return ['by_case', 'by_client', 'by_week'].every(key => cohortGroupIsValid(value[key], value))
+    && improvementsAreValid(value.improvements, value.reviews);
+}
+
+function workflowEvaluationPresentation(value) {
+  if (!workflowAggregateIsValid(value)) {
+    const [title, reason, verdict] = WORKFLOW_UNAVAILABLE_COPIES.invalid_response;
+    return { valid: false, kind: 'invalid_response', title, reason, verdict, tone: 'fail' };
+  }
+  if (value.reviews === 0) {
+    return {
+      valid: true,
+      title: 'レビューなし — 判定保留',
+      reason: '人間レビュー済みepisodeがないため、PLKの実務価値はまだ判定できません。',
+      verdict: 'レビューなし',
+      tone: '',
+    };
+  }
+  if (value.evaluable === 0) {
+    return {
+      valid: true,
+      title: '判定可能なepisodeなし',
+      reason: `${value.reviews}件をreview済みですが、${value.unknown}件すべてがunknownです。証拠を補って再評価してください。`,
+      verdict: 'unknown',
+      tone: '',
+    };
+  }
+  const allSucceeded = value.e2e_successes === value.evaluable;
+  return {
+    valid: true,
+    title: allSucceeded ? 'E2E成功を確認' : 'E2E失敗あり — 改善が必要',
+    reason: `判定可能${value.evaluable}件のうち${value.e2e_successes}件で、必須段階とTier A行動証拠を確認しました。`,
+    verdict: allSucceeded ? '確認済み' : '要改善',
+    tone: allSucceeded ? 'pass' : 'fail',
+  };
 }
 
 function clearWorkflowTables(message) {
@@ -1034,12 +1160,8 @@ function clearWorkflowTables(message) {
 }
 
 function renderWorkflowUnavailable(kind) {
-  const copies = {
-    invalid_store: ['評価ストアを検証できません', '署名・chain・権限・形式のいずれかが不正です。集計値を表示せず、運用設定を確認してください。', 'ストア不正'],
-    invalid_response: ['評価レスポンスを検証できません', '集計契約に合わない応答のため、値を表示せず判定を保留しました。', '応答不正'],
-    unavailable: ['評価APIを利用できません', 'レビュー済みE2E評価を取得できません。旧telemetryを代替の成功指標には使いません。', '取得失敗'],
-  };
-  const [titleCopy, reasonCopy, verdictCopy] = copies[kind] || copies.unavailable;
+  const [titleCopy, reasonCopy, verdictCopy] = WORKFLOW_UNAVAILABLE_COPIES[kind]
+    || WORKFLOW_UNAVAILABLE_COPIES.unavailable;
   const summary = document.getElementById('workflowEvaluationSummary');
   summary.dataset.tone = 'attention';
   document.getElementById('workflowEvaluationTitle').textContent = titleCopy;
@@ -1080,33 +1202,20 @@ function renderCohortRows(bodyId, rows) {
 }
 
 function renderWorkflowEvaluation(value) {
-  if (!workflowAggregateIsValid(value)) {
-    renderWorkflowUnavailable('invalid_response');
+  const presentation = workflowEvaluationPresentation(value);
+  if (!presentation.valid) {
+    renderWorkflowUnavailable(presentation.kind);
     return;
   }
   const summary = document.getElementById('workflowEvaluationSummary');
   const title = document.getElementById('workflowEvaluationTitle');
   const reason = document.getElementById('workflowEvaluationReason');
   const verdict = document.getElementById('workflowEvaluationVerdict');
-  let titleCopy = 'レビューなし — 判定保留';
-  let reasonCopy = '人間レビュー済みepisodeがないため、PLKの実務価値はまだ判定できません。';
-  let verdictCopy = 'レビューなし';
-  let tone = '';
-  if (value.reviews > 0 && value.evaluable === 0) {
-    titleCopy = '判定可能なepisodeなし';
-    reasonCopy = `${value.reviews}件をreview済みですが、${value.unknown}件すべてがunknownです。証拠を補って再評価してください。`;
-    verdictCopy = 'unknown';
-  } else if (value.evaluable > 0) {
-    titleCopy = value.e2e_successes === value.evaluable ? 'E2E成功を確認' : 'E2E失敗あり — 改善が必要';
-    reasonCopy = `判定可能${value.evaluable}件のうち${value.e2e_successes}件で、必須段階とTier A行動証拠を確認しました。`;
-    verdictCopy = value.e2e_successes === value.evaluable ? '確認済み' : '要改善';
-    tone = value.e2e_successes === value.evaluable ? 'pass' : 'fail';
-  }
-  summary.dataset.tone = tone === 'pass' ? 'good' : 'attention';
-  title.textContent = titleCopy;
-  reason.textContent = reasonCopy;
-  verdict.className = `tag ${tone}`.trim();
-  verdict.textContent = verdictCopy;
+  summary.dataset.tone = presentation.tone === 'pass' ? 'good' : 'attention';
+  title.textContent = presentation.title;
+  reason.textContent = presentation.reason;
+  verdict.className = `tag ${presentation.tone}`.trim();
+  verdict.textContent = presentation.verdict;
 
   const stats = document.getElementById('workflowEvaluationStats');
   clearElement(stats);
@@ -1576,4 +1685,11 @@ async function init() {
   }
 }
 
-init();
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    workflowAggregateIsValid,
+    workflowEvaluationPresentation,
+    renderWorkflowEvaluation,
+  };
+}
+if (typeof document !== 'undefined') init();
