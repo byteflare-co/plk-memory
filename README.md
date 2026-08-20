@@ -241,6 +241,7 @@ production deployment前には、次の検証が必要です。
 | current / target / historicalを分けた全体構成、依存関係、ツール | [Blueprint](docs/BLUEPRINT.md) |
 | 理想状態、数値目標、週次・月次PDCA、継続・凍結条件 | [Operating model](docs/OPERATING_MODEL.md) |
 | 実務ケース単位のE2E評価、人間レビュー、改善先への接続 | [Evaluation model](docs/EVALUATION_MODEL.md) |
+| Chrome profile pilot の完了・見直し・rollback 判定 | `uv run python scripts/eval/workflow_review.py pilot-status` |
 | PostgreSQL-primaryの設計判断とproduction gate | [Architecture](docs/design/2026-07-10-postgres-primary-architecture.md) |
 | セットアップ、起動、運用、縮退動作 | [Operations](docs/OPERATIONS.md) |
 | 旧Git-primary staging移行案（historical） | [Legacy migration notes](docs/MIGRATION.md) |

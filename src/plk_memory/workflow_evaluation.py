@@ -27,6 +27,7 @@ FailureStage = Literal[
     "trigger", "retrieval", "knowledge", "application", "action", "evidence"
 ]
 FactId = Annotated[str, Field(pattern=r"^[0-9A-HJKMNP-TV-Z]{26}$")]
+CHROME_PROFILE_PILOT_CASE_ID = "browser-byteflare-profile-selection"
 
 
 class CaseSource(BaseModel):
@@ -579,4 +580,153 @@ def summarize_reviews(
                 ),
             },
         },
+    }
+
+
+def summarize_pilot_status(
+    reviews: Sequence[WorkflowReviewSubmission],
+    *,
+    suite: WorkflowSuite,
+    case_id: str = CHROME_PROFILE_PILOT_CASE_ID,
+    aggregate_api_status: Literal["healthy", "unavailable"] = "healthy",
+    private_data_exposure: bool = False,
+    baseline_unknown_rate: float | None = None,
+) -> dict:
+    """Evaluate whether the Chrome pilot has enough private review evidence.
+
+    This deliberately returns aggregates and opaque review identifiers only.  It
+    never serializes evidence references, which may point to private browser or
+    operational read-backs.
+    """
+
+    case = next((item for item in suite.cases if item.id == case_id), None)
+    if case is None:
+        raise ValueError(f"unknown workflow case: {case_id}")
+    if baseline_unknown_rate is not None and not 0 <= baseline_unknown_rate <= 1:
+        raise ValueError("baseline_unknown_rate must be between 0 and 1")
+
+    # Preserve the same fail-closed case/rating contract as the dashboard.
+    aggregate = summarize_reviews(reviews, suite=suite)
+    pilot_reviews = [review for review in reviews if review.case_id == case_id]
+    pilot_aggregate = summarize_reviews(pilot_reviews, suite=suite)
+    required_variants = {variant.id for variant in case.variants}
+    covered_variants = {review.variant_id for review in pilot_reviews}
+    action_evidence = [
+        review
+        for review in pilot_reviews
+        if review.evidence_tier == "A" and review.ratings.action in {"pass", "fail"}
+    ]
+    failures = [review for review in pilot_reviews if review.failure_stage is not None]
+    originals = {review.review_id: review for review in pilot_reviews}
+    for review in pilot_reviews:
+        if review.replay_of is None:
+            continue
+        original = originals.get(review.replay_of)
+        if original is None:
+            raise ValueError("pilot replay must reference a review in the same case")
+        if (original.case_id, original.variant_id) != (
+            review.case_id,
+            review.variant_id,
+        ):
+            raise ValueError("pilot replay must use the same case and variant")
+    replay_pairs = [
+        (originals[review.replay_of], review)
+        for review in pilot_reviews
+        if review.replay_of is not None and review.replay_of in originals
+    ]
+    changed_replays = [
+        (before, after)
+        for before, after in replay_pairs
+        if before.failure_stage is not None and after.change_id is not None
+    ]
+
+    criteria = {
+        "reviewed_episodes": {
+            "required": 5,
+            "observed": len(pilot_reviews),
+            "met": len(pilot_reviews) >= 5,
+        },
+        "variant_coverage": {
+            "required": sorted(required_variants),
+            "observed": sorted(covered_variants),
+            "met": required_variants.issubset(covered_variants),
+        },
+        "tier_a_action_evidence": {
+            "required": len(pilot_reviews),
+            "observed": len(action_evidence),
+            "met": len(action_evidence) == len(pilot_reviews) and bool(pilot_reviews),
+        },
+        "failed_episode": {
+            "required": 1,
+            "observed": len(failures),
+            "met": bool(failures),
+        },
+        "changed_same_case_replay": {
+            "required": 1,
+            "observed": len(changed_replays),
+            "met": bool(changed_replays),
+        },
+    }
+    missing = [name for name, value in criteria.items() if not value["met"]]
+    pilot_unknown_rate = (
+        pilot_aggregate["unknown"] / pilot_aggregate["reviews"]
+        if pilot_aggregate["reviews"]
+        else None
+    )
+
+    def replay_succeeded(review: WorkflowReviewSubmission) -> bool:
+        return (
+            review.evidence_tier == "A"
+            and review.ratings.action == "pass"
+            and all(
+                getattr(review.ratings, stage) != "fail"
+                for stage in ("trigger", "retrieval", "application", "action")
+            )
+            and all(
+                getattr(review.ratings, stage) == "pass"
+                for stage in case.required_stages
+            )
+        )
+
+    replay_failure_count = sum(
+        not replay_succeeded(after) for _, after in changed_replays
+    )
+    rollback_reasons: list[str] = []
+    if aggregate_api_status == "unavailable":
+        rollback_reasons.append("aggregate_api_unavailable")
+    if private_data_exposure:
+        rollback_reasons.append("private_data_exposure")
+    if (
+        baseline_unknown_rate is not None
+        and pilot_unknown_rate is not None
+        and pilot_unknown_rate > baseline_unknown_rate
+    ):
+        rollback_reasons.append("unknown_rate_increased")
+    if replay_failure_count:
+        rollback_reasons.append("pilot_replay_failed")
+
+    if rollback_reasons:
+        status = "rollback"
+    elif missing:
+        status = "insufficient_data"
+    else:
+        status = "ready_for_human_decision"
+    return {
+        "status": status,
+        "case_id": case_id,
+        "criteria": criteria,
+        "missing": missing,
+        "pilot_unknown_rate": pilot_unknown_rate,
+        "aggregate_unknown_rate": (
+            aggregate["unknown"] / aggregate["reviews"]
+            if aggregate["reviews"]
+            else None
+        ),
+        "rollback_reasons": rollback_reasons,
+        "replay_failure_count": replay_failure_count,
+        # Rollback changes presentation only. The signed review JSONL remains
+        # immutable and is never edited by this command.
+        "recommended_dashboard_view": (
+            "telemetry" if rollback_reasons else "reviewed_e2e"
+        ),
     }

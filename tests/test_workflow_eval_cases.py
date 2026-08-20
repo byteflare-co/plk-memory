@@ -3,6 +3,8 @@ from datetime import datetime, timedelta, timezone
 import json
 import os
 import base64
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -24,6 +26,7 @@ from plk_memory.workflow_evaluation import (
     summarize_reviews,
     attestation_payload,
     review_record_hash,
+    summarize_pilot_status,
     validate_suite_corpus,
     validate_review_against_suite,
 )
@@ -635,3 +638,193 @@ def test_reader_rejects_deleted_or_rolled_back_trusted_chain_head(tmp_path):
 def test_review_suite_contract_can_load_without_live_corpus_access():
     suite = load_review_suite(_case_path())
     assert suite.cases[0].id == "browser-byteflare-profile-selection"
+
+
+def _pilot_reviews(*, replay: bool = True, recurring: bool = False):
+    now = datetime.now(timezone.utc)
+    failed = _review(
+        review_id="pilot-1",
+        variant_id="unique-match",
+        reviewed_at=now,
+        ratings=StageRatings(
+            trigger="fail", retrieval="unknown", application="unknown", action="fail"
+        ),
+        evidence_tier="A",
+        failure_stage="trigger",
+        improvement_target="browser preflight",
+    )
+    rows = [failed]
+    if replay:
+        rows.append(
+            _review(
+                review_id="pilot-2",
+                variant_id="unique-match",
+                reviewed_at=now + timedelta(hours=1),
+                replay_of="pilot-1",
+                change_id="browser-preflight-v1",
+                ratings=(
+                    StageRatings(
+                        trigger="fail",
+                        retrieval="unknown",
+                        application="unknown",
+                        action="fail",
+                    )
+                    if recurring
+                    else StageRatings(
+                        trigger="pass",
+                        retrieval="pass",
+                        application="pass",
+                        action="pass",
+                    )
+                ),
+                evidence_tier="A",
+                failure_stage="trigger" if recurring else None,
+                improvement_target="browser preflight" if recurring else None,
+            )
+        )
+    rows.extend(
+        [
+            _review(
+                review_id="pilot-3",
+                variant_id="no-match",
+                reviewed_at=now + timedelta(hours=2),
+            ),
+            _review(
+                review_id="pilot-4",
+                variant_id="duplicate-match",
+                reviewed_at=now + timedelta(hours=3),
+            ),
+            _review(
+                review_id="pilot-5",
+                variant_id="private-only",
+                reviewed_at=now + timedelta(hours=4),
+            ),
+        ]
+    )
+    return rows
+
+
+def test_chrome_pilot_status_accepts_complete_synthetic_evidence():
+    status = summarize_pilot_status(_pilot_reviews(), suite=_repository_suite())
+
+    assert status["status"] == "ready_for_human_decision"
+    assert status["missing"] == []
+    assert status["rollback_reasons"] == []
+    assert status["recommended_dashboard_view"] == "reviewed_e2e"
+
+
+def test_chrome_pilot_status_lists_insufficient_requirements():
+    status = summarize_pilot_status(_pilot_reviews()[:4], suite=_repository_suite())
+
+    assert status["status"] == "insufficient_data"
+    assert "reviewed_episodes" in status["missing"]
+    assert "variant_coverage" in status["missing"]
+
+
+def test_chrome_pilot_status_requires_tier_a_action_evidence():
+    reviews = _pilot_reviews()
+    reviews[2] = _review(
+        review_id="pilot-3",
+        variant_id="no-match",
+        reviewed_at=reviews[2].reviewed_at,
+        ratings=StageRatings(
+            trigger="pass", retrieval="pass", application="pass", action="unknown"
+        ),
+        evidence_tier="B",
+    )
+
+    status = summarize_pilot_status(reviews, suite=_repository_suite())
+
+    assert status["status"] == "insufficient_data"
+    assert status["missing"] == ["tier_a_action_evidence"]
+
+
+def test_chrome_pilot_status_requires_changed_same_variant_replay():
+    status = summarize_pilot_status(
+        _pilot_reviews(replay=False), suite=_repository_suite()
+    )
+
+    assert status["status"] == "insufficient_data"
+    assert "changed_same_case_replay" in status["missing"]
+
+
+def test_chrome_pilot_status_requests_rollback_for_recurring_replay_failure():
+    status = summarize_pilot_status(
+        _pilot_reviews(recurring=True), suite=_repository_suite()
+    )
+
+    assert status["status"] == "rollback"
+    assert status["rollback_reasons"] == ["pilot_replay_failed"]
+    assert status["replay_failure_count"] == 1
+    assert status["recommended_dashboard_view"] == "telemetry"
+
+
+def test_chrome_pilot_status_rejects_cross_variant_replay_without_store_reader():
+    reviews = _pilot_reviews()
+    reviews[1] = reviews[1].model_copy(update={"variant_id": "no-match"})
+
+    with pytest.raises(
+        ValueError, match="pilot replay must use the same case and variant"
+    ):
+        summarize_pilot_status(reviews, suite=_repository_suite())
+
+
+def test_chrome_pilot_status_never_serializes_review_private_identifiers():
+    reviews = _pilot_reviews(recurring=True)
+    reviews[0] = reviews[0].model_copy(
+        update={
+            "review_id": "review-private",
+            "trace_id": "trace-private",
+            "search_ids": ["search-private"],
+            "action_ids": ["action-private"],
+            "evidence_refs": ["evidence-private"],
+        }
+    )
+    reviews[1] = reviews[1].model_copy(
+        update={"review_id": "replay-private", "replay_of": "review-private"}
+    )
+
+    payload = json.dumps(summarize_pilot_status(reviews, suite=_repository_suite()))
+
+    for private_value in (
+        "review-private",
+        "replay-private",
+        "trace-private",
+        "search-private",
+        "action-private",
+        "evidence-private",
+    ):
+        assert private_value not in payload
+
+
+def test_chrome_pilot_status_command_exits_zero_for_complete_synthetic_store(tmp_path):
+    store = tmp_path / "reviews.jsonl"
+    suite = _repository_suite()
+    settings = _review_settings()
+    for review in _pilot_reviews():
+        _append(store, review, suite=suite, settings=settings)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/eval/workflow_review.py",
+            "pilot-status",
+            "--store",
+            str(store),
+            "--cases",
+            str(_case_path()),
+        ],
+        cwd=Path(__file__).parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={
+            **os.environ,
+            "PLK_WORKFLOW_REVIEWER_ID": settings.workflow_reviewer_id,
+            "PLK_WORKFLOW_REVIEWER_PUBLIC_KEY": settings.workflow_reviewer_public_key,
+            "PLK_WORKFLOW_REVIEW_TRUSTED_HEAD": settings.workflow_review_trusted_head,
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["status"] == "ready_for_human_decision"
