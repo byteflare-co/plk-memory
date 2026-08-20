@@ -1,11 +1,12 @@
 import asyncio
 import base64
+from copy import deepcopy
 import json
 import os
 import re
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -24,6 +25,7 @@ from plk_memory.workflow_evaluation import (
     append_review,
     load_review_suite,
     review_record_hash,
+    summarize_reviews,
 )
 from tests.conftest import make_settings
 from tests.fakes import FakeGraphIndex
@@ -127,29 +129,31 @@ def _workflow_case_path() -> Path:
     return Path(__file__).parents[1] / "scripts" / "eval" / "workflow_cases.yaml"
 
 
-def _workflow_review() -> WorkflowReviewSubmission:
-    return WorkflowReviewSubmission(
-        review_id="ui-review-1",
-        case_id="browser-byteflare-profile-selection",
-        variant_id="unique-match",
-        reviewed_at=datetime.now(timezone.utc),
-        reviewer="private-reviewer",
-        trace_id="trace-private",
-        search_ids=["search-private"],
-        action_ids=["action-private"],
-        ratings=StageRatings(
+def _workflow_review(**updates) -> WorkflowReviewSubmission:
+    values = {
+        "review_id": "ui-review-1",
+        "case_id": "browser-byteflare-profile-selection",
+        "variant_id": "unique-match",
+        "reviewed_at": datetime.now(timezone.utc),
+        "reviewer": "private-reviewer",
+        "trace_id": "trace-private",
+        "search_ids": ["search-private"],
+        "action_ids": ["action-private"],
+        "ratings": StageRatings(
             trigger="pass", retrieval="pass", application="pass", action="pass"
         ),
-        evidence_tier="A",
-        evidence_refs=["evidence-private"],
-        revisions=EvaluationRevisions(
+        "evidence_tier": "A",
+        "evidence_refs": ["evidence-private"],
+        "revisions": EvaluationRevisions(
             client="codex@1",
             model="gpt@1",
             instruction="agents@1",
             retriever="graph@1",
             corpus="git@1",
         ),
-    )
+    }
+    values.update(updates)
+    return WorkflowReviewSubmission.model_validate(values)
 
 
 def _signed_workflow_review(review: WorkflowReviewSubmission) -> WorkflowReview:
@@ -274,6 +278,245 @@ async def test_workflow_evaluation_api_fails_closed_for_unsafe_store(
     assert response.json()["detail"] == "workflow evaluation data is unavailable"
 
 
+async def test_workflow_evaluation_api_distinguishes_empty_and_unknown(
+    remote, tmp_path, write_valid_fact
+):
+    origin, seed = remote
+    write_valid_fact(seed, "knowledge/domains/tax/x.md")
+    push(seed)
+    cases = _workflow_case_path()
+    store = tmp_path / "reviews.jsonl"
+    settings = make_settings(
+        tmp_path,
+        origin,
+        ui_password="",
+        workflow_review_path=store,
+        workflow_cases_path=cases,
+        workflow_reviewer_id="test-human-reviewer",
+        workflow_reviewer_public_key=_TEST_PUBLIC_KEY,
+        workflow_review_trusted_head="0" * 64,
+    )
+    app = create_app(settings=settings, graph=FakeGraphIndex())
+    app.state.services.store.ensure_repo()
+    app.state.services.store.fetch_and_ff()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://plk") as client:
+        empty = await client.get("/ui/api/workflow-evaluation")
+        assert empty.status_code == 200
+        assert empty.json()["status"] == "insufficient_data"
+        assert empty.json()["reviews"] == 0
+
+        review = _workflow_review(
+            ratings=StageRatings(
+                trigger="pass",
+                retrieval="pass",
+                application="pass",
+                action="unknown",
+            ),
+            evidence_tier="B",
+        )
+        envelope = _signed_workflow_review(review)
+        append_review(
+            store,
+            envelope,
+            suite=load_review_suite(cases),
+            settings=settings,
+        )
+        settings.workflow_review_trusted_head = envelope.record_hash
+        unknown = await client.get("/ui/api/workflow-evaluation")
+        assert unknown.status_code == 200
+        assert unknown.json()["status"] == "insufficient_data"
+        assert unknown.json()["reviews"] == 1
+        assert unknown.json()["evaluable"] == 0
+        assert unknown.json()["unknown"] == 1
+        assert unknown.json()["e2e_success_rate"] is None
+
+
+def test_workflow_aggregate_validator_rejects_nested_malformed_payloads():
+    suite = load_review_suite(_workflow_case_path())
+    empty = summarize_reviews([], suite=suite)
+    full = summarize_reviews([_workflow_review()], suite=suite)
+    unknown_review = _workflow_review(
+        ratings=StageRatings(
+            trigger="pass",
+            retrieval="pass",
+            application="pass",
+            action="unknown",
+        ),
+        evidence_tier="B",
+    )
+    unknown = summarize_reviews([unknown_review], suite=suite)
+    failed = _workflow_review(
+        review_id="ui-review-before",
+        ratings=StageRatings(
+            trigger="fail",
+            retrieval="unknown",
+            application="unknown",
+            action="unknown",
+        ),
+        evidence_tier="B",
+        failure_stage="trigger",
+        improvement_target="preflight guard",
+    )
+    replay = _workflow_review(
+        review_id="ui-review-after",
+        reviewed_at=failed.reviewed_at + timedelta(hours=2),
+        replay_of=failed.review_id,
+        change_id="change-1",
+    )
+    improved = summarize_reviews([failed, replay], suite=suite)
+
+    malformed = [
+        [],
+        {**full, "stages": []},
+        {**full, "stages": {}},
+        {**full, "stages": {**full["stages"], "trigger": []}},
+        {
+            **full,
+            "stages": {
+                key: value for key, value in full["stages"].items() if key != "action"
+            },
+        },
+    ]
+
+    bad_stage_type = deepcopy(full)
+    bad_stage_type["stages"]["trigger"]["pass"] = "1"
+    malformed.append(bad_stage_type)
+    bad_stage_total = deepcopy(full)
+    bad_stage_total["stages"]["trigger"]["unknown"] = 1
+    malformed.append(bad_stage_total)
+    malformed.extend(
+        [
+            {**full, "failure_stages": []},
+            {**full, "failure_stages": {"unexpected": 0}},
+            {**full, "failure_stages": {"action": -1}},
+            {**full, "failure_stages": {"action": 1}},
+            {**full, "by_case": []},
+            {**full, "by_case": {}},
+            {
+                **full,
+                "by_case": {"browser-byteflare-profile-selection": []},
+            },
+        ]
+    )
+    missing_cohort_field = deepcopy(full)
+    del missing_cohort_field["by_client"]["codex@1"]["successes"]
+    malformed.append(missing_cohort_field)
+    bad_cohort_rate = deepcopy(full)
+    bad_cohort_rate["by_week"][next(iter(full["by_week"]))]["success_rate"] = None
+    malformed.append(bad_cohort_rate)
+    bad_cohort_successes = deepcopy(full)
+    bad_cohort_successes["by_case"]["browser-byteflare-profile-selection"][
+        "successes"
+    ] = 2
+    malformed.append(bad_cohort_successes)
+    duplicate_cohort = deepcopy(full)
+    duplicate_cohort["by_case"]["duplicate"] = deepcopy(
+        duplicate_cohort["by_case"]["browser-byteflare-profile-selection"]
+    )
+    malformed.append(duplicate_cohort)
+    malformed.extend(
+        [
+            {**full, "improvements": []},
+            {**full, "improvements": {}},
+        ]
+    )
+    bad_improvement_count = deepcopy(full)
+    bad_improvement_count["improvements"]["reviewed_replays"] = 2
+    malformed.append(bad_improvement_count)
+    bad_failed_before = deepcopy(full)
+    bad_failed_before["improvements"]["failed_before"] = 1
+    malformed.append(bad_failed_before)
+    bad_recurrence_count = deepcopy(full)
+    bad_recurrence_count["improvements"]["same_failure_recurrences"] = 1
+    malformed.append(bad_recurrence_count)
+    bad_recurrence_rate = deepcopy(full)
+    bad_recurrence_rate["improvements"]["recurrence_rate"] = 0.0
+    malformed.append(bad_recurrence_rate)
+    bad_lead_time = deepcopy(full)
+    bad_lead_time["improvements"]["lead_time_hours"] = {}
+    malformed.append(bad_lead_time)
+    bad_lead_count = deepcopy(full)
+    bad_lead_count["improvements"]["lead_time_hours"] = {
+        "count": 1,
+        "average": 1.0,
+    }
+    malformed.append(bad_lead_count)
+    bad_lead_average = deepcopy(improved)
+    bad_lead_average["improvements"]["lead_time_hours"]["average"] = -1.0
+    malformed.append(bad_lead_average)
+
+    script = """
+const fs = require('fs');
+const {
+  workflowAggregateIsValid,
+  workflowEvaluationPresentation,
+  renderWorkflowEvaluation,
+} = require(process.argv[1]);
+const payload = JSON.parse(fs.readFileSync(0, 'utf8'));
+class FakeElement {
+  constructor() {
+    this.children = [];
+    this.dataset = {};
+    this.style = {};
+    this.className = '';
+    this._text = '';
+  }
+  set textContent(value) { this._text = String(value); this.children = []; }
+  get textContent() { return this._text + this.children.map(child => child.textContent || '').join(''); }
+  appendChild(child) { this.children.push(child); return child; }
+  append(...children) { this.children.push(...children); }
+  replaceChildren(...children) { this.children = [...children]; this._text = ''; }
+  get childElementCount() { return this.children.length; }
+}
+const elements = {};
+global.document = {
+  createElement: () => new FakeElement(),
+  getElementById: id => (elements[id] ||= new FakeElement()),
+};
+for (const [index, value] of payload.valid.entries()) {
+  if (!workflowAggregateIsValid(value)) throw new Error(`valid payload rejected: ${index}`);
+}
+for (const [index, value] of payload.malformed.entries()) {
+  if (workflowAggregateIsValid(value)) throw new Error(`malformed payload accepted: ${index}`);
+  const presentation = workflowEvaluationPresentation(value);
+  if (presentation.valid
+      || presentation.kind !== 'invalid_response'
+      || presentation.title !== '評価レスポンスを検証できません'
+      || presentation.verdict !== '応答不正'
+      || presentation.tone !== 'fail') {
+    throw new Error(`malformed payload was not routed to fail-closed UI: ${index}`);
+  }
+  renderWorkflowEvaluation(value);
+  if (elements.workflowEvaluationTitle.textContent !== '評価レスポンスを検証できません'
+      || elements.workflowEvaluationVerdict.textContent !== '応答不正'
+      || !elements.workflowEvaluationStats.textContent.includes('判定保留')
+      || elements.workflowEvaluationTitle.textContent.includes('E2E成功を確認')) {
+    throw new Error(`malformed payload rendered a false-green UI: ${index}`);
+  }
+}
+process.stdout.write(JSON.stringify({ valid: payload.valid.length, rejected: payload.malformed.length }));
+"""
+    completed = subprocess.run(
+        [
+            "node",
+            "-e",
+            script,
+            str(Path(__file__).parents[1] / "src/plk_memory/static/app.js"),
+        ],
+        input=json.dumps(
+            {"valid": [empty, full, unknown, improved], "malformed": malformed}
+        ),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert json.loads(completed.stdout) == {
+        "valid": 4,
+        "rejected": len(malformed),
+    }
+
+
 async def test_metrics_skips_broken_jsonl_and_malformed_fact(
     remote, tmp_path, write_valid_fact
 ):
@@ -352,6 +595,7 @@ async def test_ui_proposal_preview_includes_body(uiclient):
 async def test_metrics_frontend_uses_safe_dom_and_metrics_endpoint(uiclient):
     response = await uiclient.get("/static/app.js")
     assert "fetch('/ui/api/metrics')" in response.text
+    assert "fetch('/ui/api/workflow-evaluation')" in response.text
     assert response.text.count("innerHTML") == 1
     assert "body.innerHTML = data.body_html" in response.text
     assert "title.textContent" in response.text
@@ -364,11 +608,15 @@ async def test_metrics_frontend_uses_clear_labels(uiclient):
     page = await uiclient.get("/")
     script = await uiclient.get("/static/app.js")
     visible_copy = page.text + script.text
-    assert "判断価値" in page.text
-    assert "検索品質" in page.text
-    assert "データ状態" in page.text
-    assert "週ごとの強い影響の報告" in page.text
+    assert "レビュー済みE2E評価" in page.text
+    assert "E2E評価" in page.text
+    assert "検索の健康" in page.text
+    assert "知識・計測の健康" in page.text
+    assert "段階別の判定" in page.text
+    assert "最初の失敗段階と改善先" in page.text
     assert "検索方式の対照評価" in page.text
+    assert "4週価値目標" not in visible_copy
+    assert "判断価値" not in visible_copy
     assert "キル基準" not in visible_copy
     assert "コーパス" not in visible_copy
     assert "proxy OK" not in visible_copy
@@ -377,13 +625,17 @@ async def test_metrics_frontend_uses_clear_labels(uiclient):
 async def test_metrics_frontend_explains_status_and_next_action(uiclient):
     page = await uiclient.get("/")
     script = await uiclient.get("/static/app.js")
-    assert 'id="decisionValueTitle"' in page.text
-    assert 'id="decisionNextActionTitle"' in page.text
-    assert 'id="decisionValueStats"' in page.text
-    assert "判定可能な完了週" in script.text
-    assert "未計測や観測開始前の週を0件として扱わず" in script.text
-    assert "因果効果や判断の正しさは示しません" in page.text
-    assert 'role="tablist" aria-label="利用状況の詳細"' in page.text
+    assert 'id="workflowEvaluationTitle"' in page.text
+    assert 'id="workflowEvaluationStats"' in page.text
+    assert 'id="workflowStageRows"' in page.text
+    assert 'id="workflowFailureRows"' in page.text
+    assert "レビューなし — 判定保留" in script.text
+    assert "判定可能なepisodeなし" in script.text
+    assert "評価ストアを検証できません" in script.text
+    assert "評価APIを利用できません" in script.text
+    assert "unknownを成功や失敗へ丸めません" in page.text
+    assert "E2E成功の証拠ではありません" in page.text
+    assert 'role="tablist" aria-label="評価の詳細"' in page.text
     assert "ArrowRight" in script.text and "Home" in script.text
 
 
