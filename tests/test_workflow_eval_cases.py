@@ -755,7 +755,46 @@ def test_chrome_pilot_status_requests_rollback_for_recurring_replay_failure():
 
     assert status["status"] == "rollback"
     assert status["rollback_reasons"] == ["pilot_replay_failed"]
+    assert status["replay_failure_count"] == 1
     assert status["recommended_dashboard_view"] == "telemetry"
+
+
+def test_chrome_pilot_status_rejects_cross_variant_replay_without_store_reader():
+    reviews = _pilot_reviews()
+    reviews[1] = reviews[1].model_copy(update={"variant_id": "no-match"})
+
+    with pytest.raises(
+        ValueError, match="pilot replay must use the same case and variant"
+    ):
+        summarize_pilot_status(reviews, suite=_repository_suite())
+
+
+def test_chrome_pilot_status_never_serializes_review_private_identifiers():
+    reviews = _pilot_reviews(recurring=True)
+    reviews[0] = reviews[0].model_copy(
+        update={
+            "review_id": "review-private",
+            "trace_id": "trace-private",
+            "search_ids": ["search-private"],
+            "action_ids": ["action-private"],
+            "evidence_refs": ["evidence-private"],
+        }
+    )
+    reviews[1] = reviews[1].model_copy(
+        update={"review_id": "replay-private", "replay_of": "review-private"}
+    )
+
+    payload = json.dumps(summarize_pilot_status(reviews, suite=_repository_suite()))
+
+    for private_value in (
+        "review-private",
+        "replay-private",
+        "trace-private",
+        "search-private",
+        "action-private",
+        "evidence-private",
+    ):
+        assert private_value not in payload
 
 
 def test_chrome_pilot_status_command_exits_zero_for_complete_synthetic_store(tmp_path):

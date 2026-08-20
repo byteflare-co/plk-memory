@@ -618,6 +618,17 @@ def summarize_pilot_status(
     ]
     failures = [review for review in pilot_reviews if review.failure_stage is not None]
     originals = {review.review_id: review for review in pilot_reviews}
+    for review in pilot_reviews:
+        if review.replay_of is None:
+            continue
+        original = originals.get(review.replay_of)
+        if original is None:
+            raise ValueError("pilot replay must reference a review in the same case")
+        if (original.case_id, original.variant_id) != (
+            review.case_id,
+            review.variant_id,
+        ):
+            raise ValueError("pilot replay must use the same case and variant")
     replay_pairs = [
         (originals[review.replay_of], review)
         for review in pilot_reviews
@@ -677,9 +688,9 @@ def summarize_pilot_status(
             )
         )
 
-    replay_failures = [
-        after.review_id for _, after in changed_replays if not replay_succeeded(after)
-    ]
+    replay_failure_count = sum(
+        not replay_succeeded(after) for _, after in changed_replays
+    )
     rollback_reasons: list[str] = []
     if aggregate_api_status == "unavailable":
         rollback_reasons.append("aggregate_api_unavailable")
@@ -691,7 +702,7 @@ def summarize_pilot_status(
         and pilot_unknown_rate > baseline_unknown_rate
     ):
         rollback_reasons.append("unknown_rate_increased")
-    if replay_failures:
+    if replay_failure_count:
         rollback_reasons.append("pilot_replay_failed")
 
     if rollback_reasons:
@@ -712,7 +723,7 @@ def summarize_pilot_status(
             else None
         ),
         "rollback_reasons": rollback_reasons,
-        "replay_failures": replay_failures,
+        "replay_failure_count": replay_failure_count,
         # Rollback changes presentation only. The signed review JSONL remains
         # immutable and is never edited by this command.
         "recommended_dashboard_view": (
