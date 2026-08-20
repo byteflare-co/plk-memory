@@ -4,6 +4,12 @@
 > Baseline: 2026-07-31
 > Architecture: [`BLUEPRINT.md`](BLUEPRINT.md)
 
+> [!IMPORTANT]
+> 2026-08-20以降、検索・decision・operation traceの指標は基盤の健康診断として継続するが、
+> PLKの実務価値はそれだけで判定しない。主評価は、人間レビュー済みの実務ケースで
+> 想起・取得・適用・行動・改善を追う[`EVALUATION_MODEL.md`](EVALUATION_MODEL.md)へ移行する。
+> v2 pilotのbaselineが揃うまで、以下の自己申告ベースの貢献目標は参考値として扱う。
+
 ## 1. 理想状態
 
 理想のPLKは「たくさん覚えているデータベース」ではない。次の状態を満たす判断補助系である。
