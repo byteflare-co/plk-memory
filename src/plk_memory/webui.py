@@ -209,7 +209,7 @@ def build_ui_router(services: "ServiceFacade") -> APIRouter:
             raise HTTPException(
                 status_code=503, detail="workflow evaluation data is unavailable"
             ) from None
-        return summarize_reviews(reviews)
+        return summarize_reviews(reviews, suite=suite)
 
     @router.get("/ui/api/facts/{fact_id}")
     async def ui_fact_detail(request: Request, fact_id: str) -> dict:

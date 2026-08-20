@@ -18,6 +18,7 @@ cases:
     expected_actions: [Select the declared profile.]
     forbidden_actions: [Select another profile.]
     required_evidence: [fixture evidence]
+    required_stages: [trigger, retrieval, application, action]
     variants:
       - id: unique-match
         evaluator_input:

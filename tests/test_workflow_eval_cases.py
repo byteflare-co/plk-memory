@@ -260,7 +260,7 @@ def test_review_store_is_append_only_and_summarized(tmp_path):
 
     reviews = read_reviews(path, settings=settings)
     assert path.stat().st_mode & 0o777 == 0o600
-    summary = summarize_reviews(reviews)
+    summary = summarize_reviews(reviews, suite=suite)
     assert summary["reviews"] == 1
     assert summary["e2e_success_rate"] == 1.0
     assert summary["by_case"]["browser-byteflare-profile-selection"]["evaluable"] == 1
@@ -312,7 +312,7 @@ def test_untrusted_append_and_tampered_review_cannot_be_aggregated(tmp_path):
 
 
 def test_no_reviews_is_insufficient_data_not_zero_percent():
-    summary = summarize_reviews([])
+    summary = summarize_reviews([], suite=_repository_suite())
     assert summary["status"] == "insufficient_data"
     assert summary["e2e_success_rate"] is None
 
@@ -328,7 +328,8 @@ def test_required_action_not_applicable_is_not_an_e2e_success():
                     action="not_applicable",
                 )
             )
-        ]
+        ],
+        suite=_repository_suite(),
     )
 
     assert summary["status"] == "insufficient_data"
@@ -344,6 +345,30 @@ def test_required_action_not_applicable_is_not_an_e2e_success():
         "successes": 0,
         "success_rate": None,
     }
+
+
+def test_optional_stage_not_applicable_does_not_block_e2e_success():
+    payload = _repository_suite().model_dump()
+    payload["cases"][0]["required_stages"] = ["trigger", "application", "action"]
+    suite = WorkflowSuite.model_validate(payload)
+
+    summary = summarize_reviews(
+        [
+            _review(
+                ratings=StageRatings(
+                    trigger="pass",
+                    retrieval="not_applicable",
+                    application="pass",
+                    action="pass",
+                )
+            )
+        ],
+        suite=suite,
+    )
+
+    assert summary["evaluable"] == 1
+    assert summary["e2e_successes"] == 1
+    assert summary["e2e_success_rate"] == 1.0
 
 
 def test_replay_requires_existing_same_case_variant_and_is_summarized(tmp_path):
@@ -366,7 +391,9 @@ def test_replay_requires_existing_same_case_variant_and_is_summarized(tmp_path):
     )
     _append(path, after, suite=suite, settings=settings)
 
-    summary = summarize_reviews(read_reviews(path, settings=settings))
+    summary = summarize_reviews(
+        read_reviews(path, settings=settings), suite=_repository_suite()
+    )
     assert summary["improvements"]["recurrence_rate"] == 0.0
     assert summary["improvements"]["reviewed_replays"] == 1
     assert summary["improvements"]["lead_time_hours"] == {

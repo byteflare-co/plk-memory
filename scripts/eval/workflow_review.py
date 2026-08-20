@@ -48,7 +48,8 @@ def main() -> int:
         print(
             json.dumps(
                 summarize_reviews(
-                    read_reviews(args.store, suite=suite, settings=settings)
+                    read_reviews(args.store, suite=suite, settings=settings),
+                    suite=suite,
                 ),
                 ensure_ascii=False,
                 indent=2,
