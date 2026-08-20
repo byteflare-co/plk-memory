@@ -21,6 +21,9 @@ approved_epic_lifecycle:
   default: deny
   approved_plan_hashes:
     - dc7f685c837f7bbebfd39353f1fb84ff5ff100139528e37123702f5a67dcd95e
+    # approved-plan/v1-amendment-1: C1R を C1 と C2 の間に限定挿入する。
+    # base: dc7f685c837f7bbebfd39353f1fb84ff5ff100139528e37123702f5a67dcd95e
+    - 1b06261d970dfd94aed46638f618af34e8565e45226dadde5f2d595e0a97c262
   allowed_mutations: [epic_create, child_create, description_exact, parent, blocked_by, loop_label, orchestrator_declaration, writer_declaration, ledger, round, progress, non_terminal_state]
   forbidden_mutations: [done, canceled, delete, archive, scope_expansion, main_merge, production_write, customer_write, external_business_write]
 ```
