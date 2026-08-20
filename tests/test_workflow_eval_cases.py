@@ -376,6 +376,17 @@ def test_workflow_case_requires_action_and_memory_stages_when_expected():
         WorkflowSuite.model_validate(payload)
 
 
+@pytest.mark.parametrize("memory_stage", ["trigger", "retrieval", "application"])
+def test_non_memory_workflow_case_rejects_required_memory_stages(memory_stage):
+    payload = _repository_suite().model_dump()
+    payload["cases"][0]["memory_expected"] = False
+    payload["cases"][0]["retrieval"] = None
+    payload["cases"][0]["required_stages"] = [memory_stage, "action"]
+
+    with pytest.raises(ValidationError, match="requires action-only stages"):
+        WorkflowSuite.model_validate(payload)
+
+
 def test_review_ratings_must_match_the_case_contract():
     suite = _repository_suite()
 

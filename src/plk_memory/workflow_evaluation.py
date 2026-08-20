@@ -100,6 +100,8 @@ class WorkflowCase(BaseModel):
             raise ValueError(
                 "memory_expected=true requires trigger, retrieval, and application"
             )
+        if not self.memory_expected and set(self.required_stages) != {"action"}:
+            raise ValueError("memory_expected=false requires action-only stages")
         expected_stages = {
             "trigger",
             "retrieval",
