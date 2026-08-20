@@ -341,10 +341,7 @@ def summarize_reviews(reviews: list[WorkflowReview]) -> dict:
     }
 
     def is_success(review: WorkflowReview) -> bool:
-        return all(
-            getattr(review.ratings, name) in {"pass", "not_applicable"}
-            for name in stage_names
-        )
+        return all(getattr(review.ratings, name) == "pass" for name in stage_names)
 
     def is_evaluable(review: WorkflowReview) -> bool:
         return is_success(review) or any(

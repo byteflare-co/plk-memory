@@ -213,6 +213,35 @@ def test_no_reviews_is_insufficient_data_not_zero_percent():
     assert summary["e2e_success_rate"] is None
 
 
+def test_required_action_not_applicable_is_not_an_e2e_success():
+    summary = summarize_reviews(
+        [
+            _review(
+                ratings=StageRatings(
+                    trigger="pass",
+                    retrieval="pass",
+                    application="pass",
+                    action="not_applicable",
+                )
+            )
+        ]
+    )
+
+    assert summary["status"] == "insufficient_data"
+    assert summary["evaluable"] == 0
+    assert summary["unknown"] == 1
+    assert summary["e2e_successes"] == 0
+    assert summary["e2e_success_rate"] is None
+    assert summary["by_case"]["browser-byteflare-profile-selection"] == {
+        "status": "insufficient_data",
+        "reviews": 1,
+        "evaluable": 0,
+        "unknown": 1,
+        "successes": 0,
+        "success_rate": None,
+    }
+
+
 def test_replay_requires_existing_same_case_variant_and_is_summarized(tmp_path):
     path = tmp_path / "reviews.jsonl"
     suite = _repository_suite()
