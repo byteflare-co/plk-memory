@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import os
 import re
@@ -9,6 +10,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from plk_memory.app import create_app
 from plk_memory.feedback import FeedbackProposal
@@ -17,12 +19,21 @@ from plk_memory.workflow_evaluation import (
     EvaluationRevisions,
     StageRatings,
     WorkflowReviewSubmission,
+    WorkflowReview,
+    attestation_payload,
     append_review,
     load_review_suite,
+    review_record_hash,
 )
 from tests.conftest import make_settings
 from tests.fakes import FakeGraphIndex
 from tests.gitsync_helpers import push
+
+
+_TEST_PRIVATE_KEY = Ed25519PrivateKey.from_private_bytes(b"\x02" * 32)
+_TEST_PUBLIC_KEY = base64.b64encode(
+    _TEST_PRIVATE_KEY.public_key().public_bytes_raw()
+).decode("ascii")
 
 
 class StaticFeedbackRunner:
@@ -48,17 +59,20 @@ async def uiclient(remote, tmp_path, write_valid_fact):
     origin, seed = remote
     write_valid_fact(seed, "knowledge/domains/tax/x.md")
     push(seed)
-    settings = make_settings(tmp_path, origin, tokens={"tok-cc": "cc"},
-                             admin_token="adm", ui_password="s3cret",
-                             ui_writes_enabled=True)
+    settings = make_settings(
+        tmp_path,
+        origin,
+        tokens={"tok-cc": "cc"},
+        admin_token="adm",
+        ui_password="s3cret",
+        ui_writes_enabled=True,
+    )
     app = create_app(settings=settings, graph=FakeGraphIndex())
     app.state.services.store.ensure_repo()
     app.state.services.store.fetch_and_ff()
     app.state.services.feedback.runner = StaticFeedbackRunner()
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(
-        transport=transport, base_url="http://127.0.0.1"
-    ) as c:
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as c:
         yield c
 
 
@@ -67,9 +81,14 @@ async def open_uiclient(remote, tmp_path, write_valid_fact):
     origin, seed = remote
     write_valid_fact(seed, "knowledge/domains/tax/x.md")
     push(seed)
-    settings = make_settings(tmp_path, origin, tokens={"tok-cc": "cc"},
-                             admin_token="adm", ui_password="",
-                             ui_writes_enabled=False)
+    settings = make_settings(
+        tmp_path,
+        origin,
+        tokens={"tok-cc": "cc"},
+        admin_token="adm",
+        ui_password="",
+        ui_writes_enabled=False,
+    )
     app = create_app(settings=settings, graph=FakeGraphIndex())
     app.state.services.store.ensure_repo()
     app.state.services.store.fetch_and_ff()
@@ -133,6 +152,26 @@ def _workflow_review() -> WorkflowReviewSubmission:
     )
 
 
+def _signed_workflow_review(review: WorkflowReviewSubmission) -> WorkflowReview:
+    unsigned = WorkflowReview.model_validate(
+        {
+            **review.model_dump(),
+            "recorded_by": "test-human-reviewer",
+            "previous_hash": "0" * 64,
+            "record_hash": "0" * 64,
+            "attestation": "placeholder",
+        }
+    )
+    signed = unsigned.model_copy(
+        update={
+            "attestation": base64.b64encode(
+                _TEST_PRIVATE_KEY.sign(attestation_payload(unsigned))
+            ).decode("ascii")
+        }
+    )
+    return signed.model_copy(update={"record_hash": review_record_hash(signed)})
+
+
 async def test_workflow_evaluation_api_requires_existing_ui_auth(uiclient):
     response = await uiclient.get("/ui/api/workflow-evaluation")
     assert response.status_code == 401
@@ -153,14 +192,17 @@ async def test_workflow_evaluation_api_is_aggregate_only_and_matches_cli(
         workflow_review_path=store,
         workflow_cases_path=cases,
         workflow_reviewer_id="test-human-reviewer",
-        workflow_reviewer_token="synthetic-review-token",
+        workflow_reviewer_public_key=_TEST_PUBLIC_KEY,
+        workflow_review_trusted_head="0" * 64,
     )
+    envelope = _signed_workflow_review(_workflow_review())
     append_review(
         store,
-        _workflow_review(),
+        envelope,
         suite=load_review_suite(cases),
         settings=settings,
     )
+    settings.workflow_review_trusted_head = envelope.record_hash
     app = create_app(settings=settings, graph=FakeGraphIndex())
     app.state.services.store.ensure_repo()
     app.state.services.store.fetch_and_ff()
@@ -199,7 +241,8 @@ async def test_workflow_evaluation_api_is_aggregate_only_and_matches_cli(
         env={
             **os.environ,
             "PLK_WORKFLOW_REVIEWER_ID": "test-human-reviewer",
-            "PLK_WORKFLOW_REVIEWER_TOKEN": "synthetic-review-token",
+            "PLK_WORKFLOW_REVIEWER_PUBLIC_KEY": _TEST_PUBLIC_KEY,
+            "PLK_WORKFLOW_REVIEW_TRUSTED_HEAD": envelope.record_hash,
         },
     )
     assert json.loads(completed.stdout) == payload
@@ -349,7 +392,9 @@ def _font_size_px(css: str, selector: str) -> int:
 
     セレクタは規則の先頭に現れるものだけを拾う（`html, body {` を `body` と誤認しない）。
     """
-    rule = re.compile(r"(?:^|[{}\n])[ \t]*" + re.escape(selector) + r"\s*\{([^}]*)\}", re.M)
+    rule = re.compile(
+        r"(?:^|[{}\n])[ \t]*" + re.escape(selector) + r"\s*\{([^}]*)\}", re.M
+    )
     for match in rule.finditer(css):
         size = re.search(r"font-size:\s*(\d+(?:\.\d+)?)px", match.group(1))
         if size:
@@ -434,9 +479,7 @@ async def test_passwordless_loopback_write_session_is_explicitly_gated(
         await app.state.services.feedback.close()
 
 
-async def test_passwordless_write_session_rejects_remote_client(
-    remote, tmp_path
-):
+async def test_passwordless_write_session_rejects_remote_client(remote, tmp_path):
     origin, _ = remote
     settings = make_settings(
         tmp_path,
@@ -470,9 +513,7 @@ async def test_ui_feedback_proposal_and_explicit_apply(uiclient):
 
     request = None
     for _ in range(100):
-        rows = (
-            await uiclient.get(f"/ui/api/facts/{fid}/feedback")
-        ).json()["requests"]
+        rows = (await uiclient.get(f"/ui/api/facts/{fid}/feedback")).json()["requests"]
         request = next(row for row in rows if row["id"] == request_id)
         if request["state"] == "proposed":
             break

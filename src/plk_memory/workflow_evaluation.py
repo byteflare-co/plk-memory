@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import fcntl
+import base64
 import hashlib
-import hmac
 import json
 import os
 import stat
@@ -15,6 +15,8 @@ from typing import Annotated, Literal, Sequence
 import frontmatter
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from plk_memory.rendering import content_hash
 from plk_memory.settings import Settings
@@ -172,59 +174,68 @@ class WorkflowReviewSubmission(BaseModel):
 
 
 class WorkflowReview(WorkflowReviewSubmission):
-    """A review attested by the configured human-reviewer path."""
+    """A human-signed review envelope accepted by the runtime."""
 
     recorded_by: str = Field(min_length=1, max_length=128)
-    attestation: str = Field(pattern=r"^[0-9a-f]{64}$")
+    previous_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    record_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    attestation: str = Field(min_length=1, max_length=128)
 
 
-def _workflow_reviewer_credentials(settings: Settings) -> tuple[str, str]:
-    """Return the configured reviewer identity and secret, or fail closed."""
+def _workflow_reviewer_verifier(
+    settings: Settings,
+) -> tuple[str, Ed25519PublicKey, str]:
+    """Return the independent human-review trust anchor, or fail closed."""
 
     reviewer_id = settings.workflow_reviewer_id.strip()
-    token = settings.workflow_reviewer_token.get_secret_value()
-    if not reviewer_id or not token:
-        raise ValueError("workflow reviewer credential is not configured")
-    return reviewer_id, token
+    public_key_text = settings.workflow_reviewer_public_key.strip()
+    trusted_head = settings.workflow_review_trusted_head.strip()
+    if not reviewer_id or not public_key_text or not trusted_head:
+        raise ValueError("workflow reviewer verifier or trusted head is not configured")
+    if len(trusted_head) != 64 or any(
+        char not in "0123456789abcdef" for char in trusted_head
+    ):
+        raise ValueError("workflow review trusted head is invalid")
+    try:
+        public_key = Ed25519PublicKey.from_public_bytes(
+            base64.b64decode(public_key_text, validate=True)
+        )
+    except ValueError as exc:
+        raise ValueError("workflow reviewer public key is invalid") from exc
+    return reviewer_id, public_key, trusted_head
 
 
-def _attestation_payload(review: WorkflowReview) -> bytes:
+def attestation_payload(review: WorkflowReview) -> bytes:
     return json.dumps(
-        review.model_dump(mode="json", exclude={"attestation"}),
+        review.model_dump(mode="json", exclude={"attestation", "record_hash"}),
         ensure_ascii=False,
         separators=(",", ":"),
         sort_keys=True,
     ).encode("utf-8")
 
 
-def _attestation(review: WorkflowReview, token: str) -> str:
-    return hmac.new(
-        token.encode("utf-8"), _attestation_payload(review), hashlib.sha256
+def review_record_hash(review: WorkflowReview) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            review.model_dump(mode="json", exclude={"record_hash"}),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
     ).hexdigest()
 
 
-def attest_review(
-    review: WorkflowReviewSubmission, *, settings: Settings
-) -> WorkflowReview:
-    """Bind a submitted review to the configured human-reviewer identity."""
-
-    reviewer_id, token = _workflow_reviewer_credentials(settings)
-    unsigned = WorkflowReview.model_validate(
-        {
-            **review.model_dump(exclude={"recorded_by", "attestation"}),
-            "recorded_by": reviewer_id,
-            "attestation": "0" * 64,
-        }
-    )
-    return unsigned.model_copy(update={"attestation": _attestation(unsigned, token)})
-
-
 def _validate_attestation(review: WorkflowReview, *, settings: Settings) -> None:
-    reviewer_id, token = _workflow_reviewer_credentials(settings)
-    if review.recorded_by != reviewer_id or not hmac.compare_digest(
-        review.attestation, _attestation(review, token)
+    reviewer_id, public_key, _ = _workflow_reviewer_verifier(settings)
+    if review.recorded_by != reviewer_id or review.record_hash != review_record_hash(
+        review
     ):
         raise ValueError("workflow review attestation is invalid")
+    try:
+        signature = base64.b64decode(review.attestation, validate=True)
+        public_key.verify(signature, attestation_payload(review))
+    except (InvalidSignature, ValueError) as exc:
+        raise ValueError("workflow review attestation is invalid") from exc
 
 
 def load_suite(path: Path, *, settings: Settings | None = None) -> WorkflowSuite:
@@ -317,10 +328,16 @@ def _parse_reviews(lines: list[str]) -> list[WorkflowReview]:
     return reviews
 
 
-def _validate_review_history(reviews: list[WorkflowReview]) -> None:
+def _validate_review_history(
+    reviews: list[WorkflowReview], *, trusted_head: str
+) -> None:
+    """Validate semantic history and the independently configured chain head."""
     seen: dict[str, WorkflowReview] = {}
     replayed: set[str] = set()
+    previous_hash = "0" * 64
     for review in reviews:
+        if review.previous_hash != previous_hash:
+            raise ValueError("workflow review chain is broken")
         if review.review_id in seen:
             raise ValueError(f"duplicate review_id: {review.review_id}")
         if review.replay_of is not None:
@@ -338,20 +355,25 @@ def _validate_review_history(reviews: list[WorkflowReview]) -> None:
                 raise ValueError(f"review already has a replay: {original.review_id}")
             replayed.add(original.review_id)
         seen[review.review_id] = review
+        previous_hash = review.record_hash
+    if previous_hash != trusted_head:
+        raise ValueError("workflow review trusted head does not match store")
 
 
 def read_reviews(
     path: Path, *, suite: WorkflowSuite | None = None, settings: Settings
 ) -> list[WorkflowReview]:
-    _workflow_reviewer_credentials(settings)
+    _, _, trusted_head = _workflow_reviewer_verifier(settings)
     descriptor = _open_review_store(path, write=False)
     if descriptor is None:
+        if trusted_head != "0" * 64:
+            raise ValueError("workflow review trusted head does not match store")
         return []
     with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
         reviews = _parse_reviews(handle.read().splitlines())
     for review in reviews:
         _validate_attestation(review, settings=settings)
-    _validate_review_history(reviews)
+    _validate_review_history(reviews, trusted_head=trusted_head)
     if suite is not None:
         for review in reviews:
             validate_review_against_suite(review, suite)
@@ -372,13 +394,22 @@ def validate_review_against_suite(
 
 def append_review(
     path: Path,
-    review: WorkflowReviewSubmission,
+    review: WorkflowReview,
     *,
     suite: WorkflowSuite,
     settings: Settings,
 ) -> None:
+    """Append an envelope already signed by the human-controlled reviewer path.
+
+    This process deliberately has no signing credential and does not manufacture
+    review envelopes. The caller must provide the exact next chain link, and the
+    separately configured trusted head must agree with the on-disk history.
+    """
+    if not isinstance(review, WorkflowReview):
+        raise ValueError("workflow review must be a pre-signed envelope")
     validate_review_against_suite(review, suite)
-    stored_review = attest_review(review, settings=settings)
+    _validate_attestation(review, settings=settings)
+    _, _, trusted_head = _workflow_reviewer_verifier(settings)
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor = _open_review_store(path, write=True)
     if descriptor is None:  # pragma: no cover - write=True creates the file
@@ -389,11 +420,15 @@ def append_review(
         existing = _parse_reviews(handle.read().splitlines())
         for existing_review in existing:
             _validate_attestation(existing_review, settings=settings)
-        _validate_review_history(existing + [stored_review])
+        _validate_review_history(existing, trusted_head=trusted_head)
+        current_head = existing[-1].record_hash if existing else "0" * 64
+        if review.previous_hash != current_head:
+            raise ValueError("workflow review does not extend the current chain")
+        _validate_review_history(existing + [review], trusted_head=review.record_hash)
         for existing_review in existing:
             validate_review_against_suite(existing_review, suite)
         handle.seek(0, os.SEEK_END)
-        handle.write(stored_review.model_dump_json() + "\n")
+        handle.write(review.model_dump_json() + "\n")
         handle.flush()
         os.fsync(handle.fileno())
 

@@ -2,24 +2,28 @@ from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import json
 import os
+import base64
 from pathlib import Path
 
 import pytest
 import yaml
 from pydantic import ValidationError
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from plk_memory.settings import Settings
 from plk_memory.workflow_evaluation import (
     EvaluationRevisions,
     StageRatings,
     WorkflowReviewSubmission,
-    attest_review,
+    WorkflowReview,
     WorkflowSuite,
     append_review,
     load_review_suite,
     load_suite,
     read_reviews,
     summarize_reviews,
+    attestation_payload,
+    review_record_hash,
     validate_suite_corpus,
     validate_review_against_suite,
 )
@@ -54,10 +58,17 @@ def _fixture_suite():
     )
 
 
-def _review_settings(*, token: str = "synthetic-review-token") -> Settings:
+_TEST_PRIVATE_KEY = Ed25519PrivateKey.from_private_bytes(b"\x01" * 32)
+_TEST_PUBLIC_KEY = base64.b64encode(
+    _TEST_PRIVATE_KEY.public_key().public_bytes_raw()
+).decode("ascii")
+
+
+def _review_settings(*, head: str = "0" * 64) -> Settings:
     return Settings(
         workflow_reviewer_id="test-human-reviewer",
-        workflow_reviewer_token=token,
+        workflow_reviewer_public_key=_TEST_PUBLIC_KEY,
+        workflow_review_trusted_head=head,
         _env_file=None,  # pyright: ignore[reportCallIssue]
     )
 
@@ -84,6 +95,45 @@ def _review(**updates) -> WorkflowReviewSubmission:
     }
     values.update(updates)
     return WorkflowReviewSubmission.model_validate(values)
+
+
+def _signed_review(
+    review: WorkflowReviewSubmission, *, previous_hash: str = "0" * 64
+) -> WorkflowReview:
+    unsigned = WorkflowReview.model_validate(
+        {
+            **review.model_dump(),
+            "recorded_by": "test-human-reviewer",
+            "previous_hash": previous_hash,
+            "record_hash": "0" * 64,
+            "attestation": "placeholder",
+        }
+    )
+    signed = unsigned.model_copy(
+        update={
+            "attestation": base64.b64encode(
+                _TEST_PRIVATE_KEY.sign(attestation_payload(unsigned))
+            ).decode("ascii")
+        }
+    )
+    return signed.model_copy(update={"record_hash": review_record_hash(signed)})
+
+
+def _append(
+    path: Path,
+    review: WorkflowReviewSubmission,
+    *,
+    suite: WorkflowSuite,
+    settings: Settings,
+) -> WorkflowReview:
+    envelope = _signed_review(
+        review, previous_hash=settings.workflow_review_trusted_head
+    )
+    append_review(path, envelope, suite=suite, settings=settings)
+    # The trusted checkpoint is deliberately outside the JSONL store. Tests
+    # emulate the human-controlled evaluator advancing it after acceptance.
+    settings.workflow_review_trusted_head = envelope.record_hash
+    return envelope
 
 
 def test_repository_workflow_cases_are_structurally_valid():
@@ -193,7 +243,7 @@ def test_review_must_reference_a_known_case_and_variant(tmp_path):
     with pytest.raises(ValueError, match="unknown workflow variant"):
         append_review(
             tmp_path / "reviews.jsonl",
-            _review(variant_id="missing"),
+            _signed_review(_review(variant_id="missing")),
             suite=suite,
             settings=settings,
         )
@@ -203,10 +253,10 @@ def test_review_store_is_append_only_and_summarized(tmp_path):
     path = tmp_path / "reviews.jsonl"
     suite = _repository_suite()
     settings = _review_settings()
-    append_review(path, _review(), suite=suite, settings=settings)
+    _append(path, _review(), suite=suite, settings=settings)
 
     with pytest.raises(ValueError, match="duplicate review_id"):
-        append_review(path, _review(), suite=suite, settings=settings)
+        _append(path, _review(), suite=suite, settings=settings)
 
     reviews = read_reviews(path, settings=settings)
     assert path.stat().st_mode & 0o777 == 0o600
@@ -223,12 +273,22 @@ def test_review_store_is_append_only_and_summarized(tmp_path):
 
 
 def test_review_recording_requires_configured_human_reviewer(tmp_path):
-    with pytest.raises(ValueError, match="credential is not configured"):
+    with pytest.raises(ValueError, match="verifier or trusted head is not configured"):
         append_review(
             tmp_path / "reviews.jsonl",
-            _review(),
+            _signed_review(_review()),
             suite=_repository_suite(),
             settings=Settings(_env_file=None),  # pyright: ignore[reportCallIssue]
+        )
+
+
+def test_runtime_rejects_unsigned_review_submission(tmp_path):
+    with pytest.raises(ValueError, match="pre-signed envelope"):
+        append_review(
+            tmp_path / "reviews.jsonl",
+            _review(),  # type: ignore[arg-type]
+            suite=_repository_suite(),
+            settings=_review_settings(),
         )
 
 
@@ -236,14 +296,13 @@ def test_untrusted_append_and_tampered_review_cannot_be_aggregated(tmp_path):
     path = tmp_path / "reviews.jsonl"
     suite = _repository_suite()
     trusted = _review_settings()
-    append_review(
-        path, _review(), suite=suite, settings=_review_settings(token="other")
-    )
+    foreign = _review_settings()
+    foreign.workflow_reviewer_public_key = base64.b64encode(b"x" * 32).decode("ascii")
     with pytest.raises(ValueError, match="attestation is invalid"):
-        read_reviews(path, suite=suite, settings=trusted)
+        append_review(path, _signed_review(_review()), suite=suite, settings=foreign)
+    _append(path, _review(), suite=suite, settings=trusted)
+    assert len(read_reviews(path, suite=suite, settings=trusted)) == 1
 
-    path.unlink()
-    append_review(path, _review(), suite=suite, settings=trusted)
     payload = json.loads(path.read_text(encoding="utf-8"))
     payload["reviewer"] = "tampered"
     path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
@@ -298,14 +357,14 @@ def test_replay_requires_existing_same_case_variant_and_is_summarized(tmp_path):
         failure_stage="trigger",
         improvement_target="browser preflight",
     )
-    append_review(path, before, suite=suite, settings=settings)
+    _append(path, before, suite=suite, settings=settings)
     after = _review(
         review_id="R2",
         reviewed_at=before.reviewed_at + timedelta(hours=4),
         replay_of="R1",
         change_id="change-1",
     )
-    append_review(path, after, suite=suite, settings=settings)
+    _append(path, after, suite=suite, settings=settings)
 
     summary = summarize_reviews(read_reviews(path, settings=settings))
     assert summary["improvements"]["recurrence_rate"] == 0.0
@@ -322,19 +381,19 @@ def test_replay_rejects_unknown_or_duplicate_original(tmp_path):
     settings = _review_settings()
     unknown = _review(review_id="R2", replay_of="missing", change_id="change-1")
     with pytest.raises(ValueError, match="unknown replay_of"):
-        append_review(path, unknown, suite=suite, settings=settings)
+        _append(path, unknown, suite=suite, settings=settings)
 
     original = _review()
-    append_review(path, original, suite=suite, settings=settings)
+    _append(path, original, suite=suite, settings=settings)
     replay = _review(
         review_id="R2",
         reviewed_at=original.reviewed_at + timedelta(hours=1),
         replay_of="R1",
         change_id="change-1",
     )
-    append_review(path, replay, suite=suite, settings=settings)
+    _append(path, replay, suite=suite, settings=settings)
     with pytest.raises(ValueError, match="already has a replay"):
-        append_review(
+        _append(
             path,
             _review(
                 review_id="R3",
@@ -356,7 +415,7 @@ def test_read_review_store_rejects_unsafe_files_and_malformed_history(tmp_path):
         read_reviews(store, settings=settings)
 
     store.write_text(
-        attest_review(_review(), settings=settings).model_dump_json() + "\n",
+        _signed_review(_review()).model_dump_json() + "\n",
         encoding="utf-8",
     )
     os.chmod(store, 0o644)
@@ -365,7 +424,7 @@ def test_read_review_store_rejects_unsafe_files_and_malformed_history(tmp_path):
 
     regular = tmp_path / "regular.jsonl"
     regular.write_text(
-        attest_review(_review(), settings=settings).model_dump_json() + "\n",
+        _signed_review(_review()).model_dump_json() + "\n",
         encoding="utf-8",
     )
     os.chmod(regular, 0o600)
@@ -385,10 +444,15 @@ def test_read_review_store_rejects_duplicate_and_invalid_replay_history(tmp_path
     store = tmp_path / "reviews.jsonl"
     first = _review()
     duplicate = _review()
+    first_envelope = _signed_review(first)
+    duplicate_envelope = _signed_review(
+        duplicate, previous_hash=first_envelope.record_hash
+    )
+    settings.workflow_review_trusted_head = duplicate_envelope.record_hash
     store.write_text(
-        attest_review(first, settings=settings).model_dump_json()
+        first_envelope.model_dump_json()
         + "\n"
-        + attest_review(duplicate, settings=settings).model_dump_json()
+        + duplicate_envelope.model_dump_json()
         + "\n",
         encoding="utf-8",
     )
@@ -402,16 +466,42 @@ def test_read_review_store_rejects_duplicate_and_invalid_replay_history(tmp_path
         change_id="change-1",
         reviewed_at=first.reviewed_at - timedelta(hours=1),
     )
+    backwards_envelope = _signed_review(
+        backwards, previous_hash=first_envelope.record_hash
+    )
+    settings.workflow_review_trusted_head = backwards_envelope.record_hash
     store.write_text(
-        attest_review(first, settings=settings).model_dump_json()
+        first_envelope.model_dump_json()
         + "\n"
-        + attest_review(backwards, settings=settings).model_dump_json()
+        + backwards_envelope.model_dump_json()
         + "\n",
         encoding="utf-8",
     )
     os.chmod(store, 0o600)
     with pytest.raises(ValueError, match="replay must be reviewed after"):
         read_reviews(store, settings=settings)
+
+
+def test_reader_rejects_deleted_or_rolled_back_trusted_chain_head(tmp_path):
+    store = tmp_path / "reviews.jsonl"
+    first = _signed_review(_review())
+    second = _signed_review(_review(review_id="R2"), previous_hash=first.record_hash)
+    store.write_text(
+        first.model_dump_json() + "\n" + second.model_dump_json() + "\n",
+        encoding="utf-8",
+    )
+    os.chmod(store, 0o600)
+    trusted = _review_settings(head=second.record_hash)
+    assert len(read_reviews(store, settings=trusted)) == 2
+
+    # A store rollback/deletion cannot satisfy the separately held expected head.
+    store.write_text(first.model_dump_json() + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="trusted head does not match store"):
+        read_reviews(store, settings=trusted)
+
+    store.unlink()
+    with pytest.raises(ValueError, match="trusted head does not match store"):
+        read_reviews(store, settings=trusted)
 
 
 def test_review_suite_contract_can_load_without_live_corpus_access():

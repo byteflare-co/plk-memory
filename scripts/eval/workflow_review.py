@@ -9,7 +9,7 @@ from pathlib import Path
 
 from plk_memory.settings import Settings
 from plk_memory.workflow_evaluation import (
-    WorkflowReviewSubmission,
+    WorkflowReview,
     append_review,
     load_review_suite,
     load_suite,
@@ -32,7 +32,9 @@ def main() -> int:
     if args.command == "record":
         if args.input is None:
             parser.error("record requires an input JSON file")
-        review = WorkflowReviewSubmission.model_validate_json(
+        # The evaluator supplies a pre-signed envelope. This runtime has only
+        # the public verifier and never signs a human review itself.
+        review = WorkflowReview.model_validate_json(
             args.input.read_text(encoding="utf-8")
         )
         settings = Settings()
