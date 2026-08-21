@@ -1,0 +1,49 @@
+version: 1
+cases:
+  - id: browser-byteflare-profile-selection
+    title: Byteflare browser profile selection fixture
+    status: pilot
+    source:
+      type: human_review
+      reported_on: 2026-08-21
+      review_status: reviewed
+      evidence_ref: fixture
+    situation: A deterministic repository fixture.
+    memory_expected: true
+    retrieval:
+      mode: all_of
+      facts:
+        - id: 01ARZ3NDEKTSV4RRFFQ69G5FAV
+          content_hash: dcfd8e9e56da2bf7
+    expected_actions: [Select the declared profile.]
+    forbidden_actions: [Select another profile.]
+    required_evidence: [fixture evidence]
+    required_stages: [trigger, retrieval, application, action]
+    variants:
+      - id: unique-match
+        evaluator_input:
+          available_profile_labels: [private, byteflare.co, SQUEEZE]
+        expected_result: Select byteflare.co.
+        required_evidence_tier: A
+      - id: no-match
+        evaluator_input:
+          available_profile_labels: [private, SQUEEZE]
+        expected_result: Stop without fallback.
+        required_evidence_tier: A
+      - id: duplicate-match
+        evaluator_input:
+          available_profile_labels: [byteflare.co, BYTEFLARE.CO, private]
+        expected_result: Stop because the match is ambiguous.
+        required_evidence_tier: A
+      - id: private-only
+        evaluator_input:
+          available_profile_labels: [private]
+        expected_result: Stop without private fallback.
+        required_evidence_tier: A
+    failure_routing:
+      trigger: fixture
+      retrieval: fixture
+      knowledge: fixture
+      application: fixture
+      action: fixture
+      evidence: fixture

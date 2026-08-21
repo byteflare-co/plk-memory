@@ -13,7 +13,9 @@ DOMAINS = ("tax", "legal", "shaho", "dev", "backoffice", "biz", "agent")
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="PLK_", env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_prefix="PLK_", env_file=".env", extra="ignore"
+    )
 
     # Git-primary compatibility backend のデータリポジトリ。
     # PostgreSQL-primary では DB→Git snapshot export の出力先になる。
@@ -46,6 +48,17 @@ class Settings(BaseSettings):
     usage_log_path: Path = Path.home() / ".plk" / "usage.jsonl"
     usage_raw_query_retention_days: int = Field(default=30, ge=0, le=365)
     eval_history_path: Path = Path.home() / ".plk" / "eval-history.jsonl"
+    workflow_review_path: Path = Path.home() / ".plk" / "workflow-reviews.jsonl"
+    # Human review is the trust boundary for the E2E success metric. Runtime
+    # only receives the reviewer's public key: it can verify a pre-signed
+    # envelope but never sign one. ``workflow_review_trusted_head`` is held
+    # separately from the JSONL store, so removal or rollback fails closed.
+    workflow_reviewer_id: str = ""
+    workflow_reviewer_public_key: str = ""
+    workflow_review_trusted_head: str = ""
+    workflow_cases_path: Path = (
+        Path(__file__).resolve().parents[2] / "scripts" / "eval" / "workflow_cases.yaml"
+    )
     metrics_timezone: str = "Asia/Tokyo"
     lock_path: Path = Path.home() / ".plk" / "writer.lock"
     feedback_path: Path = Path.home() / ".plk" / "feedback.json"
@@ -117,7 +130,7 @@ class Settings(BaseSettings):
     allowed_hosts: list[str] = ["*"]
 
     # Web UI。writeは明示gate + loopback + session/CSRFを要求する。
-    ui_password: str = ""          # 空なら認証なし。設定時のみログインを要求
+    ui_password: str = ""  # 空なら認証なし。設定時のみログインを要求
     ui_cookie_name: str = "plk_ui"
     ui_organization_id: str = ""
     ui_writes_enabled: bool = False
@@ -145,7 +158,10 @@ class Settings(BaseSettings):
         # graphiti の validate_group_id が `[a-zA-Z0-9_-]+` のみ許可するため、
         # namespace（ドット区切り）とは別に group_id はハイフン区切りで返す。
         if self.group_mode == "per-namespace":
-            return [f"plk-domain-{d}" for d in self.domains] + ["plk-shared", self.quarantine_group]
+            return [f"plk-domain-{d}" for d in self.domains] + [
+                "plk-shared",
+                self.quarantine_group,
+            ]
         return [self.main_group, self.quarantine_group]
 
     def path_for_namespace(self, namespace: str) -> str:

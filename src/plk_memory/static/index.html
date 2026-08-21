@@ -647,7 +647,7 @@
   </div>
   <nav class="view-tabs" id="viewTabs" aria-label="ビュー切替">
     <button id="factsTab" type="button" role="tab" aria-selected="true" aria-controls="factsView">Facts</button>
-    <button id="metricsTab" type="button" role="tab" aria-selected="false" aria-controls="metricsView">利用状況</button>
+    <button id="metricsTab" type="button" role="tab" aria-selected="false" aria-controls="metricsView">評価</button>
   </nav>
   <div class="ro-badge"><span class="dot"></span>reviewed writes</div>
 </header>
@@ -705,57 +705,44 @@
 
   <section id="metricsView" role="tabpanel" aria-labelledby="metricsTab" hidden>
     <div class="metrics-heading">
-      <div><div class="eyebrow">利用状況</div><h1>意思決定への貢献</h1><p>PLK検索後に報告された影響と、その観測の確かさを確認します</p></div>
+      <div><div class="eyebrow">WORKFLOW EVALUATION</div><h1>レビュー済みE2E評価</h1><p>人間が確認した実務episodeから、PLKが正しい行動につながったかと次の改善先を判断します</p></div>
       <div class="metrics-heading-actions">
         <button class="metrics-refresh" id="metricsRefresh" type="button">更新</button>
         <div class="metrics-status" id="metricsStatus" role="status" aria-live="polite"></div>
       </div>
     </div>
-    <div class="metrics-subtabs" role="tablist" aria-label="利用状況の詳細">
-      <button id="decisionValueTab" type="button" role="tab" aria-selected="true" aria-controls="decisionValuePanel">判断価値</button>
-      <button id="searchQualityTab" type="button" role="tab" aria-selected="false" aria-controls="searchQualityPanel" tabindex="-1">検索品質</button>
-      <button id="dataStateTab" type="button" role="tab" aria-selected="false" aria-controls="dataStatePanel" tabindex="-1">データ状態</button>
+    <div class="metrics-subtabs" role="tablist" aria-label="評価の詳細">
+      <button id="decisionValueTab" type="button" role="tab" aria-selected="true" aria-controls="decisionValuePanel">E2E評価</button>
+      <button id="searchQualityTab" type="button" role="tab" aria-selected="false" aria-controls="searchQualityPanel" tabindex="-1">検索の健康</button>
+      <button id="dataStateTab" type="button" role="tab" aria-selected="false" aria-controls="dataStatePanel" tabindex="-1">知識・計測の健康</button>
     </div>
 
     <section id="decisionValuePanel" class="metrics-panel" role="tabpanel" aria-labelledby="decisionValueTab">
-      <section class="metrics-summary" id="decisionValueSummary" aria-labelledby="decisionValueTitle">
+      <section class="metrics-summary" id="workflowEvaluationSummary" aria-labelledby="workflowEvaluationTitle">
         <div class="summary-head">
           <div>
-            <div class="summary-eyebrow">直近4完了週の価値観測</div>
-            <h2 id="decisionValueTitle">データを読み込んでいます</h2>
-            <p class="summary-lead" id="decisionValueReason">週次の観測状態を集計しています。</p>
-            <p class="decision-value-note">PLKを使ったことと影響をエージェントが記録した観測値です。因果効果や判断の正しさは示しません。</p>
+            <div class="summary-eyebrow">人間レビュー済み workflow episode</div>
+            <h2 id="workflowEvaluationTitle">評価データを読み込んでいます</h2>
+            <p class="summary-lead" id="workflowEvaluationReason">必須段階と行動証拠を集計しています。</p>
+            <p class="decision-value-note">成功は、必須段階がすべてpassで、行動がTier A証拠により確認されたepisodeだけです。unknownを成功や失敗へ丸めません。</p>
           </div>
-          <span class="tag" id="decisionValueVerdict">集計中</span>
+          <span class="tag" id="workflowEvaluationVerdict">集計中</span>
         </div>
       </section>
-      <div class="stat-grid decision-stat-grid" id="decisionValueStats"></div>
-      <section class="metric-card wide">
-        <h2>操作traceの適用状況</h2>
-        <p class="subhead">記録されたtrace内で、PLK必須操作の事前検索、判断接続、実操作の終了をclient別に監査</p>
-        <div class="stat-grid" id="operationTraceStats"></div>
-        <div class="table-wrap"><table class="metrics-table"><thead><tr><th>呼び出し元</th><th class="num">操作意図</th><th class="num">PLK必須</th><th class="num">事前検索</th><th class="num">検索率</th></tr></thead><tbody id="operationTraceClientRows"></tbody></table></div>
-      </section>
-      <section class="metric-card wide">
-        <h2>週ごとの強い影響の報告</h2>
-        <p class="subhead">行動変更・誤り防止の報告と、週ごとの観測カバレッジ</p>
-        <div class="chart decision-chart" id="decisionValueChart"></div>
-        <details class="metrics-disclosure"><summary>データ表を表示</summary><div class="table-wrap"><table class="metrics-table"><thead><tr><th>完了週</th><th class="num">対象検索</th><th class="num">計測済み</th><th class="num">カバレッジ</th><th class="num">行動変更</th><th class="num">誤り防止</th><th>週次判定</th></tr></thead><tbody id="decisionValueRows"></tbody></table></div></details>
-      </section>
-      <section class="metric-card wide decision-action" id="decisionNextAction">
-        <div class="decision-action-copy"><h2 id="decisionNextActionTitle">次に行うこと</h2><p id="decisionNextActionText">集計後に最優先の行動を表示します。</p></div>
-        <button id="decisionNextActionButton" type="button" hidden>詳細を見る</button>
-      </section>
-      <details class="metrics-disclosure" id="decisionBreakdownDetails"><summary>判断価値の内訳</summary><div class="metrics-grid">
-        <section class="metric-card"><h2>意思決定への影響</h2><p class="subhead">計測済み判断の自己申告内訳</p><div class="chart" id="effectChart"></div></section>
-        <section class="metric-card"><h2>不採用の理由</h2><p class="subhead">未計測とは分けて集計</p><div class="chart" id="noUseReasonChart"></div></section>
-        <section class="metric-card wide"><h2>呼び出し元別の計測状況</h2><p class="subhead">client ごとの計測定着</p><div class="table-wrap"><table class="metrics-table"><thead><tr><th>呼び出し元</th><th class="num">計測対象</th><th class="num">計測済み</th><th class="num">計測率</th><th class="num">強い影響</th></tr></thead><tbody id="measurementClientRows"></tbody></table></div></section>
-      </div></details>
+      <div class="stat-grid" id="workflowEvaluationStats"></div>
+      <div class="metrics-grid">
+        <section class="metric-card wide"><h2>段階別の判定</h2><p class="subhead">想起・取得・適用・行動をpass / fail / unknownで分け、詰まっている段階を特定</p><div class="table-wrap"><table class="metrics-table"><thead><tr><th>段階</th><th class="num">pass</th><th class="num">fail</th><th class="num">unknown</th><th class="num">対象外</th></tr></thead><tbody id="workflowStageRows"></tbody></table></div></section>
+        <section class="metric-card wide"><h2>最初の失敗段階と改善先</h2><p class="subhead">同時に複数層を変えず、最初に失敗した1段階から改善</p><div class="table-wrap"><table class="metrics-table"><thead><tr><th>failure stage</th><th class="num">件数</th><th>最初に直す対象</th></tr></thead><tbody id="workflowFailureRows"></tbody></table></div></section>
+        <section class="metric-card wide"><h2>case別</h2><p class="subhead">代表ケースの偏りと成否を確認</p><div class="table-wrap"><table class="metrics-table"><thead><tr><th>case</th><th class="num">review</th><th class="num">判定可能</th><th class="num">unknown</th><th class="num">E2E成功率</th></tr></thead><tbody id="workflowCaseRows"></tbody></table></div></section>
+        <section class="metric-card wide"><h2>client別</h2><p class="subhead">client差を全体率で隠さない</p><div class="table-wrap"><table class="metrics-table"><thead><tr><th>client</th><th class="num">review</th><th class="num">判定可能</th><th class="num">unknown</th><th class="num">E2E成功率</th></tr></thead><tbody id="workflowClientRows"></tbody></table></div></section>
+        <section class="metric-card wide"><h2>週別</h2><p class="subhead">評価期間ごとの分母と変化を確認</p><div class="table-wrap"><table class="metrics-table"><thead><tr><th>週</th><th class="num">review</th><th class="num">判定可能</th><th class="num">unknown</th><th class="num">E2E成功率</th></tr></thead><tbody id="workflowWeekRows"></tbody></table></div></section>
+        <section class="metric-card wide"><h2>改善の再評価</h2><p class="subhead">同じcaseの変更前後で、再発率と改善リードタイムを確認</p><div class="stat-grid decision-stat-grid" id="workflowImprovementStats"></div></section>
+      </div>
     </section>
 
     <section id="searchQualityPanel" class="metrics-panel" role="tabpanel" aria-labelledby="searchQualityTab" hidden>
       <div class="metrics-grid">
-        <section class="metric-card wide"><h2>運用品質の詳細</h2><p class="subhead">判断価値とは分けて、検索基盤と検索方式を確認</p><div class="metrics-kill" id="readinessStatus"></div><div class="table-wrap"><table class="metrics-table"><thead><tr><th>ゲート</th><th>判定</th><th>現在値</th><th>目標</th></tr></thead><tbody id="readinessRows"></tbody></table></div><div class="metrics-note" id="readinessNote"></div></section>
+        <section class="metric-card wide"><h2>検索基盤の健康状態</h2><p class="subhead">以下は検索器の診断であり、E2E成功の証拠ではありません</p><div class="metrics-kill" id="readinessStatus"></div><div class="table-wrap"><table class="metrics-table"><thead><tr><th>ゲート</th><th>判定</th><th>現在値</th><th>目標</th></tr></thead><tbody id="readinessRows"></tbody></table></div><div class="metrics-note" id="readinessNote"></div></section>
         <section class="metric-card wide"><h2>週別検索数</h2><p class="subhead">自動検索 / 手動検索 / 障害</p><div class="chart" id="weeklySearchChart"></div></section>
         <section class="metric-card"><h2>週別結果返却率</h2><p class="subhead">正常検索のうち結果が1件以上返った割合</p><div class="chart" id="returnRateChart"></div></section>
         <section class="metric-card"><h2>検索方式の対照評価</h2><p class="subhead">Graph / Embed / rgを同一runで比較</p><div class="chart" id="evalChart"></div></section>
@@ -765,6 +752,10 @@
 
     <section id="dataStatePanel" class="metrics-panel" role="tabpanel" aria-labelledby="dataStateTab" hidden>
       <div class="metrics-grid">
+        <section class="metric-card wide"><h2>操作traceの適用状況</h2><p class="subhead">計測の健康診断です。trace、検索、自己申告effect、action成功だけではE2E成功の証拠になりません</p><div class="stat-grid" id="operationTraceStats"></div><div class="table-wrap"><table class="metrics-table"><thead><tr><th>呼び出し元</th><th class="num">操作意図</th><th class="num">PLK必須</th><th class="num">事前検索</th><th class="num">検索率</th></tr></thead><tbody id="operationTraceClientRows"></tbody></table></div></section>
+        <section class="metric-card"><h2>自己申告effect</h2><p class="subhead">改善候補を探す補助情報。正しい行動の独立証拠ではありません</p><div class="chart" id="effectChart"></div></section>
+        <section class="metric-card"><h2>不採用の理由</h2><p class="subhead">未計測とは分けて集計</p><div class="chart" id="noUseReasonChart"></div></section>
+        <section class="metric-card wide"><h2>呼び出し元別の計測状況</h2><p class="subhead">clientごとのtelemetry定着。E2E評価の分母には使いません</p><div class="table-wrap"><table class="metrics-table"><thead><tr><th>呼び出し元</th><th class="num">計測対象</th><th class="num">計測済み</th><th class="num">計測率</th><th class="num">強い影響</th></tr></thead><tbody id="measurementClientRows"></tbody></table></div></section>
         <section class="metric-card"><h2>分類別の有効ファクト数</h2><p class="subhead">登録内容の偏り</p><div class="chart" id="namespaceChart"></div></section>
         <section class="metric-card"><h2>呼び出し元別の検索数</h2><p class="subhead">全期間の参考値</p><div class="chart" id="clientChart"></div></section>
         <section class="metric-card wide"><h2>ファクト別の観測利用</h2><p class="subhead">件数は異なる単位のため、率へ丸めず表示</p><div class="table-wrap"><table class="metrics-table"><thead><tr><th>内容</th><th class="num">結果返却</th><th class="num">利用報告</th><th class="num">強い影響</th></tr></thead><tbody id="contributionFactRows"></tbody></table></div></section>
@@ -777,6 +768,6 @@
 <div id="scrim"></div>
 <div id="detail" role="dialog" aria-label="fact 詳細"></div>
 
-<script src="/static/app.js?v=20260807-evidence-1"></script>
+<script src="/static/app.js?v=20260821-reviewed-e2e-1"></script>
 </body>
 </html>

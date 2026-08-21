@@ -1,0 +1,45 @@
+name: Workflow evaluation contract
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONPATH: src
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Install locked, non-local test dependencies
+        run: uv sync --frozen --no-install-project --no-install-local
+      - name: Lint
+        run: uv run --no-sync ruff check .
+      - name: Format changed workflow-evaluation Python
+        run: >-
+          uv run --no-sync ruff format --check
+          scripts/eval/validate_workflow_cases.py
+          src/plk_memory/workflow_evaluation.py
+          tests/test_workflow_eval_cases.py
+      - name: Type check workflow-evaluation contract
+        run: >-
+          uv run --no-sync pyright
+          scripts/eval/validate_workflow_cases.py
+          src/plk_memory/workflow_evaluation.py
+          tests/test_workflow_eval_cases.py
+      - name: Test workflow-evaluation contract
+        run: uv run --no-sync pytest -q tests/test_workflow_eval_cases.py
+      - name: Check dashboard JavaScript syntax
+        run: node --check src/plk_memory/static/app.js
+      - name: Validate disposable workflow fixture
+        run: >-
+          uv run --no-sync python scripts/eval/validate_workflow_cases.py
+          tests/fixtures/workflow_evaluation/workflow_cases.yaml
+          --corpus-root tests/fixtures/workflow_evaluation/corpus
